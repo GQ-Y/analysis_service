@@ -1,0 +1,43 @@
+services:
+  analysis-service:
+    build:
+      context: ..
+      dockerfile: analysis_service/Dockerfile.cpu  # 或 Dockerfile.gpu
+    image: meekyolo/analysis-service:latest
+    container_name: analysis-service
+    restart: unless-stopped
+    ports:
+      - "8002:8002"
+    volumes:
+      - model_data:/app/data/models
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./results:/app/results
+      - ../config:/app/config
+    environment:
+      - ANALYSIS_SERVICE_ENV=production
+      - MODEL_SERVICE_HOST=model-service
+      - NVIDIA_VISIBLE_DEVICES=all
+      - DEVICE=cuda
+      - CONFIG_PATH=/app/config/config.yaml
+      - REDIS_HOST=localhost
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+    networks:
+      - meekyolo-net
+    healthcheck:
+      test: ["CMD", "/app/healthcheck.sh"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  model_data:
+    name: meekyolo_model_data
+    external: true  # 使用已存在的模型数据卷
+
+networks:
+  meekyolo-net:
+    name: meekyolo-net
+    external: true 

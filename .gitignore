@@ -1,0 +1,6 @@
+__pycache__
+results/*
+requirements.lock
+.DS_Store
+data/*
+logs/*
