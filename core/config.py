@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class DebugConfig(BaseModel):
     """调试配置"""
     enabled: bool = False
-    log_level: str = "INFO"
+    log_level: str = "DEBUG"
     log_file: str = "logs/debug.log"
     log_rotation: str = "1 day"
     log_retention: str = "7 days"
@@ -24,7 +24,7 @@ class AnalysisServiceConfig(BaseSettings):
     # 基础信息
     PROJECT_NAME: str = "MeekYolo Analysis Service"
     VERSION: str = "1.0.0"
-    ENVIRONMENT: str = "production"  # 环境: development, production, testing
+    ENVIRONMENT: str = "development"  # 环境: development, production, testing
     DEBUG: DebugConfig = DebugConfig()  # 调试配置
     
     # CORS配置
@@ -142,6 +142,20 @@ class AnalysisServiceConfig(BaseSettings):
     TASK_QUEUE: TaskQueueConfig = TaskQueueConfig()
     COMMUNICATION: CommunicationConfig = CommunicationConfig()
     MQTT: MQTTConfig = MQTTConfig()
+    
+    # --- 新增 Streaming 配置节 --- 
+    class StreamingConfig(BaseModel):
+        """流处理相关配置"""
+        reconnect_attempts: int = 5          # 流断开时最大重连尝试次数
+        reconnect_delay: int = 3             # 重连之间的基础延迟（秒），会指数增长
+        read_timeout: int = 15               # 从流读取帧的超时时间（秒）
+        connect_timeout: int = 10            # 连接流的超时时间（秒）
+        max_consecutive_errors: int = 10     # 连续错误达到多少次后标记为永久错误
+        frame_buffer_size: int = 10          # 每个订阅者的帧缓冲队列大小
+        log_level: str = "INFO"              # StreamManager 的日志级别
+
+    STREAMING: StreamingConfig = StreamingConfig()
+    # ---------------------------
     
     model_config = {
         "env_file": ".env",

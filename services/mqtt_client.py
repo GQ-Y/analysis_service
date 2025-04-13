@@ -13,6 +13,7 @@ import psutil
 from typing import Dict, Any, List, Callable, Optional, Union
 from datetime import datetime
 import paho.mqtt.client as mqtt
+import asyncio
 
 # 添加父级目录到sys.path以允许导入core.config
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -79,6 +80,7 @@ def get_mqtt_client() -> 'MQTTClient':
                     username=username,
                     password=password,
                     topic_prefix=topic_prefix,  # 作为关键字参数传递
+                    loop=None,  # 添加 loop 参数
                 )
     
     return _MQTT_CLIENT_INSTANCE
@@ -88,6 +90,7 @@ class MQTTClient:
 
     def __init__(self, device_id, broker_host, broker_port=1883, username=None, password=None,
                  command_topic=None, response_topic=None, status_topic=None, client_id=None,
+                 loop=None,
                  **kwargs):
         """
         初始化MQTT客户端
@@ -102,6 +105,7 @@ class MQTTClient:
             response_topic: 响应主题
             status_topic: 状态主题
             client_id: 客户端ID，如果不提供则使用设备ID
+            loop: 事件循环
         """
         self.device_id = device_id
         self.broker_host = broker_host
@@ -157,6 +161,12 @@ class MQTTClient:
         # 停止事件
         self.stop_event = threading.Event()
         
+        # 新增：用于跟踪待停止的任务 ID (确保线程安全)
+        self.pending_stop_requests: set[str] = set()
+        self.pending_stop_requests_lock = threading.Lock()
+
+        self.loop = loop  # 存储事件循环
+
     def _get_mac_address(self) -> str:
         """
         获取MAC地址
@@ -620,7 +630,14 @@ class MQTTClient:
             confirmation_topic = f"{self.topic_prefix}device_config_reply"
             
         logger.info(f"使用确认主题回复: {confirmation_topic}")
-            
+        
+        # 确保data是一个字典
+        if data is None:
+            data = {}
+        elif not isinstance(data, dict):
+            logger.warning(f"data不是字典类型: {type(data)}，将创建新字典")
+            data = {"original_data": data}
+        
         reply = {
             "message_id": message_id,
             "message_uuid": message_uuid,
@@ -633,7 +650,7 @@ class MQTTClient:
             "service_type": "analysis",
             "is_active": True,
             "timestamp": int(time.time()),
-            "data": data or {}
+            "data": data
         }
         
         if message and status == "error":
@@ -744,7 +761,7 @@ class MQTTClient:
             logger.error(error_msg)
             if confirmation_topic:
                 self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "error", 
-                                     data={"error_message": error_msg})
+                                     data={"error_message": error_msg, "task_id": task_id, "subtask_id": subtask_id})
             return False
             
         # 处理不同类型的源
@@ -800,7 +817,7 @@ class MQTTClient:
     
     def _handle_stop_task_cmd(self, data, message_id, message_uuid, confirmation_topic):
         """
-        处理停止任务命令
+        处理停止任务命令 (修改后逻辑)
         
         Args:
             data: 命令数据
@@ -808,58 +825,117 @@ class MQTTClient:
             message_uuid: 消息UUID
             confirmation_topic: 确认主题
         """
-        # 提取任务信息 - 修正：从data["data"]中获取数据，而不是直接从data中获取
         cmd_data = data.get("data", {})
         task_id = cmd_data.get("task_id")
         subtask_id = cmd_data.get("subtask_id")
         
-        # 验证必要字段
         if not task_id or not subtask_id:
             logger.error("无效的停止任务命令，缺少必要字段")
             error_data = {
-                "cmd_type": "stop_task",
-                "error_code": "ERR_001",
-                "error_type": "INVALID_PARAMS",
+                "cmd_type": "stop_task", 
+                "error_code": "ERR_001", 
+                "error_type": "INVALID_PARAMS", 
                 "message": "缺少必要字段: task_id或subtask_id"
             }
             self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "error", data=error_data)
             return
             
-        logger.info(f"收到停止任务命令: {task_id}/{subtask_id}")
+        logger.info(f"收到停止任务请求: {task_id}/{subtask_id}")
         
-        # 检查任务是否存在 - 使用subtask_id作为任务键
+        task_found = False
+        task_info = None # 存储 active_tasks 中的整个字典，包含 handle
+        
+        # 1. 将任务ID加入待停止集合 (无论任务当前是否存在)
+        with self.pending_stop_requests_lock:
+            self.pending_stop_requests.add(subtask_id)
+            logger.debug(f"任务 {subtask_id} 已添加到待停止集合")
+
+        # 2. 检查任务是否在活跃列表中，并尝试取消
         with self.active_tasks_lock:
-            if subtask_id not in self.active_tasks:
-                logger.warning(f"任务不存在: {task_id}/{subtask_id}")
-                error_data = {
-                    "cmd_type": "stop_task",
-                    "task_id": task_id,
-                    "subtask_id": subtask_id,
-                    "error_code": "ERR_004",
-                    "error_type": "TASK_NOT_FOUND",
-                    "message": "任务不存在"
-                }
-                self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "error", data=error_data)
-                return
-                
-            # 移除任务 - 使用subtask_id作为任务键
-            del self.active_tasks[subtask_id]
+            if subtask_id in self.active_tasks:
+                task_info = self.active_tasks.get(subtask_id)
+                task_found = True
             
-        # 发送任务状态：已停止
-        self._send_task_status(task_id, subtask_id, "stopped")
-        
-        # 无需从TaskManager中删除任务，因为我们采用无状态设计，任务从未被注册到TaskManager中
-        
-        # 发送接受停止命令的响应
-        success_data = {
-            "cmd_type": "stop_task",
-            "task_id": task_id,
-            "subtask_id": subtask_id,
-            "message": "任务已成功停止",
-            "timestamp": int(time.time())
-        }
-        self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "success", data=success_data)
-        logger.info(f"已停止任务: {task_id}/{subtask_id}")
+        if task_found and task_info:
+            task_handle = task_info.get("task_handle") # 从字典中获取 task_handle
+            if task_handle:
+                logger.info(f"在活跃任务中找到 {task_id}/{subtask_id}，尝试取消协程..." )
+                # 在事件循环中安全地取消任务
+                try:
+                     # 确保 self.loop 存在并使用 call_soon_threadsafe
+                     if self.loop:
+                         # 保存消息ID和确认主题到任务信息字典，以便在任务完成后发送最终响应
+                         task_info['message_id'] = message_id
+                         task_info['message_uuid'] = message_uuid
+                         task_info['confirmation_topic'] = confirmation_topic
+                         # 存储原始task_id以确保在最终响应中使用正确的ID
+                         task_info['original_task_id'] = task_id
+                         logger.debug(f"已将响应信息保存至任务 {subtask_id} 数据中，用于最终响应")
+                         
+                         # 取消任务
+                         self.loop.call_soon_threadsafe(task_handle.cancel)
+                         logger.info(f"已请求取消任务 {task_id}/{subtask_id} 的协程")
+                         
+                         # 3.1 回复确认消息，表示请求已收到并正在处理（task_status=0）
+                         reply_data = {
+                             "cmd_type": "stop_task",
+                             "task_id": task_id,  # 使用原始task_id
+                             "subtask_id": subtask_id,
+                             "task_status": 0,
+                             "message": "正在处理结束任务",
+                             "timestamp": int(time.time())
+                         }
+                         self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "success", data=reply_data)
+                         logger.info(f"已确认收到停止任务请求并正在处理: {task_id}/{subtask_id}")
+                     else:
+                         logger.error(f"无法取消任务 {task_id}/{subtask_id}：MQTTClient 未关联事件循环 (self.loop is None)")
+                         # 发送错误响应
+                         error_data = {
+                             "cmd_type": "stop_task",
+                             "task_id": task_id,  # 使用原始task_id
+                             "subtask_id": subtask_id,
+                             "task_status": -1,
+                             "message": "无法取消任务: 未关联事件循环",
+                             "timestamp": int(time.time())
+                         }
+                         self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "error", data=error_data)
+                except Exception as cancel_e:
+                     logger.error(f"请求取消任务 {task_id}/{subtask_id} 时出错: {cancel_e}", exc_info=True)
+                     # 发送错误响应
+                     error_data = {
+                         "cmd_type": "stop_task",
+                         "task_id": task_id,  # 使用原始task_id
+                         "subtask_id": subtask_id,
+                         "task_status": -1,
+                         "message": f"请求取消任务时出错: {cancel_e}",
+                         "timestamp": int(time.time())
+                     }
+                     self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "error", data=error_data)
+            else:
+                 logger.warning(f"在活跃任务 {task_id}/{subtask_id} 中未找到有效的 task_handle")
+                 # 发送找不到有效句柄的响应
+                 reply_data = {
+                     "cmd_type": "stop_task",
+                     "task_id": task_id,  # 使用原始task_id
+                     "subtask_id": subtask_id,
+                     "task_status": -1,
+                     "message": "在活跃任务中未找到有效的任务句柄",
+                     "timestamp": int(time.time())
+                 }
+                 self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "success", data=reply_data)
+        else:
+             logger.warning(f"任务 {task_id}/{subtask_id} 不在活跃列表中，可能尚未启动或已结束。停止请求已记录。")
+             # 3.2 回复未找到任务的消息（task_status=-1）
+             reply_data = {
+                 "cmd_type": "stop_task",
+                 "task_id": task_id,  # 使用原始task_id
+                 "subtask_id": subtask_id,
+                 "task_status": -1,
+                 "message": "任务不在活跃列表中，可能尚未启动或已结束",
+                 "timestamp": int(time.time())
+             }
+             self._send_cmd_reply(message_id, message_uuid, confirmation_topic, "success", data=reply_data)
+             logger.info(f"已回复任务不存在: {task_id}/{subtask_id}")
         
     def _run_task(self, task_id, subtask_id, task_type, source, config, should_stop):
         """
@@ -1318,7 +1394,7 @@ class MQTTClient:
         """心跳线程，定期发送连接状态"""
         logger.info("启动MQTT心跳线程")
         last_resource_check = 0
-        heartbeat_interval = 30  # 心跳间隔（秒）
+        heartbeat_interval = 60  # 心跳间隔（秒）
         resource_check_interval = 60  # 资源检查间隔（秒）
         
         while not self.stop_event.is_set():

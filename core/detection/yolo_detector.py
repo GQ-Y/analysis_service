@@ -24,6 +24,7 @@ from core.exceptions import (
     ProcessingException,
     ResourceNotFoundException
 )
+import functools
 
 logger = setup_logger(__name__)
 
@@ -338,12 +339,27 @@ class YOLODetector:
                 resized_image = image.copy()
             
             # 执行推理 - 在整个图像上进行检测
-            results = self.model(
-                resized_image,
-                conf=conf,
-                iou=iou,
+            # results = self.model( # <-- 直接调用会阻塞
+            #     resized_image,
+            #     conf=conf,
+            #     iou=iou,
+            #     classes=classes
+            # )
+            
+            # --- 将同步推理放到 executor 中执行 --- 
+            loop = asyncio.get_running_loop()
+            model_call_with_args = functools.partial(
+                self.model, 
+                conf=conf, 
+                iou=iou, 
                 classes=classes
             )
+            results = await loop.run_in_executor(
+                None,           # 使用默认 executor
+                model_call_with_args, # 传递包装后的函数
+                resized_image   # 作为位置参数传递给 model_call_with_args
+            )
+            # --------------------------------------------
             
             # 处理检测结果
             h, w = image.shape[:2]  # 原始图像尺寸，用于ROI过滤
