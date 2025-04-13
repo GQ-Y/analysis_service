@@ -4,3 +4,4 @@ requirements.lock
 .DS_Store
 data/*
 logs/*
+venv/*
