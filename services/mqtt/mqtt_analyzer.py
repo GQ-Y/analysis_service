@@ -88,7 +88,7 @@ class MQTTAnalyzerService(BaseAnalyzerService):
         self._register_task_handlers()
         
         # 启动MQTT客户端
-        if not self.mqtt_client.start():
+        if not await self.mqtt_client.async_start():
             logger.error("MQTT客户端启动失败")
             return False
             

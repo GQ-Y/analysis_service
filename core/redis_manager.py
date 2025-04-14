@@ -22,16 +22,16 @@ class RedisManager:
         """初始化Redis连接池"""
         try:
             self.pool = aioredis.ConnectionPool(
-                host=settings.REDIS.host,
-                port=settings.REDIS.port,
-                db=settings.REDIS.db,
-                password=settings.REDIS.password,
-                max_connections=settings.REDIS.max_connections,
-                socket_timeout=settings.REDIS.socket_timeout,
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB,
+                password=settings.REDIS_PASSWORD,
+                max_connections=settings.REDIS_MAX_CONNECTIONS,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
                 decode_responses=True
             )
             self.redis = aioredis.Redis(connection_pool=self.pool)
-            logger.info(f"Redis连接池初始化成功: {settings.REDIS.host}:{settings.REDIS.port}")
+            logger.info(f"Redis连接池初始化成功: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
         except Exception as e:
             logger.error(f"Redis连接池初始化失败: {str(e)}")
             raise
@@ -201,13 +201,12 @@ class RedisManager:
             logger.error(f"弹出列表失败: {str(e)}")
             return None
 
-    # 键过期
     async def set_expiry(self, name: str, seconds: int):
-        """设置键过期时间"""
+        """设置键的过期时间"""
         try:
             await self.redis.expire(name, seconds)
         except Exception as e:
-            logger.error(f"设置键过期时间失败: {str(e)}")
+            logger.error(f"设置过期时间失败: {str(e)}")
             raise
 
     async def delete_pattern(self, pattern: str):

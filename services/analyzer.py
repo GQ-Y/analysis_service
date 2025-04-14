@@ -34,7 +34,7 @@ def create_analyzer_service(service_mode: str = None) -> BaseAnalyzerService:
     """
     # 如果未指定服务模式，从配置中读取
     if service_mode is None:
-        service_mode = settings.COMMUNICATION.mode.lower()
+        service_mode = settings.COMMUNICATION_MODE.lower()
     else:
         service_mode = service_mode.lower()
     
@@ -43,13 +43,18 @@ def create_analyzer_service(service_mode: str = None) -> BaseAnalyzerService:
     # 根据服务模式创建对应的服务实例
     if service_mode == "mqtt":
         # 使用MQTT配置创建MQTT分析服务
-        device_id = settings.MQTT.node_id if settings.MQTT.node_id else socket.gethostname()
+        device_id = settings.MQTT_NODE_ID if settings.MQTT_NODE_ID else socket.gethostname()
         mqtt_config = {
-            "host": settings.MQTT.broker_host,
-            "port": settings.MQTT.broker_port,
-            "username": settings.MQTT.username,
-            "password": settings.MQTT.password,
-            "topic_prefix": settings.MQTT.topic_prefix
+            "host": settings.MQTT_BROKER_HOST,
+            "port": settings.MQTT_BROKER_PORT,
+            "username": settings.MQTT_USERNAME,
+            "password": settings.MQTT_PASSWORD,
+            "topic_prefix": settings.MQTT_TOPIC_PREFIX,
+            "qos": settings.MQTT_QOS,
+            "keepalive": settings.MQTT_KEEPALIVE,
+            "reconnect_interval": settings.MQTT_RECONNECT_INTERVAL,
+            "node_id": settings.MQTT_NODE_ID,
+            "service_type": settings.MQTT_SERVICE_TYPE
         }
         logger.info(f"MQTT配置: 设备ID={device_id}, 代理={mqtt_config['host']}:{mqtt_config['port']}, 前缀={mqtt_config['topic_prefix']}")
         return MQTTAnalyzerService(device_id=device_id, mqtt_config=mqtt_config)
@@ -65,7 +70,7 @@ def get_service_mode() -> str:
     Returns:
         str: 服务模式，'http'或'mqtt'
     """
-    return settings.SERVICES.mode.lower()
+    return settings.COMMUNICATION_MODE.lower()
 
 # 为兼容性保留的类定义
 class AnalyzerService(BaseAnalyzerService):
@@ -86,7 +91,7 @@ class AnalyzerService(BaseAnalyzerService):
         
         # 如果未指定服务模式，从配置中读取
         if service_mode is None:
-            service_mode = settings.SERVICES.mode.lower()
+            service_mode = settings.COMMUNICATION_MODE.lower()
         else:
             service_mode = service_mode.lower()
         
@@ -104,3 +109,67 @@ class AnalyzerService(BaseAnalyzerService):
             任何类型: 方法调用的结果
         """
         return getattr(self.service, name)
+
+class Analyzer:
+    def __init__(self):
+        """初始化分析器"""
+        self.communication_mode = settings.COMMUNICATION_MODE
+        self.mqtt_client = None
+        self.task_queue = None
+        self.task_processor = None
+        self.task_manager = None
+        self.detector = None
+        self.segmentor = None
+        self.http_analyzer = None
+        self.mqtt_analyzer = None
+
+    async def initialize(self):
+        """初始化分析服务"""
+        try:
+            # 初始化任务队列
+            self.task_queue = TaskQueue()
+            
+            # 初始化任务处理器
+            self.task_processor = TaskProcessor()
+            
+            # 初始化任务管理器
+            self.task_manager = TaskManager()
+            
+            # 初始化检测器和分割器
+            self.detector = YOLODetector()
+            self.segmentor = YOLOSegmentor()
+            
+            # 根据通信模式初始化对应的分析器
+            if self.communication_mode == "mqtt":
+                # 初始化MQTT客户端
+                self.mqtt_client = MQTTClient()
+                await self.mqtt_client.connect()
+                
+                # 初始化MQTT分析器
+                self.mqtt_analyzer = MQTTAnalyzer(
+                    mqtt_client=self.mqtt_client,
+                    task_queue=self.task_queue,
+                    task_processor=self.task_processor,
+                    task_manager=self.task_manager,
+                    detector=self.detector,
+                    segmentor=self.segmentor
+                )
+                
+            elif self.communication_mode == "http":
+                # 初始化HTTP分析器
+                self.http_analyzer = HTTPAnalyzer(
+                    task_queue=self.task_queue,
+                    task_processor=self.task_processor,
+                    task_manager=self.task_manager,
+                    detector=self.detector,
+                    segmentor=self.segmentor
+                )
+            
+            logger.info(f"分析服务初始化完成，通信模式: {self.communication_mode}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"初始化分析服务失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False

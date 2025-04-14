@@ -29,10 +29,10 @@ class TaskQueue:
     def __init__(self):
         self.redis = RedisManager()
         self.running_tasks: Dict[str, Dict] = {}
-        self.max_concurrent = settings.TASK_QUEUE.max_concurrent
-        self.max_retries = settings.TASK_QUEUE.max_retries
-        self.retry_delay = settings.TASK_QUEUE.retry_delay
-        self.result_ttl = settings.TASK_QUEUE.result_ttl
+        self.max_concurrent = settings.TASK_QUEUE_MAX_CONCURRENT
+        self.max_retries = settings.TASK_QUEUE_MAX_RETRIES
+        self.retry_delay = settings.TASK_QUEUE_RETRY_DELAY
+        self.result_ttl = settings.TASK_QUEUE_RESULT_TTL
         
     async def add_task(self, task_data: Dict[str, Any], priority: float = 0, task_id: Optional[str] = None) -> str:
         """添加任务到队列
@@ -199,14 +199,9 @@ class TaskQueue:
     async def complete_task(self, task_id: str, result: Dict):
         """完成任务"""
         try:
-            await self.update_task_status(
-                task_id,
-                TaskStatus.COMPLETED,
-                result=result
-            )
-            # 从运行中任务移除
-            self.running_tasks.pop(task_id, None)
-            
+            await self.update_task_status(task_id, TaskStatus.COMPLETED, result=result)
+            if task_id in self.running_tasks:
+                del self.running_tasks[task_id]
         except Exception as e:
             logger.error(f"完成任务失败: {str(e)}")
             raise
@@ -216,54 +211,47 @@ class TaskQueue:
         try:
             task_data = await self.get_task(task_id)
             if not task_data:
-                return
+                raise ValueError(f"任务不存在: {task_id}")
                 
-            retry_count = task_data.get('retry_count', 0)
-            if retry_count < self.max_retries:
+            retries = task_data.get('retries', 0)
+            if retries < self.max_retries:
                 # 重试任务
-                task_data['retry_count'] = retry_count + 1
-                task_data['status'] = TaskStatus.WAITING
+                task_data['retries'] = retries + 1
                 task_data['last_error'] = error
-                await self.add_task(task_data)
-                logger.info(f"任务将重试: {task_id}, 重试次数: {retry_count + 1}")
-            else:
-                # 标记为最终失败
-                await self.update_task_status(
-                    task_id,
-                    TaskStatus.FAILED,
-                    error=error
-                )
-                logger.warning(f"任务最终失败: {task_id}, 错误: {error}")
+                task_data['retry_at'] = (datetime.now().timestamp() + self.retry_delay)
                 
-            # 从运行中任务移除
-            self.running_tasks.pop(task_id, None)
-            
+                await self.update_task_status(task_id, TaskStatus.WAITING)
+                await self.redis.zadd_task(
+                    "task_queue:waiting",
+                    task_id,
+                    task_data['retry_at']
+                )
+            else:
+                # 达到最大重试次数，标记为失败
+                await self.update_task_status(task_id, TaskStatus.FAILED, error=error)
+                
+            if task_id in self.running_tasks:
+                del self.running_tasks[task_id]
+                
         except Exception as e:
-            logger.error(f"标记任务失败出错: {str(e)}")
+            logger.error(f"标记任务失败时出错: {str(e)}")
             raise
             
     async def cancel_task(self, task_id: str):
         """取消任务"""
         try:
-            await self.update_task_status(
-                task_id,
-                TaskStatus.CANCELLED,
-                error="任务已取消"
-            )
-            # 从运行中任务移除
-            self.running_tasks.pop(task_id, None)
-            logger.info(f"任务已取消: {task_id}")
-            
+            await self.update_task_status(task_id, TaskStatus.CANCELLED)
+            if task_id in self.running_tasks:
+                del self.running_tasks[task_id]
         except Exception as e:
             logger.error(f"取消任务失败: {str(e)}")
             raise
             
     async def cleanup_expired_results(self):
-        """清理过期的结果数据"""
+        """清理过期的结果"""
         try:
             pattern = "result:*"
             await self.redis.delete_pattern(pattern)
-            logger.info("已清理过期的结果数据")
         except Exception as e:
             logger.error(f"清理过期结果失败: {str(e)}")
             raise
@@ -273,7 +261,6 @@ class TaskQueue:
         while True:
             try:
                 await self.cleanup_expired_results()
-                await asyncio.sleep(settings.TASK_QUEUE.cleanup_interval)
             except Exception as e:
-                logger.error(f"清理任务执行失败: {str(e)}")
-                await asyncio.sleep(60)  # 出错后等待1分钟再试 
+                logger.error(f"执行清理任务失败: {str(e)}")
+            await asyncio.sleep(settings.TASK_QUEUE_CLEANUP_INTERVAL) 

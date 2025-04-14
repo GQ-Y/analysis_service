@@ -1,49 +1,254 @@
 """
 任务管理器
-负责创建、获取和管理分析任务
+管理分析任务的生命周期和状态
 """
 import os
-import uuid
 import time
-from typing import Dict, List, Any, Optional
-from threading import Lock
-
-from shared.utils.logger import setup_logger
+import uuid
+import json
+from typing import Dict, Any, List, Optional, Union
+from datetime import datetime
+from enum import Enum
+import asyncio
+import threading
 from core.config import settings
+from shared.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+class TaskStatus(str, Enum):
+    """任务状态枚举"""
+    PENDING = "pending"       # 等待处理
+    PROCESSING = "processing" # 处理中
+    COMPLETED = "completed"   # 已完成
+    FAILED = "failed"        # 失败
+    CANCELLED = "cancelled"  # 已取消
+    STOPPING = "stopping"    # 停止中
+    STOPPED = "stopped"      # 已停止
+
 class TaskManager:
-    """任务管理器单例类"""
-    
-    _instance = None
-    _lock = Lock()
-    
-    @classmethod
-    def get_instance(cls):
-        """获取单例实例"""
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = TaskManager()
-        return cls._instance
+    """任务管理器"""
     
     def __init__(self):
         """初始化任务管理器"""
-        # 确保不直接实例化
-        if TaskManager._instance is not None:
-            raise RuntimeError("请使用 get_instance() 方法获取 TaskManager 实例")
-            
-        self.tasks = {}  # 任务字典 {task_id: task_info}
-        self.task_lock = Lock()  # 用于保护任务字典的锁
+        self.tasks = {}
+        self.output_dir = settings.OUTPUT_SAVE_DIR
+        self.max_tasks = settings.TASK_QUEUE_MAX_CONCURRENT
+        self.task_timeout = settings.TASK_QUEUE_RESULT_TTL
+        self.cleanup_interval = settings.TASK_QUEUE_CLEANUP_INTERVAL
+        self.last_cleanup = time.time()
         
         # 确保输出目录存在
-        self.output_dir = settings.OUTPUT.save_dir
         os.makedirs(self.output_dir, exist_ok=True)
-        os.makedirs(f"{self.output_dir}/images", exist_ok=True)
-        os.makedirs(f"{self.output_dir}/videos", exist_ok=True)
         
-        logger.info("任务管理器已初始化")
+        # 启动清理线程
+        self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        self.cleanup_thread.start()
         
+        logger.info(f"任务管理器初始化完成，最大任务数: {self.max_tasks}")
+        
+    def _cleanup_loop(self):
+        """清理过期任务的循环"""
+        while True:
+            try:
+                self.cleanup_tasks()
+                time.sleep(self.cleanup_interval)
+            except Exception as e:
+                logger.error(f"清理任务失败: {str(e)}")
+                time.sleep(60)  # 出错时等待1分钟再重试
+                
+    def cleanup_tasks(self):
+        """清理过期任务"""
+        try:
+            current_time = time.time()
+            
+            # 检查是否需要清理
+            if current_time - self.last_cleanup < self.cleanup_interval:
+                return
+                
+            expired_tasks = []
+            for task_id, task in self.tasks.items():
+                # 检查任务是否过期
+                if current_time - task["created_at"] > self.task_timeout:
+                    expired_tasks.append(task_id)
+                    
+            # 删除过期任务
+            for task_id in expired_tasks:
+                del self.tasks[task_id]
+                logger.info(f"清理过期任务: {task_id}")
+                
+            self.last_cleanup = current_time
+            
+        except Exception as e:
+            logger.error(f"清理任务失败: {str(e)}")
+            
+    def add_task(self, task_id: str, task_data: Dict[str, Any]) -> bool:
+        """
+        添加新任务
+        
+        Args:
+            task_id: 任务ID
+            task_data: 任务数据
+            
+        Returns:
+            bool: 是否添加成功
+        """
+        try:
+            if len(self.tasks) >= self.max_tasks:
+                logger.warning(f"达到最大任务数限制 ({self.max_tasks})")
+                return False
+                
+            if task_id in self.tasks:
+                logger.warning(f"任务ID已存在: {task_id}")
+                return False
+                
+            # 添加任务
+            self.tasks[task_id] = {
+                "id": task_id,
+                "data": task_data,
+                "status": TaskStatus.PENDING,
+                "created_at": time.time(),
+                "updated_at": time.time(),
+                "result": None,
+                "error": None
+            }
+            
+            logger.info(f"添加新任务: {task_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"添加任务失败: {str(e)}")
+            return False
+            
+    def update_task_status(self, task_id: str, status: TaskStatus, result: Dict = None, error: str = None) -> bool:
+        """
+        更新任务状态
+        
+        Args:
+            task_id: 任务ID
+            status: 新状态
+            result: 任务结果
+            error: 错误信息
+            
+        Returns:
+            bool: 是否更新成功
+        """
+        try:
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return False
+                
+            self.tasks[task_id].update({
+                "status": status,
+                "updated_at": time.time(),
+                "result": result,
+                "error": error
+            })
+            
+            logger.info(f"更新任务状态: {task_id} -> {status}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新任务状态失败: {str(e)}")
+            return False
+            
+    def get_task_status(self, task_id: str) -> Dict:
+        """
+        获取任务状态
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Dict: 任务状态信息
+        """
+        try:
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return None
+                
+            return self.tasks[task_id]
+            
+        except Exception as e:
+            logger.error(f"获取任务状态失败: {str(e)}")
+            return None
+            
+    def get_all_tasks(self) -> List[Dict]:
+        """
+        获取所有任务
+        
+        Returns:
+            List[Dict]: 任务列表
+        """
+        return list(self.tasks.values())
+        
+    def remove_task(self, task_id: str) -> bool:
+        """
+        移除任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            bool: 是否移除成功
+        """
+        try:
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return False
+                
+            del self.tasks[task_id]
+            logger.info(f"移除任务: {task_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"移除任务失败: {str(e)}")
+            return False
+            
+    def clear_tasks(self):
+        """清空所有任务"""
+        try:
+            self.tasks.clear()
+            logger.info("清空所有任务")
+        except Exception as e:
+            logger.error(f"清空任务失败: {str(e)}")
+            
+    def get_task_count(self) -> int:
+        """
+        获取当前任务数量
+        
+        Returns:
+            int: 任务数量
+        """
+        return len(self.tasks)
+        
+    def get_active_tasks(self) -> List[Dict]:
+        """
+        获取活跃任务列表
+        
+        Returns:
+            List[Dict]: 活跃任务列表
+        """
+        return [task for task in self.tasks.values() if task["status"] == TaskStatus.PROCESSING]
+        
+    def get_completed_tasks(self) -> List[Dict]:
+        """
+        获取已完成任务列表
+        
+        Returns:
+            List[Dict]: 已完成任务列表
+        """
+        return [task for task in self.tasks.values() if task["status"] == TaskStatus.COMPLETED]
+        
+    def get_failed_tasks(self) -> List[Dict]:
+        """
+        获取失败任务列表
+        
+        Returns:
+            List[Dict]: 失败任务列表
+        """
+        return [task for task in self.tasks.values() if task["status"] == TaskStatus.FAILED]
+
     def create_task(self, task_type: str, params: Dict[str, Any], protocol: str = "http") -> str:
         """
         创建新任务

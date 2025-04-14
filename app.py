@@ -23,7 +23,7 @@ import GPUtil
 logger = setup_logger(__name__)
 
 # 关闭 uvicorn 和 fastapi 的访问日志
-if not settings.DEBUG:
+if not settings.DEBUG_ENABLED:
     logging.getLogger("uvicorn.access").setLevel(logging.ERROR)
     logging.getLogger("fastapi").setLevel(logging.ERROR)
 
@@ -39,13 +39,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         
         try:
             # 只在调试模式下记录请求开始信息
-            if settings.DEBUG:
+            if settings.DEBUG_ENABLED:
                 logger.info(f"请求开始: {request_id} - {request.method} {request.url.path}")
             
             response = await call_next(request)
             
             # 只在调试模式下记录响应信息
-            if settings.DEBUG:
+            if settings.DEBUG_ENABLED:
                 process_time = (time.time() - start_time) * 1000
                 logger.info(
                     f"请求完成: {request_id} - {request.method} {request.url.path} "
@@ -82,10 +82,10 @@ app = FastAPI(
     docs_url="/api/v1/docs",
     redoc_url="/api/v1/redoc",
     openapi_url="/api/v1/openapi.json",
-    debug=settings.DEBUG
+    debug=settings.DEBUG_ENABLED
 )
 
-# 添加中间件
+# 配置CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -98,7 +98,7 @@ app.add_middleware(
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 只在调试模式下添加请求日志中间件
-if settings.DEBUG:
+if settings.DEBUG_ENABLED:
     app.add_middleware(RequestLoggingMiddleware)
 
 # 注册路由
@@ -127,7 +127,7 @@ async def analysis_exception_handler(request: Request, exc: AnalysisException):
 async def global_exception_handler(request: Request, exc: Exception):
     """全局异常处理器"""
     error_msg = f"请求处理失败: {str(exc)}"
-    if settings.DEBUG:
+    if settings.DEBUG_ENABLED:
         logger.exception(error_msg)
     else:
         logger.error(error_msg)
@@ -197,15 +197,15 @@ async def startup_event():
     show_service_banner("analysis_service")
     logger.info("Starting Analysis Service...")
     
-    if settings.DEBUG.enabled:
+    if settings.DEBUG_ENABLED:
         logger.info("分析服务启动...")
         logger.info(f"环境: {settings.ENVIRONMENT}")
-        logger.info(f"调试模式: {settings.DEBUG.enabled}")
+        logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
         logger.info(f"版本: {settings.VERSION}")
         logger.info(f"注册的路由: {[route.path for route in app.routes]}")
     
     # 根据配置初始化通信模式
-    if settings.COMMUNICATION.mode.lower() == "mqtt":
+    if settings.COMMUNICATION_MODE.lower() == "mqtt":
         logger.info("使用MQTT通信模式，正在初始化MQTT客户端...")
         try:
             from services.mqtt_client import get_mqtt_client
@@ -213,11 +213,11 @@ async def startup_event():
             
             # 记录MQTT配置信息
             mqtt_config = {
-                "broker_host": settings.MQTT.broker_host,
-                "broker_port": settings.MQTT.broker_port,
-                "username": settings.MQTT.username,
-                "password": "******" if settings.MQTT.password else None,
-                "topic_prefix": settings.MQTT.topic_prefix
+                "broker_host": settings.MQTT_BROKER_HOST,
+                "broker_port": settings.MQTT_BROKER_PORT,
+                "username": settings.MQTT_USERNAME,
+                "password": "******" if settings.MQTT_PASSWORD else None,
+                "topic_prefix": settings.MQTT_TOPIC_PREFIX
             }
             logger.info(f"MQTT配置: {mqtt_config}")
             
@@ -251,7 +251,7 @@ async def startup_event():
 async def shutdown_event():
     """关闭事件"""
     # 关闭MQTT客户端
-    if settings.COMMUNICATION.mode.lower() == "mqtt":
+    if settings.COMMUNICATION_MODE.lower() == "mqtt":
         try:
             if hasattr(app.state, "analyzer_service") and hasattr(app.state.analyzer_service, "mqtt_client"):
                 mqtt_client = app.state.analyzer_service.mqtt_client
@@ -264,13 +264,13 @@ async def shutdown_event():
         except Exception as e:
             logger.error(f"关闭MQTT客户端失败: {str(e)}")
     
-    if settings.DEBUG:
+    if settings.DEBUG_ENABLED:
         logger.info("分析服务关闭...")
 
 if __name__ == "__main__":
     uvicorn.run(
         "app:app",
-        host=settings.SERVICE.host,
-        port=settings.SERVICE.port,
-        reload=settings.DEBUG.enabled
+        host=settings.SERVICES_HOST,
+        port=settings.SERVICES_PORT,
+        reload=settings.DEBUG_ENABLED
     )

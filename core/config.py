@@ -23,9 +23,15 @@ class AnalysisServiceConfig(BaseSettings):
     
     # 基础信息
     PROJECT_NAME: str = "MeekYolo Analysis Service"
-    VERSION: str = "1.0.0"
+    VERSION: str = "2.0.0"
     ENVIRONMENT: str = "development"  # 环境: development, production, testing
-    DEBUG: DebugConfig = DebugConfig()  # 调试配置
+    
+    # 调试配置
+    DEBUG_ENABLED: bool = True
+    DEBUG_LOG_LEVEL: str = "DEBUG"
+    DEBUG_LOG_FILE: str = "logs/debug.log"
+    DEBUG_LOG_ROTATION: str = "1 day"
+    DEBUG_LOG_RETENTION: str = "7 days"
     
     # CORS配置
     CORS_ORIGINS: List[str] = ["*"]
@@ -33,170 +39,110 @@ class AnalysisServiceConfig(BaseSettings):
     CORS_ALLOW_METHODS: List[str] = ["*"]
     CORS_ALLOW_HEADERS: List[str] = ["*"]
     
-    # 通信模式配置
-    class CommunicationConfig(BaseModel):
-        mode: str = "http"  # http 或 mqtt
+    # 服务配置
+    SERVICES_HOST: str = "0.0.0.0"
+    SERVICES_PORT: int = 8002
+    
+    # 通信配置
+    COMMUNICATION_MODE: str = "mqtt"
     
     # MQTT配置
-    class MQTTConfig(BaseModel):
-        broker_host: str = "mqtt.yingzhu.net"
-        broker_port: int = 1883
-        username: str = "yolo"
-        password: str = "yolo"
-        topic_prefix: str = "meek/"
-        qos: int = 1
-        keepalive: int = 60
-        reconnect_interval: int = 5
-        node_id: str = ""  # 节点ID，留空自动使用MAC地址
-        service_type: str = "analysis"  # 节点类型
+    MQTT_BROKER_HOST: str = "mqtt.yingzhu.net"
+    MQTT_BROKER_PORT: int = 1883
+    MQTT_USERNAME: str = "yolo"
+    MQTT_PASSWORD: str = "yolo"
+    MQTT_TOPIC_PREFIX: str = "meek/"
+    MQTT_QOS: int = 1
+    MQTT_KEEPALIVE: int = 60
+    MQTT_RECONNECT_INTERVAL: int = 5
+    MQTT_NODE_ID: str = ""
+    MQTT_SERVICE_TYPE: str = "analysis"
     
     # Redis配置
-    class RedisConfig(BaseModel):
-        host: str = "localhost"
-        port: int = 6379
-        password: str = "123456"
-        db: int = 0
-        max_connections: int = 50
-        socket_timeout: int = 5
-        retry_on_timeout: bool = True
-        
-        # 任务队列配置
-        task_queue_key: str = "analysis:task:queue"
-        task_hash_key: str = "analysis:task:hash"
-        task_result_key: str = "analysis:task:result"
-        task_status_key: str = "analysis:task:status"
-        task_callback_key: str = "analysis:task:callback"
-        
-        # 键过期时间（秒）
-        task_expire: int = 86400  # 24小时
-        result_expire: int = 3600  # 1小时
-        callback_expire: int = 1800  # 30分钟
-    
-    # 任务队列配置
-    class TaskQueueConfig(BaseModel):
-        max_concurrent: int = 30  # 最大并发任务数
-        max_retries: int = 3  # 最大重试次数
-        retry_delay: int = 5  # 重试延迟（秒）
-        cleanup_interval: int = 300  # 清理间隔（秒）
-        task_timeout: int = 3600  # 任务超时时间（秒）
-        batch_size: int = 10  # 批处理大小
-        result_ttl: int = 3600  # 结果保存时间（秒）
-    
-    # 服务配置
-    class ServiceConfig(BaseModel):
-        host: str = "0.0.0.0"
-        port: int = 8002
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_PASSWORD: str = "123456"
+    REDIS_DB: int = 0
+    REDIS_MAX_CONNECTIONS: int = 50
+    REDIS_SOCKET_TIMEOUT: int = 5
+    REDIS_RETRY_ON_TIMEOUT: bool = True
     
     # 模型服务配置
-    class ModelServiceConfig(BaseModel):
-        url: str = "http://localhost:8003"
-        api_prefix: str = "/api/v1"
+    MODEL_SERVICE_URL: str = "http://localhost:8003"
+    MODEL_SERVICE_API_PREFIX: str = "/api/v1"
     
     # 分析配置
-    class AnalysisConfig(BaseModel):
-        confidence: float = 0.1
-        iou: float = 0.45
-        max_det: int = 300
-        device: str = "auto"
-        analyze_interval: int = 1
-        alarm_interval: int = 60
-        random_interval: List[int] = [0, 0]
-        push_interval: int = 1
+    ANALYSIS_CONFIDENCE: float = 0.2
+    ANALYSIS_IOU: float = 0.45
+    ANALYSIS_MAX_DET: int = 300
+    ANALYSIS_DEVICE: str = "auto"
+    ANALYSIS_ANALYZE_INTERVAL: int = 1
+    ANALYSIS_ALARM_INTERVAL: int = 60
+    ANALYSIS_RANDOM_INTERVAL_MIN: int = 0
+    ANALYSIS_RANDOM_INTERVAL_MAX: int = 0
+    ANALYSIS_PUSH_INTERVAL: int = 1
     
     # 存储配置
-    class StorageConfig(BaseModel):
-        base_dir: str = "data"
-        model_dir: str = "models"
-        temp_dir: str = "temp"
-        max_size: int = 1073741824  # 1GB
-        
-        model_config = {"protected_namespaces": ()}
-
+    STORAGE_BASE_DIR: str = "data"
+    STORAGE_MODEL_DIR: str = "models"
+    STORAGE_TEMP_DIR: str = "temp"
+    STORAGE_MAX_SIZE: int = 10737418240
+    
     # 输出配置
-    class OutputConfig(BaseModel):
-        save_dir: str = "results"
-        save_txt: bool = False
-        save_img: bool = True
-        return_base64: bool = True
+    OUTPUT_SAVE_DIR: str = "results"
+    OUTPUT_SAVE_TXT: bool = False
+    OUTPUT_SAVE_IMG: bool = True
+    OUTPUT_RETURN_BASE64: bool = True
+    
+    # 任务队列配置
+    TASK_QUEUE_MAX_CONCURRENT: int = 30
+    TASK_QUEUE_MAX_RETRIES: int = 3
+    TASK_QUEUE_RETRY_DELAY: int = 5
+    TASK_QUEUE_RESULT_TTL: int = 7200
+    TASK_QUEUE_CLEANUP_INTERVAL: int = 3600
+    
+    # Redis任务队列键配置
+    REDIS_TASK_QUEUE_KEY: str = "analysis:task:queue"
+    REDIS_TASK_HASH_KEY: str = "analysis:task:hash"
+    REDIS_TASK_RESULT_KEY: str = "analysis:task:result"
+    REDIS_TASK_STATUS_KEY: str = "analysis:task:status"
+    REDIS_TASK_CALLBACK_KEY: str = "analysis:task:callback"
+    REDIS_TASK_EXPIRE: int = 86400
+    REDIS_RESULT_EXPIRE: int = 3600
+    REDIS_CALLBACK_EXPIRE: int = 1800
     
     # 服务发现配置
-    class DiscoveryConfig(BaseModel):
-        interval: int = 30
-        timeout: int = 5
-        retry: int = 3
+    DISCOVERY_INTERVAL: int = 30
+    DISCOVERY_TIMEOUT: int = 5
+    DISCOVERY_RETRY: int = 3
     
-    # 服务配置
-    class ServicesConfig(BaseModel):
-        host: str = "0.0.0.0"
-        port: int = 8002
+    # Streaming配置
+    STREAMING_RECONNECT_ATTEMPTS: int = 5
+    STREAMING_RECONNECT_DELAY: int = 3
+    STREAMING_READ_TIMEOUT: int = 15
+    STREAMING_CONNECT_TIMEOUT: int = 10
+    STREAMING_MAX_CONSECUTIVE_ERRORS: int = 10
+    STREAMING_FRAME_BUFFER_SIZE: int = 10
+    STREAMING_LOG_LEVEL: str = "INFO"
     
-    # 配置实例
-    SERVICE: ServiceConfig = ServiceConfig()
-    MODEL_SERVICE: ModelServiceConfig = ModelServiceConfig()
-    ANALYSIS: AnalysisConfig = AnalysisConfig()
-    STORAGE: StorageConfig = StorageConfig()
-    OUTPUT: OutputConfig = OutputConfig()
-    DISCOVERY: DiscoveryConfig = DiscoveryConfig()
-    SERVICES: ServicesConfig = ServicesConfig()
-    REDIS: RedisConfig = RedisConfig()
-    TASK_QUEUE: TaskQueueConfig = TaskQueueConfig()
-    COMMUNICATION: CommunicationConfig = CommunicationConfig()
-    MQTT: MQTTConfig = MQTTConfig()
-    
-    # --- 新增 Streaming 配置节 --- 
-    class StreamingConfig(BaseModel):
-        """流处理相关配置"""
-        reconnect_attempts: int = 5          # 流断开时最大重连尝试次数
-        reconnect_delay: int = 3             # 重连之间的基础延迟（秒），会指数增长
-        read_timeout: int = 15               # 从流读取帧的超时时间（秒）
-        connect_timeout: int = 10            # 连接流的超时时间（秒）
-        max_consecutive_errors: int = 10     # 连续错误达到多少次后标记为永久错误
-        frame_buffer_size: int = 10          # 每个订阅者的帧缓冲队列大小
-        log_level: str = "INFO"              # StreamManager 的日志级别
+    class Config:
+        env_file = ".env"
+        case_sensitive = True
+        extra = "allow"
 
-    STREAMING: StreamingConfig = StreamingConfig()
-    # ---------------------------
-    
-    model_config = {
-        "env_file": ".env",
-        "case_sensitive": True,
-        "extra": "allow"  # 允许额外的字段
-    }
-    
-    @classmethod
-    def load_config(cls) -> "AnalysisServiceConfig":
-        """加载配置"""
-        try:
-            config = {}
-            
-            # 获取配置文件路径
-            if "CONFIG_PATH" in os.environ:
-                config_path = os.environ["CONFIG_PATH"]
-            else:
-                current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                config_path = os.path.join(current_dir, "config", "config.yaml")
-            
-            logger.debug(f"正在从以下路径加载配置: {config_path}")
-            
-            if os.path.exists(config_path):
-                logger.debug(f"配置文件存在: {config_path}")
-                with open(config_path, "r", encoding="utf-8") as f:
-                    config_content = f.read()
-                    logger.debug(f"配置文件内容:\n{config_content}")
-                    config.update(yaml.safe_load(config_content))
-            else:
-                logger.warning(f"配置文件未找到: {config_path}, 使用默认值")
-            
-            logger.debug(f"最终配置字典: {config}")
-            return cls(**config)
-            
-        except Exception as e:
-            logger.error(f"加载配置失败: {str(e)}")
-            raise
+    def get_debug_config(self) -> DebugConfig:
+        """获取调试配置"""
+        return DebugConfig(
+            enabled=self.DEBUG_ENABLED,
+            log_level=self.DEBUG_LOG_LEVEL,
+            log_file=self.DEBUG_LOG_FILE,
+            log_rotation=self.DEBUG_LOG_ROTATION,
+            log_retention=self.DEBUG_LOG_RETENTION
+        )
 
 # 加载配置
 try:
-    settings = AnalysisServiceConfig.load_config()
+    settings = AnalysisServiceConfig()
     logger.debug(f"配置加载成功: {settings}")
 except Exception as e:
     logger.error(f"加载配置失败: {str(e)}")

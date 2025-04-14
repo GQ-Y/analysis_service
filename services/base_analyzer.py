@@ -10,6 +10,7 @@ import uuid
 import numpy as np
 import cv2
 from typing import Dict, Any, List, Optional, Union
+from datetime import datetime
 
 # 添加父级目录到sys.path以允许导入core模块
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -36,15 +37,26 @@ class BaseAnalyzerService:
         # 确保输出目录存在
         self._ensure_output_dirs()
         
+        # 初始化任务处理器
+        self.task_handlers = {}
+        
         logger.info("基础分析服务初始化完成")
     
     def _ensure_output_dirs(self):
         """确保输出目录存在"""
-        os.makedirs(settings.OUTPUT.save_dir, exist_ok=True)
-        os.makedirs(f"{settings.OUTPUT.save_dir}/images", exist_ok=True)
-        os.makedirs(f"{settings.OUTPUT.save_dir}/videos", exist_ok=True)
-        os.makedirs(f"{settings.OUTPUT.save_dir}/streams", exist_ok=True)
-        logger.debug("输出目录已确保存在")
+        try:
+            # 创建结果保存目录
+            os.makedirs(settings.OUTPUT_SAVE_DIR, exist_ok=True)
+            
+            # 创建临时文件目录
+            os.makedirs(settings.STORAGE_TEMP_DIR, exist_ok=True)
+            
+            # 创建模型目录
+            os.makedirs(settings.STORAGE_MODEL_DIR, exist_ok=True)
+            
+        except Exception as e:
+            logger.error(f"创建目录失败: {str(e)}")
+            raise
     
     def get_detector(self, model_code: str) -> YOLODetector:
         """
@@ -290,3 +302,74 @@ class BaseAnalyzerService:
             import traceback
             logger.error(traceback.format_exc())
             return [] 
+
+    def register_task_handler(self, task_type: str, handler: callable):
+        """
+        注册任务处理器
+        
+        Args:
+            task_type: 任务类型
+            handler: 处理函数
+        """
+        self.task_handlers[task_type] = handler
+        logger.info(f"注册任务处理器: {task_type}")
+        
+    async def process_task(self, task_type: str, task_id: str, task_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        处理任务
+        
+        Args:
+            task_type: 任务类型
+            task_id: 任务ID
+            task_data: 任务数据
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        try:
+            # 获取任务处理器
+            handler = self.task_handlers.get(task_type)
+            if not handler:
+                raise ValueError(f"未找到任务处理器: {task_type}")
+                
+            # 执行任务处理
+            logger.info(f"开始处理任务: {task_id}, 类型: {task_type}")
+            result = await handler(task_id, task_data)
+            logger.info(f"任务处理完成: {task_id}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"处理任务失败: {task_id}, 错误: {str(e)}")
+            raise
+            
+    async def connect(self) -> bool:
+        """
+        连接到服务
+        
+        Returns:
+            bool: 是否连接成功
+        """
+        return True
+        
+    async def disconnect(self) -> bool:
+        """
+        断开服务连接
+        
+        Returns:
+            bool: 是否断开成功
+        """
+        return True
+        
+    def get_service_info(self) -> Dict[str, Any]:
+        """
+        获取服务信息
+        
+        Returns:
+            Dict[str, Any]: 服务信息
+        """
+        return {
+            "name": "base_analyzer",
+            "version": settings.VERSION,
+            "environment": settings.ENVIRONMENT
+        } 

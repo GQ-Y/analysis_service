@@ -64,11 +64,11 @@ def get_mqtt_client() -> 'MQTTClient':
                 
                 # 使用socket.gethostname()作为device_id
                 device_id = socket.gethostname()
-                broker_host = settings.MQTT.broker_host
-                broker_port = settings.MQTT.broker_port
-                username = settings.MQTT.username
-                password = settings.MQTT.password
-                topic_prefix = settings.MQTT.topic_prefix
+                broker_host = settings.MQTT_BROKER_HOST
+                broker_port = settings.MQTT_BROKER_PORT
+                username = settings.MQTT_USERNAME
+                password = settings.MQTT_PASSWORD
+                topic_prefix = settings.MQTT_TOPIC_PREFIX
                 
                 logger.info(f"创建MQTT客户端实例: {client_id}")
                 
@@ -202,23 +202,72 @@ class MQTTClient:
         logger.info(f"启动MQTT客户端: {self.client_id}")
         
         # 连接MQTT代理服务器
-        if not self.connect():
-            logger.error("MQTT客户端连接失败，无法启动")
+        try:
+            # 使用同步方式连接
+            self.client.connect(self.broker_host, self.broker_port, keepalive=60)
+            self.client.loop_start()
+            
+            # 等待连接确认
+            for _ in range(10):  # 等待最多5秒
+                if self.is_connected:
+                    break
+                time.sleep(0.5)
+                
+            if not self.is_connected:
+                logger.error("MQTT连接超时")
+                return False
+                
+            # 订阅主题
+            self._subscribe_topics()
+            
+            # 启动心跳线程
+            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+            self.heartbeat_thread.start()
+            
+            # 标记为运行中
+            self.is_running = True
+            self.stop_event.clear()
+            
+            logger.info("MQTT客户端已启动")
+            return True
+            
+        except Exception as e:
+            logger.error(f"启动MQTT客户端失败: {str(e)}")
             return False
             
-        # 订阅主题
-        self._subscribe_topics()
+    async def async_start(self) -> bool:
+        """
+        异步启动MQTT客户端
         
-        # 启动心跳线程
-        self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
-        self.heartbeat_thread.start()
+        Returns:
+            bool: 是否成功启动
+        """
+        if self.is_running:
+            logger.info("MQTT客户端已经在运行")
+            return True
+            
+        logger.info(f"异步启动MQTT客户端: {self.client_id}")
         
-        # 标记为运行中
-        self.is_running = True
-        self.stop_event.clear()
-        
-        logger.info("MQTT客户端已启动")
-        return True
+        try:
+            # 连接MQTT代理服务器
+            await self.connect()
+            
+            # 启动心跳线程
+            self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+            self.heartbeat_thread.start()
+            
+            # 标记为运行中
+            self.is_running = True
+            self.stop_event.clear()
+            
+            logger.info("MQTT客户端已异步启动")
+            return True
+            
+        except Exception as e:
+            logger.error(f"异步启动MQTT客户端失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
         
     def stop(self) -> bool:
         """
@@ -253,91 +302,99 @@ class MQTTClient:
         logger.info("MQTT客户端已停止")
         return True
         
-    def connect(self) -> bool:
-        """
-        连接到MQTT代理服务器。如果重试次数用尽依然无法连接，则返回False。
-        
-        Returns:
-            bool: 是否成功连接
-        """
-        # 检查是否已连接
-        if self.is_connected:
-            logger.info("MQTT客户端已连接")
-            return True
+    async def connect(self):
+        """连接到MQTT代理"""
+        try:
+            broker_host = settings.MQTT_BROKER_HOST
+            broker_port = settings.MQTT_BROKER_PORT
+            username = settings.MQTT_USERNAME
+            password = settings.MQTT_PASSWORD
+            topic_prefix = settings.MQTT_TOPIC_PREFIX
+
+            # 检查是否已连接
+            if self.is_connected:
+                logger.info("MQTT客户端已连接")
+                return True
             
-        logger.info(f"连接到MQTT代理服务器: {self.broker_host}:{self.broker_port}")
-        
-        # 设置连接回调
-        self.client.on_connect = self._on_connect
-        self.client.on_message = self._on_message
-        self.client.on_disconnect = self._on_disconnect
-        
-        # 设置遗嘱消息
-        if self.topic_prefix and self.client_id:
-            will_topic = f"{self.topic_prefix}connection"
-            will_payload = json.dumps({
-                "message_type": "connection",
-                "status": "offline",
-                "mac_address": self.mac_address,
-                "node_id": self.node_id,
-                "mqtt_node_id": self.node_id,
-                "node_type": "analysis",  # 分析节点类型
-                "client_id": self.client_id,  # 添加客户端ID
-                "service_type": "analysis",  # 添加服务类型
-                "is_active": False,  # 离线状态
-                "max_tasks": 100,  # 最大任务数
-                "timestamp": int(time.time()),
-                "metadata": {
-                    "version": settings.VERSION,
-                    "hostname": platform.node(),
-                    "is_active": False  # 离线状态
-                }
-            })
-            logger.info(f"设置遗嘱消息: {will_topic}")
-            self.client.will_set(will_topic, will_payload, qos=1, retain=True)
-        
-        # 尝试连接
-        max_retries = 3
-        retry_delay = 1
-        
-        for retry in range(max_retries):
-            try:
-                logger.info(f"尝试连接MQTT代理服务器 (重试 {retry+1}/{max_retries})...")
-                self.client.connect(self.broker_host, self.broker_port, keepalive=60)
-                
-                # 启动网络循环
-                self.client.loop_start()
-                
-                # 等待连接确认
-                for i in range(10):  # 等待最多5秒
-                    if self.is_connected:
-                        logger.info(f"MQTT客户端连接成功: {self.broker_host}:{self.broker_port}")
-                        
-                        # 发布一次上线状态
-                        self._publish_connection_status(True)
-                        
-                        return True
-                    time.sleep(0.5)
-                    if i % 2 == 0:
-                        logger.debug(f"等待MQTT连接确认... ({i/2+0.5}秒)")
+            logger.info(f"连接到MQTT代理服务器: {self.broker_host}:{self.broker_port}")
+            
+            # 设置连接回调
+            self.client.on_connect = self._on_connect
+            self.client.on_message = self._on_message
+            self.client.on_disconnect = self._on_disconnect
+            
+            # 设置遗嘱消息
+            if self.topic_prefix and self.client_id:
+                will_topic = f"{self.topic_prefix}connection"
+                will_payload = json.dumps({
+                    "message_type": "connection",
+                    "status": "offline",
+                    "mac_address": self.mac_address,
+                    "node_id": self.node_id,
+                    "mqtt_node_id": self.node_id,
+                    "node_type": "analysis",  # 分析节点类型
+                    "client_id": self.client_id,  # 添加客户端ID
+                    "service_type": "analysis",  # 添加服务类型
+                    "is_active": False,  # 离线状态
+                    "max_tasks": 100,  # 最大任务数
+                    "timestamp": int(time.time()),
+                    "metadata": {
+                        "version": settings.VERSION,
+                        "hostname": platform.node(),
+                        "is_active": False  # 离线状态
+                    }
+                })
+                logger.info(f"设置遗嘱消息: {will_topic}")
+                self.client.will_set(will_topic, will_payload, qos=1, retain=True)
+            
+            # 尝试连接
+            max_retries = 3
+            retry_delay = 1
+            
+            for retry in range(max_retries):
+                try:
+                    logger.info(f"尝试连接MQTT代理服务器 (重试 {retry+1}/{max_retries})...")
+                    self.client.connect(self.broker_host, self.broker_port, keepalive=60)
                     
-                # 连接超时
-                logger.warning(f"MQTT连接超时，已等待5秒")
-                self.client.loop_stop()
+                    # 启动网络循环
+                    self.client.loop_start()
+                    
+                    # 等待连接确认
+                    for i in range(10):  # 等待最多5秒
+                        if self.is_connected:
+                            logger.info(f"MQTT客户端连接成功: {self.broker_host}:{self.broker_port}")
+                            
+                            # 发布一次上线状态
+                            self._publish_connection_status(True)
+                            
+                            return True
+                        time.sleep(0.5)
+                        if i % 2 == 0:
+                            logger.debug(f"等待MQTT连接确认... ({i/2+0.5}秒)")
+                        
+                    # 连接超时
+                    logger.warning(f"MQTT连接超时，已等待5秒")
+                    self.client.loop_stop()
+                    
+                except Exception as e:
+                    logger.error(f"连接MQTT代理服务器失败: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    
+                # 等待重试
+                if retry < max_retries - 1:
+                    logger.info(f"等待 {retry_delay} 秒后重试MQTT连接...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 指数退避
                 
-            except Exception as e:
-                logger.error(f"连接MQTT代理服务器失败: {str(e)}")
-                import traceback
-                logger.error(traceback.format_exc())
-                
-            # 等待重试
-            if retry < max_retries - 1:
-                logger.info(f"等待 {retry_delay} 秒后重试MQTT连接...")
-                time.sleep(retry_delay)
-                retry_delay *= 2  # 指数退避
-                
-        logger.error(f"连接MQTT代理服务器失败，已尝试 {max_retries} 次")
-        return False
+            logger.error(f"连接MQTT代理服务器失败，已尝试 {max_retries} 次")
+            return False
+        
+        except Exception as e:
+            logger.error(f"连接MQTT代理服务器失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
         
     def _on_connect(self, client, userdata, flags, rc):
         """
@@ -1291,17 +1348,17 @@ class MQTTClient:
                 "service_type": "analysis",  # 添加服务类型
                 "timestamp": int(time.time()),
                 "is_active": True,  # 添加到顶层
-                "max_tasks": 100,  # 添加到顶层
+                "max_tasks": settings.TASK_QUEUE_MAX_CONCURRENT,  # 添加到顶层
                 "metadata": {
                     "version": settings.VERSION,
                     "ip": self._get_local_ip(),
-                    "port": settings.SERVICES.port,
+                    "port": settings.SERVICES_PORT,
                     "hostname": platform.node(),
                     "is_active": True,
                     "capabilities": {
                         "models": models,
                         "gpu_available": len(gpu_info) > 0 and "error" not in gpu_info[0],
-                        "max_tasks": 100,
+                        "max_tasks": settings.TASK_QUEUE_MAX_CONCURRENT,
                         "cpu_cores": psutil.cpu_count(),
                         "memory": round(psutil.virtual_memory().total / (1024**3))
                     },
@@ -1333,10 +1390,9 @@ class MQTTClient:
         """获取本地可用的模型列表"""
         try:
             # 使用base_dir和model_dir组合成完整路径
-            model_dir = settings.STORAGE.model_dir
-            base_dir = settings.STORAGE.base_dir
+            model_dir = settings.STORAGE_MODEL_DIR
+            base_dir = settings.STORAGE_BASE_DIR
             complete_model_dir = os.path.join(base_dir, model_dir)
-            
             
             # 检查模型目录是否存在
             if not os.path.exists(complete_model_dir):
@@ -1391,7 +1447,7 @@ class MQTTClient:
             return "127.0.0.1"
 
     def _heartbeat_loop(self):
-        """心跳线程，定期发送连接状态"""
+        """MQTT心跳线程"""
         logger.info("启动MQTT心跳线程")
         last_resource_check = 0
         heartbeat_interval = 60  # 心跳间隔（秒）
@@ -1404,10 +1460,19 @@ class MQTTClient:
                 # 检查连接状态
                 if not self.is_connected:
                     logger.warning("MQTT客户端未连接，尝试重新连接...")
-                    if self.connect():
-                        logger.info("MQTT客户端重新连接成功")
-                    else:
-                        logger.error("MQTT客户端重新连接失败")
+                    try:
+                        # 使用同步方式重新连接
+                        self.client.reconnect()
+                        if self.is_connected:
+                            logger.info("MQTT客户端重新连接成功")
+                            # 重新订阅主题
+                            self._subscribe_topics()
+                        else:
+                            logger.error("MQTT客户端重新连接失败")
+                    except Exception as e:
+                        logger.error(f"重新连接失败: {str(e)}")
+                        time.sleep(5)  # 等待5秒后继续
+                        continue
                         
                 # 发送心跳
                 if self.is_connected:

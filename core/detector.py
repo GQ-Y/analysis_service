@@ -151,24 +151,24 @@ class YOLODetector:
         self.model = None
         self.current_model_code = None
         self.tracker: Optional[BaseTracker] = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() and settings.ANALYSIS.device != "cpu" else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() and settings.ANALYSIS_DEVICE != "cpu" else "cpu")
         
         # Redis相关
         self.redis = RedisManager()
         self.task_queue = TaskQueue()
         
         # 模型服务配置
-        self.model_service_url = settings.MODEL_SERVICE.url
-        self.api_prefix = settings.MODEL_SERVICE.api_prefix
+        self.model_service_url = settings.MODEL_SERVICE_URL
+        self.api_prefix = settings.MODEL_SERVICE_API_PREFIX
         
         # 默认配置
-        self.default_confidence = settings.ANALYSIS.confidence
-        self.default_iou = settings.ANALYSIS.iou
-        self.default_max_det = settings.ANALYSIS.max_det
+        self.default_confidence = settings.ANALYSIS_CONFIDENCE
+        self.default_iou = settings.ANALYSIS_IOU
+        self.default_max_det = settings.ANALYSIS_MAX_DET
         
         # 设置保存目录
         self.project_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.results_dir = self.project_root / settings.OUTPUT.save_dir
+        self.results_dir = self.project_root / settings.OUTPUT_SAVE_DIR
         
         # 确保结果目录存在
         os.makedirs(self.results_dir, exist_ok=True)
