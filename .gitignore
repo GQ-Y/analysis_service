@@ -5,3 +5,4 @@ requirements.lock
 data/*
 logs/*
 venv/*
+.env
