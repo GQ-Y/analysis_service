@@ -7,6 +7,7 @@ import json
 import time
 from typing import Dict, Any, Optional, Callable
 
+from .mqtt_printer import MQTTPrinter
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class BaseMQTTHandler:
     """
     def __init__(self):
         self.mqtt_manager = None
+        self.printer = MQTTPrinter()
         
     def set_mqtt_manager(self, mqtt_manager):
         """
@@ -50,6 +52,9 @@ class BaseMQTTHandler:
         if not self.mqtt_manager:
             logger.error("发布消息失败: MQTT管理器未设置")
             return False
+            
+        # 打印发送的消息
+        self.printer.print_message(topic, payload, "发送")
             
         return await self.mqtt_manager.publish_message(topic, payload, qos)
         
@@ -88,6 +93,7 @@ class MQTTMessageHandler(BaseMQTTHandler):
         """
         self.handlers[topic] = handler
         logger.info(f"已注册消息处理器: {topic}")
+        self.printer.print_subscription(topic, 0, "注册")
     
     async def handle_message(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
@@ -101,6 +107,9 @@ class MQTTMessageHandler(BaseMQTTHandler):
             Optional[Dict[str, Any]]: 处理结果
         """
         try:
+            # 打印接收到的消息
+            self.printer.print_message(topic, payload, "接收")
+            
             # 获取消息类型
             message_type = payload.get("message_type")
             if not message_type:
@@ -109,13 +118,22 @@ class MQTTMessageHandler(BaseMQTTHandler):
             
             # 根据消息类型选择处理器
             if message_type == MESSAGE_TYPE_CONNECTION:
+                # 打印连接状态
+                self.printer.print_connection_status(
+                    "成功" if payload.get("status") == 200 else "失败",
+                    f"处理连接消息: {payload.get('message', '')}"
+                )
                 # return await self.connection_handler.handle_message(topic, payload)
                 pass
             else:
                 # 尝试使用注册的处理器
                 handler = self.handlers.get(topic)
                 if handler:
-                    return await handler(topic, payload)
+                    result = await handler(topic, payload)
+                    # 打印处理结果
+                    if result:
+                        self.printer.print_message(topic, result, "处理结果")
+                    return result
                 else:
                     logger.warning(f"未找到对应的消息处理器: {topic}")
                     return None

@@ -84,7 +84,7 @@ class AnalysisServiceConfig(BaseSettings):
     MQTT_BROKER_PORT: int = 1883
     MQTT_USERNAME: str = "yolo"
     MQTT_PASSWORD: str = "yolo"
-    MQTT_TOPIC_PREFIX: str = "meek/"
+    MQTT_TOPIC_PREFIX: str = "meek"
     MQTT_QOS: int = 1
     MQTT_KEEPALIVE: int = 60
     MQTT_RECONNECT_INTERVAL: int = 5

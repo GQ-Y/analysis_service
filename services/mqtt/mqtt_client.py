@@ -13,6 +13,7 @@ from gmqtt.mqtt.constants import MQTTv311
 from core.config import settings
 from .mqtt_topic_manager import MQTTTopicManager, TOPIC_TYPE_CONNECTION
 from .handler.connection_handler import get_connection_handler
+from .mqtt_printer import MQTTPrinter
 from shared.utils.tools import get_mac_address
 
 # 配置日志
@@ -36,6 +37,9 @@ class MQTTClient:
         self.connected = False
         self.topic_manager = MQTTTopicManager(topic_prefix=settings.MQTT_TOPIC_PREFIX)
         self.connection_handler = get_connection_handler()
+        self.printer = MQTTPrinter()
+        
+        self.connection_handler.set_mqtt_manager(self)
         
         # 连接参数
         self.host = settings.MQTT_BROKER_HOST
@@ -74,6 +78,7 @@ class MQTTClient:
         if rc == 0:
             self.connected = True
             logger.info("MQTT连接成功")
+            self.printer.print_connection_status("成功", "MQTT连接成功")
             
             # 发送上线消息
             asyncio.create_task(self._send_online_message())
@@ -83,6 +88,7 @@ class MQTTClient:
         else:
             self.connected = False
             logger.error(f"MQTT连接失败: {rc}")
+            self.printer.print_connection_status("失败", f"MQTT连接失败: {rc}")
             
     def on_disconnect(self, client, packet, exc=None):
         """
@@ -96,10 +102,12 @@ class MQTTClient:
         self.connected = False
         if exc:
             logger.warning(f"MQTT意外断开连接: {exc}")
+            self.printer.print_connection_status("失败", f"MQTT意外断开连接: {exc}")
             # 尝试重新连接
             asyncio.create_task(self._reconnect())
         else:
             logger.info("MQTT正常断开连接")
+            self.printer.print_connection_status("成功", "MQTT正常断开连接")
             
     def on_message(self, client, topic, payload, qos, properties):
         """
@@ -119,6 +127,9 @@ class MQTTClient:
             # 更新最后消息时间
             self.topic_manager.update_last_message_time(topic)
             
+            # 打印接收到的消息
+            self.printer.print_message(topic, message, "接收")
+            
             # 调用消息处理器
             handler = self.message_handlers.get(topic)
             if handler:
@@ -128,7 +139,7 @@ class MQTTClient:
                 
         except Exception as e:
             logger.error(f"处理消息时出错: {e}")
-            
+        
     async def connect(self) -> bool:
         """
         连接到MQTT代理
@@ -157,18 +168,18 @@ class MQTTClient:
                     "stream_task_count": 0
                 }
             )
-            will_topic = self.topic_manager.format_topic(TOPIC_TYPE_CONNECTION)
+            will_topic = self.topic_manager.format_topic(80011)  # 连接主题
             self.client.will_message = {
                 'topic': will_topic,
                 'payload': json.dumps(will_message),
                 'qos': self.qos,
-                'retain': True
+                'retain': False  # 移除retain标志
             }
             
             # 设置认证信息
             if self.username and self.password:
                 self.client.set_auth_credentials(self.username, self.password)
-                
+            
             # 连接到代理
             await self.client.connect(
                 host=self.host,
@@ -182,6 +193,7 @@ class MQTTClient:
             
         except Exception as e:
             logger.error(f"连接MQTT代理失败: {e}")
+            self.printer.print_connection_status("失败", f"连接MQTT代理失败: {e}")
             return False
             
     async def disconnect(self):
@@ -192,6 +204,7 @@ class MQTTClient:
             await self.client.disconnect()
             self.connected = False
             logger.info("MQTT连接已断开")
+            self.printer.print_connection_status("成功", "MQTT连接已断开")
             
     async def _reconnect(self):
         """
@@ -200,11 +213,13 @@ class MQTTClient:
         while not self.connected:
             try:
                 logger.info("尝试重新连接MQTT代理...")
+                self.printer.print_connection_status("重试", "尝试重新连接MQTT代理...")
                 if await self.connect():
                     break
                 await asyncio.sleep(self.reconnect_interval)
             except Exception as e:
                 logger.error(f"重新连接失败: {e}")
+                self.printer.print_connection_status("失败", f"重新连接失败: {e}")
                 await asyncio.sleep(self.reconnect_interval)
                 
     async def _resubscribe_topics(self):
@@ -212,19 +227,26 @@ class MQTTClient:
         重新订阅所有主题
         """
         for topic, subscription in self.topic_manager.get_all_subscriptions().items():
-            await self.client.subscribe(topic, subscription.qos)
+            self.client.subscribe(topic, subscription.qos)
             logger.info(f"已重新订阅主题: {topic}")
+            self.printer.print_subscription(topic, subscription.qos, "订阅")
             
     async def _send_online_message(self):
         """
         发送上线消息
         """
-        await self.connection_handler.send_online_message(
-            mac_address=get_mac_address(),
-            client_id=self.client_id,
-            compute_type=settings.MQTT_SERVICE_TYPE
-        )
-        
+        try:
+            success = await self.connection_handler.send_online_message(
+                mac_address=get_mac_address(),
+                client_id=self.client_id
+            )
+            if not success:
+                logger.error("发送上线消息失败")
+                self.printer.print_connection_status("失败", "发送上线消息失败")
+        except Exception as e:
+            logger.error(f"发送上线消息时出错: {e}")
+            self.printer.print_connection_status("失败", f"发送上线消息时出错: {e}")
+            
     async def register_handler(self, topic: str, handler: Callable, qos: int = None) -> bool:
         """
         注册消息处理器
@@ -245,7 +267,8 @@ class MQTTClient:
                 
                 # 如果已连接，立即订阅主题
                 if self.connected:
-                    await self.client.subscribe(topic, qos or self.qos)
+                    self.client.subscribe(topic, qos or self.qos)
+                    self.printer.print_subscription(topic, qos or self.qos, "订阅")
                     
                 logger.info(f"已注册消息处理器: {topic}")
                 return True
@@ -281,7 +304,12 @@ class MQTTClient:
                 payload = str(payload)
                 
             # 发布消息
-            await self.client.publish(topic, payload, qos=qos or self.qos, retain=retain)
+            self.client.publish(topic, payload, qos=qos or self.qos, retain=retain)
+            logger.info(f"消息发布成功: {topic}")
+            
+            # 打印发送的消息
+            self.printer.print_message(topic, payload, "发送")
+            
             return True
                 
         except Exception as e:

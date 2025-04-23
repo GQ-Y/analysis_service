@@ -11,6 +11,7 @@ from core.config import settings
 from core.exceptions import AnalysisException
 from core.models import StandardResponse
 from shared.utils.logger import setup_logger
+from shared.utils.tools import get_mac_address
 import time
 import uuid
 import logging
@@ -200,7 +201,7 @@ async def startup_event():
             "broker_port": settings.MQTT_BROKER_PORT,
             "username": settings.MQTT_USERNAME,
             "password": "******" if settings.MQTT_PASSWORD else None,
-            "client_id": f"analysis_{socket.gethostname()}",
+            "client_id": get_mac_address(),
             "keep_alive": settings.MQTT_KEEPALIVE,
             "qos": settings.MQTT_QOS,
             "topic_prefix": settings.MQTT_TOPIC_PREFIX

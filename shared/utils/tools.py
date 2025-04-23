@@ -22,13 +22,13 @@ def get_mac_address() -> str:
     """
     try:
         mac = uuid.getnode()
-        mac_str = ':'.join(['{:02x}'.format((mac >> elements) & 0xff) for elements in range(0, 8*6, 8)][::-1])
+        mac_str = ':'.join(['{:02X}'.format((mac >> elements) & 0xff) for elements in range(0, 8*6, 8)][::-1])
         return mac_str
     except Exception as e:
         logger.error(f"获取MAC地址失败: {str(e)}")
         # 使用随机生成的MAC地址
         mac = [random.randint(0x00, 0xff) for _ in range(6)]
-        mac_str = ':'.join(['{:02x}'.format(x) for x in mac])
+        mac_str = ':'.join(['{:02X}'.format(x) for x in mac])
         return mac_str
 
 def get_local_ip() -> str:

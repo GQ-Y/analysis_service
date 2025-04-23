@@ -83,17 +83,17 @@ class MQTTTopicManager:
             
         # 根据主题类型生成主题
         if topic_type == TOPIC_TYPE_CONNECTION:
-            return f"{self.topic_prefix}/connection"
+            return f"{self.topic_prefix}connection"
         elif topic_type == TOPIC_TYPE_REQUEST_SETTING:
-            return f"{self.topic_prefix}/{kwargs['mac_address']}/request_setting"
+            return f"{self.topic_prefix}{kwargs['mac_address']}/request_setting"
         elif topic_type == TOPIC_TYPE_CONFIG_REPLY:
-            return f"{self.topic_prefix}/device_config_reply"
+            return f"{self.topic_prefix}device_config_reply"
         elif topic_type == TOPIC_TYPE_STATUS:
-            return f"{self.topic_prefix}/{kwargs['mac_address']}/status"
+            return f"{self.topic_prefix}{kwargs['mac_address']}/status"
         elif topic_type == TOPIC_TYPE_RESULT:
-            return f"{self.topic_prefix}/{kwargs['mac_address']}/result"
+            return f"{self.topic_prefix}{kwargs['mac_address']}/result"
         elif topic_type == TOPIC_TYPE_BROADCAST:
-            return f"{self.topic_prefix}/system/broadcast"
+            return f"{self.topic_prefix}system/broadcast"
         else:
             logger.error(f"未知的主题类型: {topic_type}")
             return None
