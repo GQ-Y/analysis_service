@@ -257,14 +257,13 @@ class TaskManager:
         """
         return [task for task in self.tasks.values() if task["status"] == TaskStatus.FAILED]
 
-    def create_task(self, task_type: str, params: Dict[str, Any], protocol: str = "mqtt") -> str:
+    def create_task(self, task_type: str, params: Dict[str, Any]) -> str:
         """
         创建新任务
         
         参数:
             task_type: 任务类型 (image, video, stream)
             params: 任务参数
-            protocol: 使用的协议 (http, mqtt)
             
         返回:
             str: 任务ID
@@ -277,12 +276,11 @@ class TaskManager:
                 "type": task_type,
                 "params": params,
                 "status": "pending",
-                "protocol": protocol,
                 "create_time": int(time.time()),
                 "progress": 0
             }
             
-        logger.info(f"已创建任务: {task_id}, 类型: {task_type}, 协议: {protocol}")
+        logger.info(f"已创建任务: {task_id}, 类型: {task_type}")
         return task_id
         
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
@@ -368,31 +366,6 @@ class TaskManager:
                 tasks = [dict(task) for task in self.tasks.values() if task.get("status") == status]
             else:
                 tasks = [dict(task) for task in self.tasks.values()]
-                
-        return tasks
-        
-    def get_tasks_by_protocol(self, protocol: str, status: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        按协议获取任务
-        
-        参数:
-            protocol: 协议 (http, mqtt)
-            status: 可选的状态过滤器
-            
-        返回:
-            List[Dict]: 任务信息列表
-        """
-        with self.task_lock:
-            if status:
-                tasks = [
-                    dict(task) for task in self.tasks.values() 
-                    if task.get("protocol") == protocol and task.get("status") == status
-                ]
-            else:
-                tasks = [
-                    dict(task) for task in self.tasks.values() 
-                    if task.get("protocol") == protocol
-                ]
                 
         return tasks
         
