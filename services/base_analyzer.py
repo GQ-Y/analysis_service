@@ -19,7 +19,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from core.config import settings
-from core.detector import YOLODetector
+from core.detection.yolo_detector import YOLODetector
 from shared.utils.logger import setup_logger
 
 logger = setup_logger(__name__)

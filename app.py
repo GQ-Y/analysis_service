@@ -8,7 +8,6 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from core.config import settings
-from routers.analyze import router as analyze_router
 from core.exceptions import AnalysisException
 from core.models import StandardResponse
 from shared.utils.logger import setup_logger
@@ -85,27 +84,12 @@ app = FastAPI(
     debug=settings.DEBUG_ENABLED
 )
 
-# 配置CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
-    allow_methods=settings.CORS_ALLOW_METHODS,
-    allow_headers=settings.CORS_ALLOW_HEADERS,
-)
-
 # 添加Gzip压缩
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 # 只在调试模式下添加请求日志中间件
 if settings.DEBUG_ENABLED:
     app.add_middleware(RequestLoggingMiddleware)
-
-# 注册路由
-app.include_router(
-    analyze_router,
-    prefix="/api/v1/analyze"
-)
 
 # 全局异常处理
 @app.exception_handler(AnalysisException)
@@ -204,68 +188,57 @@ async def startup_event():
         logger.info(f"版本: {settings.VERSION}")
         logger.info(f"注册的路由: {[route.path for route in app.routes]}")
     
-    # 根据配置初始化通信模式
-    if settings.COMMUNICATION_MODE.lower() == "mqtt":
-        logger.info("使用MQTT通信模式，正在初始化MQTT客户端...")
-        try:
-            from services.mqtt_client import get_mqtt_client
-            from services.analyzer import create_analyzer_service
+    # 初始化MQTT通信模式
+    logger.info("使用MQTT通信模式，正在初始化MQTT客户端...")
+    try:
+        from services.mqtt_client import get_mqtt_client
+        from services.analyzer import create_analyzer_service
+        
+        # 记录MQTT配置信息
+        mqtt_config = {
+            "broker_host": settings.MQTT_BROKER_HOST,
+            "broker_port": settings.MQTT_BROKER_PORT,
+            "username": settings.MQTT_USERNAME,
+            "password": "******" if settings.MQTT_PASSWORD else None,
+            "topic_prefix": settings.MQTT_TOPIC_PREFIX
+        }
+        logger.info(f"MQTT配置: {mqtt_config}")
+        
+        # 使用工厂函数初始化分析服务
+        analyzer_service = create_analyzer_service("mqtt")
+        app.state.analyzer_service = analyzer_service
+        
+        # 确保MQTT分析服务连接并注册处理器
+        # 这一步非常关键，确保任务处理器正确注册到MQTT客户端
+        connect_result = await analyzer_service.connect()
+        if connect_result:
+            logger.info("MQTT分析服务已连接并注册处理器")
             
-            # 记录MQTT配置信息
-            mqtt_config = {
-                "broker_host": settings.MQTT_BROKER_HOST,
-                "broker_port": settings.MQTT_BROKER_PORT,
-                "username": settings.MQTT_USERNAME,
-                "password": "******" if settings.MQTT_PASSWORD else None,
-                "topic_prefix": settings.MQTT_TOPIC_PREFIX
-            }
-            logger.info(f"MQTT配置: {mqtt_config}")
+            # 获取MQTT客户端实例以验证处理器是否已注册
+            mqtt_client = analyzer_service.mqtt_client
+            handler_types = list(mqtt_client.task_handlers.keys())
+            logger.info(f"已注册的任务处理器类型: {handler_types}")
             
-            # 使用工厂函数初始化分析服务
-            analyzer_service = create_analyzer_service("mqtt")
-            app.state.analyzer_service = analyzer_service
-            
-            # 确保MQTT分析服务连接并注册处理器
-            # 这一步非常关键，确保任务处理器正确注册到MQTT客户端
-            connect_result = await analyzer_service.connect()
-            if connect_result:
-                logger.info("MQTT分析服务已连接并注册处理器")
-                
-                # 获取MQTT客户端实例以验证处理器是否已注册
-                mqtt_client = analyzer_service.mqtt_client
-                handler_types = list(mqtt_client.task_handlers.keys())
-                logger.info(f"已注册的任务处理器类型: {handler_types}")
-                
-                if not handler_types:
-                    logger.error("未找到已注册的任务处理器，MQTT任务处理将无法正常工作!")
-            else:
-                logger.error("MQTT分析服务连接失败，任务处理器可能未注册!")
-        except Exception as e:
-            logger.error(f"MQTT客户端初始化失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-    else:
-        logger.info(f"使用HTTP通信模式")
+            if not handler_types:
+                logger.error("未找到已注册的任务处理器，MQTT任务处理将无法正常工作!")
+        else:
+            logger.error("MQTT分析服务连接失败，任务处理器可能未注册!")
+    except Exception as e:
+        logger.error(f"MQTT客户端初始化失败: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
     
 @app.on_event("shutdown")
 async def shutdown_event():
-    """关闭事件"""
-    # 关闭MQTT客户端
-    if settings.COMMUNICATION_MODE.lower() == "mqtt":
-        try:
-            if hasattr(app.state, "analyzer_service") and hasattr(app.state.analyzer_service, "mqtt_client"):
-                mqtt_client = app.state.analyzer_service.mqtt_client
-                if mqtt_client.stop():
-                    logger.info("MQTT客户端已关闭")
-                else:
-                    logger.warning("MQTT客户端关闭失败")
-            else:
-                logger.warning("未找到MQTT客户端实例，无法正常关闭")
-        except Exception as e:
-            logger.error(f"关闭MQTT客户端失败: {str(e)}")
+    """应用关闭时的清理"""
+    logger.info("Shutting down Analysis Service...")
     
-    if settings.DEBUG_ENABLED:
-        logger.info("分析服务关闭...")
+    # 关闭分析服务
+    if hasattr(app.state, "analyzer_service"):
+        await app.state.analyzer_service.disconnect()
+        logger.info("分析服务已关闭")
+    
+    logger.info("Analysis Service stopped.")
 
 if __name__ == "__main__":
     uvicorn.run(

@@ -66,11 +66,11 @@ class AnalysisServiceConfig(BaseSettings):
     DEBUG_LOG_ROTATION: str = "1 day"
     DEBUG_LOG_RETENTION: str = "7 days"
     
-    # CORS配置
-    CORS_ORIGINS: List[str] = ["*"]
-    CORS_ALLOW_CREDENTIALS: bool = True
-    CORS_ALLOW_METHODS: List[str] = ["*"]
-    CORS_ALLOW_HEADERS: List[str] = ["*"]
+    # # CORS配置
+    # CORS_ORIGINS: List[str] = ["*"]
+    # CORS_ALLOW_CREDENTIALS: bool = True
+    # CORS_ALLOW_METHODS: List[str] = ["*"]
+    # CORS_ALLOW_HEADERS: List[str] = ["*"]
     
     # 服务配置
     SERVICES_HOST: str = "0.0.0.0"

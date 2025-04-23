@@ -140,4 +140,4 @@ class TaskCRUD:
             
         except Exception as e:
             logger.error(f"创建队列任务失败: {str(e)}")
-            return None 
+            return None

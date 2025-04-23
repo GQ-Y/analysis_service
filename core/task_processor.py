@@ -12,7 +12,7 @@ import threading
 from typing import Dict, Any, List, Optional, Callable, Union
 
 from core.task_manager import TaskManager
-from core.detector import YOLODetector
+from core.detection.yolo_detector import YOLODetector
 from shared.utils.logger import setup_logger
 from core.config import settings
 

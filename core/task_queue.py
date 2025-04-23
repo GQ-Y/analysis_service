@@ -263,4 +263,4 @@ class TaskQueue:
                 await self.cleanup_expired_results()
             except Exception as e:
                 logger.error(f"执行清理任务失败: {str(e)}")
-            await asyncio.sleep(settings.TASK_QUEUE_CLEANUP_INTERVAL) 
+            await asyncio.sleep(settings.TASK_QUEUE_CLEANUP_INTERVAL)

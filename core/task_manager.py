@@ -257,7 +257,7 @@ class TaskManager:
         """
         return [task for task in self.tasks.values() if task["status"] == TaskStatus.FAILED]
 
-    def create_task(self, task_type: str, params: Dict[str, Any], protocol: str = "http") -> str:
+    def create_task(self, task_type: str, params: Dict[str, Any], protocol: str = "mqtt") -> str:
         """
         创建新任务
         
