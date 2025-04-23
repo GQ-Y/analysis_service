@@ -127,7 +127,7 @@ class MQTTClient:
         self.node_id = self.mac_address
         
         # 从kwargs获取topic_prefix或使用默认值
-        self.topic_prefix = kwargs.get("topic_prefix", "meek/")
+        self.topic_prefix = kwargs.get("topic_prefix", "/meek/")
         
         # 创建MQTT客户端
         self.client = mqtt.Client(client_id=self.client_id, protocol=mqtt.MQTTv311, clean_session=True)

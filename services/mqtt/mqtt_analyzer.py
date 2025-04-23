@@ -74,7 +74,7 @@ class MQTTAnalyzerService(BaseAnalyzerService):
             command_topic=mqtt_config.get("command_topic"), # 这些参数可能来自 mqtt_config dict
             response_topic=mqtt_config.get("response_topic"),
             status_topic=mqtt_config.get("status_topic"),
-            topic_prefix=mqtt_config.get("topic_prefix", "meek/"), # 从 mqtt_config 获取
+            topic_prefix=mqtt_config.get("topic_prefix", "/meek/"), # 从 mqtt_config 获取
             loop=self.main_loop # 明确传递获取到的循环
         )
         

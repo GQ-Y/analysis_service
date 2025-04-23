@@ -464,7 +464,6 @@ async def get_video_status(
         if isinstance(e, ResourceNotFoundException):
             raise
         raise ProcessingException(f"获取任务状态失败: {str(e)}")
-
 @router.post(
     "/stream",
     response_model=StandardResponse,

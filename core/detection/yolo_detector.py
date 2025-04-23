@@ -29,7 +29,7 @@ import functools
 logger = setup_logger(__name__)
 
 class YOLODetector:
-    """YOLOv8检测器实现"""
+    """YOLO检测器实现"""
     
     def __init__(self):
         """初始化检测器"""

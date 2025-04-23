@@ -19,6 +19,12 @@ from shared.utils.logger import setup_logger
 from services.base_analyzer import BaseAnalyzerService
 from services.http.http_analyzer import HTTPAnalyzerService
 from services.mqtt.mqtt_analyzer import MQTTAnalyzerService
+from core.detector import YOLODetector
+from core.segmentation.yolo_segmentor import YOLOSegmentor
+from core.task_manager import TaskManager
+from core.task_processor import TaskProcessor
+from core.task_queue import TaskQueue
+from services.mqtt_client import MQTTClient
 
 logger = setup_logger(__name__)
 
@@ -123,6 +129,17 @@ class Analyzer:
         self.http_analyzer = None
         self.mqtt_analyzer = None
 
+        # 配置流媒体相关参数
+        self.streaming_config = {
+            "reconnect_attempts": settings.STREAMING.reconnect_attempts,
+            "reconnect_delay": settings.STREAMING.reconnect_delay,
+            "read_timeout": settings.STREAMING.read_timeout,
+            "connect_timeout": settings.STREAMING.connect_timeout,
+            "max_consecutive_errors": settings.STREAMING.max_consecutive_errors,
+            "frame_buffer_size": settings.STREAMING.frame_buffer_size,
+            "log_level": settings.STREAMING.log_level
+        }
+
     async def initialize(self):
         """初始化分析服务"""
         try:
@@ -142,27 +159,40 @@ class Analyzer:
             # 根据通信模式初始化对应的分析器
             if self.communication_mode == "mqtt":
                 # 初始化MQTT客户端
-                self.mqtt_client = MQTTClient()
+                self.mqtt_client = MQTTClient(
+                    host=settings.MQTT_BROKER_HOST,
+                    port=settings.MQTT_BROKER_PORT,
+                    username=settings.MQTT_USERNAME,
+                    password=settings.MQTT_PASSWORD,
+                    topic_prefix=settings.MQTT_TOPIC_PREFIX,
+                    qos=settings.MQTT_QOS,
+                    keepalive=settings.MQTT_KEEPALIVE,
+                    reconnect_interval=settings.MQTT_RECONNECT_INTERVAL,
+                    node_id=settings.MQTT_NODE_ID,
+                    service_type=settings.MQTT_SERVICE_TYPE
+                )
                 await self.mqtt_client.connect()
                 
                 # 初始化MQTT分析器
-                self.mqtt_analyzer = MQTTAnalyzer(
+                self.mqtt_analyzer = MQTTAnalyzerService(
                     mqtt_client=self.mqtt_client,
                     task_queue=self.task_queue,
                     task_processor=self.task_processor,
                     task_manager=self.task_manager,
                     detector=self.detector,
-                    segmentor=self.segmentor
+                    segmentor=self.segmentor,
+                    streaming_config=self.streaming_config
                 )
                 
             elif self.communication_mode == "http":
                 # 初始化HTTP分析器
-                self.http_analyzer = HTTPAnalyzer(
+                self.http_analyzer = HTTPAnalyzerService(
                     task_queue=self.task_queue,
                     task_processor=self.task_processor,
                     task_manager=self.task_manager,
                     detector=self.detector,
-                    segmentor=self.segmentor
+                    segmentor=self.segmentor,
+                    streaming_config=self.streaming_config
                 )
             
             logger.info(f"分析服务初始化完成，通信模式: {self.communication_mode}")

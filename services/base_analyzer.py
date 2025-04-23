@@ -35,28 +35,12 @@ class BaseAnalyzerService:
         self.detectors = {}
         
         # 确保输出目录存在
-        self._ensure_output_dirs()
+        os.makedirs(settings.OUTPUT.save_dir, exist_ok=True)
         
         # 初始化任务处理器
         self.task_handlers = {}
         
         logger.info("基础分析服务初始化完成")
-    
-    def _ensure_output_dirs(self):
-        """确保输出目录存在"""
-        try:
-            # 创建结果保存目录
-            os.makedirs(settings.OUTPUT_SAVE_DIR, exist_ok=True)
-            
-            # 创建临时文件目录
-            os.makedirs(settings.STORAGE_TEMP_DIR, exist_ok=True)
-            
-            # 创建模型目录
-            os.makedirs(settings.STORAGE_MODEL_DIR, exist_ok=True)
-            
-        except Exception as e:
-            logger.error(f"创建目录失败: {str(e)}")
-            raise
     
     def get_detector(self, model_code: str) -> YOLODetector:
         """

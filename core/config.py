@@ -18,6 +18,39 @@ class DebugConfig(BaseModel):
     log_rotation: str = "1 day"
     log_retention: str = "7 days"
 
+class StreamingConfig(BaseModel):
+    """流媒体配置"""
+    reconnect_attempts: int = 5
+    reconnect_delay: int = 3
+    read_timeout: int = 15
+    connect_timeout: int = 10
+    max_consecutive_errors: int = 10
+    frame_buffer_size: int = 10
+    log_level: str = "INFO"
+
+class AnalysisConfig(BaseModel):
+    """分析配置"""
+    confidence: float = 0.2
+    iou: float = 0.45
+    max_det: int = 300
+    device: str = "auto"
+    analyze_interval: int = 1
+    alarm_interval: int = 60
+    random_interval_min: int = 0
+    random_interval_max: int = 0
+    push_interval: int = 1
+    save_dir: str = "results"
+    save_txt: bool = False
+    save_img: bool = True
+    return_base64: bool = True
+
+class OutputConfig(BaseModel):
+    """输出配置"""
+    save_dir: str = "results"
+    save_txt: bool = False
+    save_img: bool = True
+    return_base64: bool = True
+
 class AnalysisServiceConfig(BaseSettings):
     """分析服务配置"""
     
@@ -72,15 +105,7 @@ class AnalysisServiceConfig(BaseSettings):
     MODEL_SERVICE_API_PREFIX: str = "/api/v1"
     
     # 分析配置
-    ANALYSIS_CONFIDENCE: float = 0.2
-    ANALYSIS_IOU: float = 0.45
-    ANALYSIS_MAX_DET: int = 300
-    ANALYSIS_DEVICE: str = "auto"
-    ANALYSIS_ANALYZE_INTERVAL: int = 1
-    ANALYSIS_ALARM_INTERVAL: int = 60
-    ANALYSIS_RANDOM_INTERVAL_MIN: int = 0
-    ANALYSIS_RANDOM_INTERVAL_MAX: int = 0
-    ANALYSIS_PUSH_INTERVAL: int = 1
+    ANALYSIS: AnalysisConfig = AnalysisConfig()
     
     # 存储配置
     STORAGE_BASE_DIR: str = "data"
@@ -89,10 +114,7 @@ class AnalysisServiceConfig(BaseSettings):
     STORAGE_MAX_SIZE: int = 10737418240
     
     # 输出配置
-    OUTPUT_SAVE_DIR: str = "results"
-    OUTPUT_SAVE_TXT: bool = False
-    OUTPUT_SAVE_IMG: bool = True
-    OUTPUT_RETURN_BASE64: bool = True
+    OUTPUT: OutputConfig = OutputConfig()
     
     # 任务队列配置
     TASK_QUEUE_MAX_CONCURRENT: int = 30
@@ -116,14 +138,8 @@ class AnalysisServiceConfig(BaseSettings):
     DISCOVERY_TIMEOUT: int = 5
     DISCOVERY_RETRY: int = 3
     
-    # Streaming配置
-    STREAMING_RECONNECT_ATTEMPTS: int = 5
-    STREAMING_RECONNECT_DELAY: int = 3
-    STREAMING_READ_TIMEOUT: int = 15
-    STREAMING_CONNECT_TIMEOUT: int = 10
-    STREAMING_MAX_CONSECUTIVE_ERRORS: int = 10
-    STREAMING_FRAME_BUFFER_SIZE: int = 10
-    STREAMING_LOG_LEVEL: str = "INFO"
+    # 流媒体配置
+    STREAMING: StreamingConfig = StreamingConfig()
     
     class Config:
         env_file = ".env"

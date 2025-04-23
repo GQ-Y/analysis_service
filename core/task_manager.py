@@ -29,17 +29,25 @@ class TaskStatus(str, Enum):
 class TaskManager:
     """任务管理器"""
     
-    def __init__(self):
-        """初始化任务管理器"""
-        self.tasks = {}
-        self.output_dir = settings.OUTPUT_SAVE_DIR
-        self.max_tasks = settings.TASK_QUEUE_MAX_CONCURRENT
+    def __init__(self, max_tasks: int = None):
+        """初始化任务管理器
+        
+        Args:
+            max_tasks: 最大任务数，默认从配置中读取
+        """
+        # 设置最大任务数
+        self.max_tasks = max_tasks or settings.TASK_QUEUE_MAX_CONCURRENT
+        
+        # 初始化任务字典
+        self.tasks: Dict[str, Dict[str, Any]] = {}
+        
+        # 设置输出目录
+        self.output_dir = settings.OUTPUT.save_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        
         self.task_timeout = settings.TASK_QUEUE_RESULT_TTL
         self.cleanup_interval = settings.TASK_QUEUE_CLEANUP_INTERVAL
         self.last_cleanup = time.time()
-        
-        # 确保输出目录存在
-        os.makedirs(self.output_dir, exist_ok=True)
         
         # 启动清理线程
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)

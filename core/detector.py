@@ -143,6 +143,42 @@ class CallbackData:
             "degree": self.degree
         }
 
+class TaskManager:
+    """任务管理器"""
+    def __init__(self):
+        self._tasks = {}
+        self._resources = {}
+        self._lock = asyncio.Lock()
+
+    async def add_task(self, task_id: str, task_info: dict):
+        async with self._lock:
+            self._tasks[task_id] = task_info
+            self._resources[task_id] = {'cap': None}
+
+    async def remove_task(self, task_id: str):
+        async with self._lock:
+            if task_id in self._tasks:
+                # 释放资源
+                if task_id in self._resources:
+                    res = self._resources[task_id]
+                    if res['cap']:
+                        res['cap'].release()
+                    del self._resources[task_id]
+                del self._tasks[task_id]
+
+    async def set_resource(self, task_id: str, key: str, value: any):
+        async with self._lock:
+            if task_id in self._resources:
+                self._resources[task_id][key] = value
+
+    async def get_resource(self, task_id: str, key: str) -> any:
+        async with self._lock:
+            return self._resources.get(task_id, {}).get(key)
+
+    async def get_task(self, task_id: str) -> dict:
+        async with self._lock:
+            return self._tasks.get(task_id)
+
 class YOLODetector:
     """YOLO检测器"""
     
@@ -150,8 +186,9 @@ class YOLODetector:
         """初始化检测器"""
         self.model = None
         self.current_model_code = None
+        self.task_manager = TaskManager()
         self.tracker: Optional[BaseTracker] = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() and settings.ANALYSIS_DEVICE != "cpu" else "cpu")
+        self.device = torch.device("cuda" if torch.cuda.is_available() and settings.ANALYSIS.device != "cpu" else "cpu")
         
         # Redis相关
         self.redis = RedisManager()
@@ -162,13 +199,13 @@ class YOLODetector:
         self.api_prefix = settings.MODEL_SERVICE_API_PREFIX
         
         # 默认配置
-        self.default_confidence = settings.ANALYSIS_CONFIDENCE
-        self.default_iou = settings.ANALYSIS_IOU
-        self.default_max_det = settings.ANALYSIS_MAX_DET
+        self.default_confidence = settings.ANALYSIS.confidence
+        self.default_iou = settings.ANALYSIS.iou
+        self.default_max_det = settings.ANALYSIS.max_det
         
         # 设置保存目录
         self.project_root = Path(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        self.results_dir = self.project_root / settings.OUTPUT_SAVE_DIR
+        self.results_dir = self.project_root / settings.OUTPUT.save_dir
         
         # 确保结果目录存在
         os.makedirs(self.results_dir, exist_ok=True)
@@ -793,32 +830,21 @@ class YOLODetector:
         model_code: str,
         stream_url: str,
         callback_urls: Optional[str] = None,
-        system_callback_url: Optional[str] = None,  # 新增：系统回调URL
+        system_callback_url: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         task_name: Optional[str] = None,
         enable_callback: bool = False,
         save_result: bool = False,
         analysis_type: str = "detection"
     ) -> Dict[str, Any]:
-        """启动流分析任务
-        
-        Args:
-            task_id: 任务ID
-            model_code: 模型代码
-            stream_url: 流URL
-            callback_urls: 回调地址，多个用逗号分隔
-            system_callback_url: 系统回调URL，用于系统级回调
-            config: 分析配置
-            task_name: 任务名称
-            enable_callback: 是否启用回调
-            save_result: 是否保存结果
-            analysis_type: 分析类型
-            
-        Returns:
-            Dict[str, Any]: 任务信息
-        """
+        """启动流分析任务"""
         try:
-            logger.info(f"YOLODetector.start_stream_analysis - 开始启动任务: task_id={task_id}")
+            # 检查是否是重复任务
+            existing_task = await self.task_manager.get_task(task_id)
+            if existing_task:
+                if existing_task.get("status") not in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED]:
+                    logger.info(f"任务 {task_id} 已在运行中")
+                    return existing_task
             logger.info(f"YOLODetector.start_stream_analysis - 参数: model_code={model_code}, stream_url={stream_url}")
             logger.info(f"YOLODetector.start_stream_analysis - 回调: system={system_callback_url}, user={callback_urls}, enabled={enable_callback}")
             logger.info(f"YOLODetector.start_stream_analysis - 配置: task_name={task_name}, save_result={save_result}, analysis_type={analysis_type}")
@@ -903,6 +929,7 @@ class YOLODetector:
         task_id: str
     ) -> None:
         """处理流分析任务"""
+        cap = None
         try:
             # 获取任务信息
             task_info = await self._get_task_info(task_id)
@@ -936,6 +963,9 @@ class YOLODetector:
             # 打开流
             logger.info(f"开始处理流 {stream_url}")
             cap = cv2.VideoCapture(stream_url)
+            # 保存资源引用
+            await self.task_manager.set_resource(task_id, 'cap', cap)
+            
             if not cap.isOpened():
                 logger.error(f"无法打开流: {stream_url}")
                 task_info["status"] = TaskStatus.FAILED
@@ -973,19 +1003,34 @@ class YOLODetector:
                 logger.info(f"启用目标跟踪，跟踪器类型: {tracker_type}")
             
             # 主循环
+            start_time = time.time()
+            last_health_check = start_time
+            
             while not await self._should_stop(task_id):
                 try:
+                    current_time = time.time()
+                    
+                    # 健康检查
+                    if current_time - last_health_check > 30:  # 每30秒检查一次
+                        if not await self._check_task_health(task_id, cap):
+                            break
+                        last_health_check = current_time
+                    
                     # 读取一帧
                     ret, frame = cap.read()
                     if not ret:
-                        # 对于大多数流，读取失败通常意味着流结束或出现错误
-                        # 重新打开流继续处理
                         logger.warning(f"读取帧失败，尝试重新打开流: {stream_url}")
                         cap.release()
                         await asyncio.sleep(2)  # 等待一下再重试
+                        
+                        # 重新打开流
                         cap = cv2.VideoCapture(stream_url)
+                        # 更新资源引用
+                        await self.task_manager.set_resource(task_id, 'cap', cap)
+                        
                         if not cap.isOpened():
                             logger.error(f"重新打开流失败: {stream_url}")
+                            await self._handle_error(task_id, Exception("重新打开流失败"))
                             break
                         continue
                     
@@ -1239,18 +1284,14 @@ class YOLODetector:
     async def stop_stream_analysis(self, task_id: str):
         """停止视频流分析"""
         try:
-            # 创建一个全局字典来跟踪强制停止的任务
-            if not hasattr(self, '_force_stop_tasks'):
-                self._force_stop_tasks = set()
-            
-            # 将任务ID添加到强制停止集合中
-            self._force_stop_tasks.add(task_id)
-            
             # 更新任务状态为停止中
             await self._update_task_info(task_id, {'status': TaskStatus.STOPPING})
             
-            # 使用事件循环的callater方法在短时间后尝试清理资源
-            asyncio.get_event_loop().call_later(3, lambda: asyncio.create_task(self._force_clean_task(task_id)))
+            # 立即释放视频资源
+            cap = await self.task_manager.get_resource(task_id, 'cap')
+            if cap:
+                cap.release()
+                await self.task_manager.set_resource(task_id, 'cap', None)
             
             # 等待任务实际停止
             max_wait = 10  # 最大等待10秒
@@ -1258,67 +1299,186 @@ class YOLODetector:
                 task_info = await self._get_task_info(task_id)
                 if not task_info or task_info.get('status') in [TaskStatus.STOPPED, TaskStatus.FAILED, TaskStatus.COMPLETED]:
                     break
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.5)
                 max_wait -= 1
             
-            # 如果任务仍在运行，更强硬地停止任务
-            if max_wait == 0:
-                logger.warning(f"任务 {task_id} 停止超时，强制停止")
-                # 更新任务状态为已停止
-                await self._update_task_info(task_id, {
-                    'status': TaskStatus.STOPPED,
-                    'error_message': '任务强制停止',
-                    'end_time': datetime.now().isoformat()
-                })
+            # 记录停止状态
+            stop_info = {
+                'status': TaskStatus.STOPPED,
+                'end_time': datetime.now().isoformat()
+            }
             
-            logger.info(f"任务 {task_id} 已停止")
+            if max_wait == 0:
+                stop_info['error_message'] = '任务强制停止'
+                logger.warning(f"任务 {task_id} 停止超时，强制停止")
+            
+            await self._update_task_info(task_id, stop_info)
+            await self.task_manager.remove_task(task_id)
+            
+            logger.info(f"任务 {task_id} 已停止并清理完成")
             
         except Exception as e:
             logger.error(f"停止任务 {task_id} 失败: {str(e)}")
-            # 确保任务状态被更新为已停止
             await self._update_task_info(task_id, {
                 'status': TaskStatus.STOPPED,
                 'error_message': f'停止失败: {str(e)}',
                 'end_time': datetime.now().isoformat()
             })
-        finally:
-            # 从强制停止集合中移除任务ID
-            if hasattr(self, '_force_stop_tasks') and task_id in self._force_stop_tasks:
-                self._force_stop_tasks.remove(task_id)
 
     async def _force_clean_task(self, task_id: str):
         """强制清理任务资源"""
         try:
             logger.info(f"强制清理任务 {task_id} 资源")
-            # 这里可以添加关闭视频捕获、关闭网络连接等清理操作
-            # 更新任务状态为已停止
+            
+            # 1. 停止视频捕获
+            cap = await self.task_manager.get_resource(task_id, 'cap')
+            if cap:
+                cap.release()
+                await self.task_manager.set_resource(task_id, 'cap', None)
+            
+            # 2. 清理任务状态
             await self._update_task_info(task_id, {
                 'status': TaskStatus.STOPPED,
                 'error_message': '任务资源已强制清理',
                 'end_time': datetime.now().isoformat()
             })
+            
+            # 3. 移除任务记录
+            await self.task_manager.remove_task(task_id)
+            
         except Exception as e:
             logger.error(f"强制清理任务 {task_id} 资源失败: {str(e)}")
+            # 确保任务被标记为已停止
+            await self._update_task_info(task_id, {
+                'status': TaskStatus.STOPPED,
+                'error_message': f'清理失败: {str(e)}',
+                'end_time': datetime.now().isoformat()
+            })
+
+    def _start_monitor(self):
+        """启动监控任务"""
+        if self.monitor_task is None:
+            self.monitor_task = asyncio.create_task(self._monitor_loop())
+            logger.info("监控任务已启动")
+    
+    async def _monitor_loop(self):
+        """监控循环"""
+        while True:
+            try:
+                # 检查所有运行中的任务
+                async with self.task_manager._lock:
+                    for task_id, task_info in self.task_manager._tasks.items():
+                        if task_info.get('status') == TaskStatus.PROCESSING:
+                            # 检查任务健康状态
+                            cap = await self.task_manager.get_resource(task_id, 'cap')
+                            if not await self._check_task_health(task_id, cap):
+                                logger.warning(f"任务 {task_id} 健康检查失败，准备清理")
+                                await self._force_clean_task(task_id)
+                
+                # 清理过期的结果
+                await self.task_queue.cleanup_expired_results()
+                
+            except Exception as e:
+                logger.error(f"监控任务执行失败: {str(e)}")
+            
+            await asyncio.sleep(self.monitor_interval)
+    
+    async def _check_task_health(self, task_id: str, cap) -> bool:
+        """检查任务的健康状态"""
+        try:
+            if cap is None:
+                return False
+            
+            # 检查视频捕获对象是否有效
+            if not cap.isOpened():
+                logger.error(f"任务 {task_id} 的视频捕获对象无效")
+                return False
+            
+            # 检查内存使用
+            process = psutil.Process(os.getpid())
+            memory_percent = process.memory_percent()
+            if memory_percent > 90:  # 内存使用超过90%
+                logger.error(f"任务 {task_id} 内存使用过高: {memory_percent}%")
+                return False
+            
+            # 检查GPU使用（如果可用）
+            if torch.cuda.is_available():
+                gpu_memory = torch.cuda.memory_allocated() / torch.cuda.max_memory_allocated()
+                if gpu_memory > 0.9:  # GPU内存使用超过90%
+                    logger.error(f"任务 {task_id} GPU内存使用过高: {gpu_memory*100}%")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"健康检查失败: {str(e)}")
+            return False
+    
+    async def _handle_error(self, task_id: str, error: Exception):
+        """处理任务错误"""
+        try:
+            logger.error(f"任务 {task_id} 发生错误: {str(error)}")
+            
+            # 1. 更新任务状态
+            await self._update_task_info(task_id, {
+                'status': TaskStatus.FAILED,
+                'error_message': str(error),
+                'end_time': datetime.now().isoformat()
+            })
+            
+            # 2. 释放资源
+            cap = await self.task_manager.get_resource(task_id, 'cap')
+            if cap:
+                cap.release()
+                await self.task_manager.set_resource(task_id, 'cap', None)
+            
+            # 3. 清理任务记录
+            await self.task_manager.remove_task(task_id)
+            
+        except Exception as e:
+            logger.error(f"处理错误时失败: {str(e)}")
+            # 确保任务被标记为失败
+            await self._update_task_info(task_id, {
+                'status': TaskStatus.FAILED,
+                'error_message': f'错误处理失败: {str(e)}',
+                'end_time': datetime.now().isoformat()
+            })
+
+            logger.error(f"强制清理任务 {task_id} 资源失败: {str(e)}")
+            # 确保任务被标记为已停止
+            await self._update_task_info(task_id, {
+                'status': TaskStatus.STOPPED,
+                'error_message': f'清理失败: {str(e)}',
+                'end_time': datetime.now().isoformat()
+            })
 
     async def _should_stop(self, task_id: str) -> bool:
         """检查任务是否应该停止"""
         try:
-            # 首先检查强制停止列表
-            if hasattr(self, '_force_stop_tasks') and task_id in self._force_stop_tasks:
-                logger.info(f"任务 {task_id} 在强制停止列表中")
-                return True
-            
             # 获取任务信息
             task_info = await self._get_task_info(task_id)
             if not task_info:
                 return True
             
+            # 检查资源状态
+            cap = await self.task_manager.get_resource(task_id, 'cap')
+            if cap is None:
+                return True
+            
             # 检查任务状态
             status = task_info.get("status")
-            return status in [TaskStatus.STOPPING, TaskStatus.CANCELLED, TaskStatus.STOPPED]
+            should_stop = status in [TaskStatus.STOPPING, TaskStatus.CANCELLED, TaskStatus.STOPPED]
+            
+            # 如果需要停止，确保资源被释放
+            if should_stop:
+                await self._force_clean_task(task_id)
+            
+            return should_stop
             
         except Exception as e:
             logger.error(f"检查任务状态失败: {str(e)}", exc_info=True)
+            # 发生错误时也要清理资源
+            await self._force_clean_task(task_id)
             return True
 
     async def start_video_analysis(
