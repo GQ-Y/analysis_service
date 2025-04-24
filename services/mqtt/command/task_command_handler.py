@@ -24,11 +24,12 @@ class TaskCommandHandler:
     处理任务相关的命令
     """
     
-    def __init__(self):
+    def __init__(self, mqtt_manager):
         """
         初始化任务命令处理器
         """
         self.task_manager = TaskManager()
+        self.mqtt_manager = mqtt_manager # 保存mqtt_manager实例
         logger.info("任务命令处理器已初始化")
         
     def get_mac_address(self) -> str:
@@ -61,9 +62,9 @@ class TaskCommandHandler:
                 
             # 根据命令类型处理
             if cmd_type == TASK_CMD_START:
-                return await self._handle_start_task(data)
+                return await self._handle_start_task(payload)  # 传递完整的payload
             elif cmd_type == TASK_CMD_STOP:
-                return await self._handle_stop_task(data)
+                return await self._handle_stop_task(payload)  # 传递完整的payload
             else:
                 logger.warning(f"未知的任务命令类型: {cmd_type}")
                 return None
@@ -72,18 +73,19 @@ class TaskCommandHandler:
             logger.error(f"处理任务命令时出错: {e}")
             return None
             
-    async def _handle_start_task(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_start_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理启动任务命令
         
         Args:
-            data: 命令数据
+            payload: 完整的命令消息内容
             
         Returns:
             Dict[str, Any]: 处理结果
         """
         try:
             # 1. 提取任务相关信息
+            data = payload.get("data", {})
             task_info = data.get("task_info")
             subtask_info = data.get("subtask_info")
             source_info = data.get("source")
@@ -93,12 +95,12 @@ class TaskCommandHandler:
             
             if not all([task_info, subtask_info, source_info, model_config, analysis_config, result_config]):
                 logger.warning(f"启动任务命令缺少必要参数: {data}")
-                return self._create_response(False, "缺少必要参数", data)
+                return self._create_response(False, "缺少必要参数", payload)
             
             # 2. 构建任务配置
             task_config = {
                 # 基本信息
-                "task_id": task_info["task_id"],
+                "task_id": task_info["task_id"],  # 使用接收到的任务ID
                 "name": task_info["name"],
                 "analysis_interval": task_info.get("analysis_interval", 1),
                 
@@ -171,95 +173,141 @@ class TaskCommandHandler:
                 "updated_at": datetime.now().isoformat()
             }
             
-            # 3. 添加任务到管理器
-            success = self.task_manager.add_task(task_info["task_id"], task_config)
+            # 3. 添加任务到管理器，使用接收到的任务ID
+            task_id = task_info["task_id"]  # 使用接收到的任务ID
+            success = self.task_manager.add_task(task_id, task_config)
             if not success:
-                logger.error(f"添加任务失败: {task_info['task_id']}")
-                return self._create_response(False, "添加任务失败", data)
+                logger.error(f"添加任务失败: {task_id}")
+                return self._create_response(False, "添加任务失败", payload)
             
             # 4. 启动任务处理
             try:
                 # 更新任务状态为处理中
                 self.task_manager.update_task_status(
-                    task_info["task_id"],
+                    task_id,
                     TaskStatus.PROCESSING
                 )
                 
                 # 发送启动中响应
-                start_response = self._create_response(True, "启动任务中", data)
-                if data.get("confirmation_topic"):
+                start_response = self._create_response(True, "启动任务中", payload)
+                if payload.get("confirmation_topic"):
                     await self.mqtt_manager.publish(
-                        data["confirmation_topic"],
+                        payload["confirmation_topic"],
                         start_response
                     )
                 
                 # 根据任务类型启动相应的处理器
                 if source_info["type"] == "stream":
-                    logger.info(f"启动流分析任务: {task_info['task_id']}")
-                    # 异步启动流处理
+                    logger.info(f"启动流分析任务: {task_id}")
+                    # 异步启动流处理，使用接收到的任务ID
                     success = await self.task_manager.start_stream_task(
-                        task_info["task_id"],
+                        task_id,
                         task_config
                     )
                 else:
                     logger.error(f"不支持的数据源类型: {source_info['type']}")
-                    return self._create_response(False, f"不支持的数据源类型: {source_info['type']}", data)
+                    return self._create_response(False, f"不支持的数据源类型: {source_info['type']}", payload)
                 
                 if success:
-                    logger.info(f"任务启动成功: {task_info['task_id']}")
-                    return self._create_response(True, "启动任务成功", data)
+                    logger.info(f"任务启动成功: {task_id}")
+                    return self._create_response(True, "启动任务成功", payload)
                 else:
-                    logger.error(f"任务启动失败: {task_info['task_id']}")
-                    return self._create_response(False, "启动任务失败", data)
+                    logger.error(f"任务启动失败: {task_id}")
+                    return self._create_response(False, "启动任务失败", payload)
                 
             except Exception as e:
-                logger.error(f"启动任务处理时出错: {e}")
-                # 更新任务状态为失败
-                self.task_manager.update_task_status(
-                    task_info["task_id"],
-                    TaskStatus.FAILED,
-                    error=str(e)
-                )
-                return self._create_response(False, f"启动任务处理失败: {str(e)}", data)
-            
+                logger.error(f"启动任务时出错: {e}")
+                return self._create_response(False, f"启动任务时出错: {str(e)}", payload)
+                
         except Exception as e:
-            logger.error(f"处理启动任务命令失败: {e}")
-            import traceback
-            logger.error(f"错误详情:\n{traceback.format_exc()}")
-            return self._create_response(False, f"处理启动任务命令失败: {str(e)}", data)
+            logger.error(f"处理启动任务命令时出错: {e}")
+            return self._create_response(False, f"处理启动任务命令时出错: {str(e)}", payload)
             
-    async def _handle_stop_task(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_stop_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理停止任务命令
         
         Args:
-            data: 命令数据
+            payload: 完整的命令消息内容
             
         Returns:
             Dict[str, Any]: 处理结果
         """
         try:
-            # 获取任务ID
+            # 获取任务ID和子任务ID
+            data = payload.get("data", {})
             task_id = data.get("task_id")
-            if not task_id:
-                logger.warning(f"停止任务命令缺少task_id: {data}")
-                return self._create_response(False, "缺少任务ID")
+            subtask_id = data.get("subtask_id")
             
-            # 停止任务
-            success = await self.task_manager.stop_task(task_id)
+            if not task_id:
+                logger.warning("停止任务命令缺少task_id字段")
+                return self._create_response(False, "缺少任务ID", payload)
+                
+            # 记录停止请求
+            logger.info(f"收到停止任务请求: task_id={task_id}, subtask_id={subtask_id}")
+            
+            # 检查任务是否存在
+            task = self.task_manager.get_task(task_id)
+            if not task:
+                logger.warning(f"要停止的任务不存在: {task_id}")
+                return self._create_response(False, "任务不存在", payload)
+                
+            # 检查任务状态
+            current_status = task.get("status")
+            if current_status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED]:
+                logger.info(f"任务已经处于终止状态: {task_id}, status={current_status}")
+                return self._create_response(True, f"任务已经处于{current_status}状态", payload)
+                
+            # 发送停止中响应
+            stop_response = self._create_response(True, "正在停止任务", payload)
+            if payload.get("confirmation_topic"):
+                await self.mqtt_manager.publish(
+                    payload["confirmation_topic"],
+                    stop_response
+                )
+            
+            # 更新状态为 STOPPING
+            logger.info(f"尝试将任务状态更新为 STOPPING: task_id={task_id}, subtask_id={subtask_id}")
+            self.task_manager.update_task_status(
+                task_id,
+                TaskStatus.STOPPING # 只传递 task_id 和 status
+            )
+            
+            # 实际停止任务
+            success = await self.task_manager.stop_task(task_id, subtask_id)
             
             if success:
-                logger.info(f"任务停止成功: {task_id}")
-                return self._create_response(True, "任务停止成功")
+                logger.info(f"任务停止成功: task_id={task_id}, subtask_id={subtask_id}")
+                self.task_manager.update_task_status(
+                    task_id,
+                    TaskStatus.STOPPED,
+                    result=success # 保留 result/error
+                )
+                final_response = self._create_response(True, "任务已成功停止", payload)
+                return final_response
             else:
-                logger.error(f"任务停止失败: {task_id}")
-                return self._create_response(False, "任务停止失败")
-            
+                logger.error(f"任务停止失败: task_id={task_id}, subtask_id={subtask_id}, error={success}")
+                self.task_manager.update_task_status(
+                    task_id,
+                    TaskStatus.FAILED,
+                    error=success # 保留 result/error
+                )
+                final_response = self._create_response(False, f"停止任务失败: {success}", payload)
+                return final_response
+                
         except Exception as e:
-            logger.error(f"停止任务失败: {e}")
-            import traceback
-            logger.error(f"错误详情:\n{traceback.format_exc()}")
-            return self._create_response(False, f"停止任务失败: {str(e)}")
+            logger.error(f"处理停止任务命令时出错: {e}")
+            # 尝试更新任务状态为失败
+            if task_id:
+                try:
+                    self.task_manager.update_task_status(
+                        task_id,
+                        TaskStatus.FAILED,
+                        error=str(e)
+                    )
+                except Exception as status_error:
+                    logger.error(f"更新任务状态失败: {status_error}")
+            return self._create_response(False, f"处理停止任务命令时出错: {str(e)}", payload)
             
     def _create_response(self, success: bool, message: str, task_info: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -268,7 +316,7 @@ class TaskCommandHandler:
         Args:
             success: 是否成功
             message: 响应消息
-            task_info: 任务信息（可选）
+            task_info: 原始请求的完整消息内容（可选），用于获取message_id, uuid, confirmation_topic
             
         Returns:
             Dict[str, Any]: 响应消息
@@ -279,29 +327,42 @@ class TaskCommandHandler:
         # 获取MAC地址
         mac_address = self.get_mac_address()
         
+        # 从原始task_info获取关联信息
+        original_request_data = task_info if task_info else {}
+        message_id = original_request_data.get("message_id")
+        message_uuid = original_request_data.get("message_uuid")
+        confirmation_topic = original_request_data.get("confirmation_topic")  # 从根级别获取
+        cmd_type_original = original_request_data.get("data", {}).get("cmd_type", "unknown_cmd")
+        task_id_original = original_request_data.get("data", {}).get("task_info", {}).get("task_id")
+        subtask_id_original = original_request_data.get("data", {}).get("subtask_info", {}).get("subtask_id")
+        
         # 构建响应
         response = {
-            "message_id": task_info.get("message_id") if task_info else None,
+            "message_id": message_id,
             "message_type": 80003,  # 响应消息类型
-            "message_uuid": task_info.get("message_uuid") if task_info else None,
+            "message_uuid": message_uuid,
             "response_type": "cmd_reply",
             "mac_address": mac_address,
             "status": "1" if success else "0",
             "data": {
-                "cmd_type": "start_task",
-                "task_id": task_info.get("task_info", {}).get("task_id") if task_info else None,
-                "subtask_id": task_info.get("subtask_info", {}).get("subtask_id") if task_info else None,
+                "cmd_type": cmd_type_original,
+                "task_id": task_id_original,
+                "subtask_id": subtask_id_original,
                 "message": message,
                 "timestamp": timestamp
             }
         }
         
+        # 如果有确认主题，也添加到响应中，供上层使用
+        if confirmation_topic:
+            response["confirmation_topic"] = confirmation_topic
+            
         return response
 
 # 全局任务命令处理器实例
 _task_command_handler = None
 
-def get_task_command_handler():
+def get_task_command_handler(mqtt_manager):
     """
     获取全局任务命令处理器实例
     
@@ -310,5 +371,8 @@ def get_task_command_handler():
     """
     global _task_command_handler
     if _task_command_handler is None:
-        _task_command_handler = TaskCommandHandler()
+        _task_command_handler = TaskCommandHandler(mqtt_manager)
+    # 可选：如果需要确保 mqtt_manager 总是最新的
+    # elif _task_command_handler.mqtt_manager != mqtt_manager:
+    #    _task_command_handler.mqtt_manager = mqtt_manager
     return _task_command_handler 

@@ -35,10 +35,11 @@ class MQTTMessageHandler(BaseMQTTHandler):
         # 初始化主题管理器
         self.topic_manager = MQTTTopicManager(topic_prefix=settings.MQTT_TOPIC_PREFIX)
         
-        # 初始化各个处理器
+        # 初始化其他处理器
         self.connection_handler = get_connection_handler()
         self.status_handler = get_status_handler()
-        self.command_handler = get_command_handler()
+        # 延迟 command_handler 的初始化
+        self.command_handler = None 
         
         logger.info("MQTT消息处理器已初始化")
         
@@ -51,7 +52,11 @@ class MQTTMessageHandler(BaseMQTTHandler):
         """
         super().set_mqtt_manager(mqtt_manager)
         
-        # 更新所有处理器的MQTT管理器
+        # 在这里初始化 command_handler，并传递 mqtt_manager
+        if self.command_handler is None:
+            self.command_handler = get_command_handler(mqtt_manager)
+        
+        # 更新所有子处理器的MQTT管理器
         if self.connection_handler:
             self.connection_handler.set_mqtt_manager(mqtt_manager)
         if self.status_handler:

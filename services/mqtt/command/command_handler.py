@@ -9,7 +9,8 @@ from shared.utils.tools import get_mac_address
 from ..handler.message_types import (
     MESSAGE_TYPE_REQUEST_SETTING,
     REQUEST_TYPE_NODE_CMD,
-    REQUEST_TYPE_TASK_CMD
+    REQUEST_TYPE_TASK_CMD,
+    TOPIC_TYPE_DEVICE_CONFIG_REPLY
 )
 from .node_command_handler import get_node_command_handler
 from .task_command_handler import get_task_command_handler
@@ -24,15 +25,28 @@ class CommandHandler(BaseMQTTHandler):
     处理来自服务端的命令消息
     """
     
-    def __init__(self):
+    def __init__(self, mqtt_manager):
         """
         初始化命令处理器
         """
         super().__init__()
+        self.mqtt_manager = mqtt_manager # 保存mqtt_manager实例
         self.node_handler = get_node_command_handler()
-        self.task_handler = get_task_command_handler()
+        self.task_handler = get_task_command_handler(self.mqtt_manager) # 传递mqtt_manager
         logger.info("MQTT命令处理器已初始化")
         
+    def set_mqtt_manager(self, mqtt_manager):
+        """
+        设置MQTT管理器，并向下传递
+        """
+        super().set_mqtt_manager(mqtt_manager)
+        # 确保 task_handler 也获得 mqtt_manager
+        if self.task_handler and hasattr(self.task_handler, 'mqtt_manager'):
+             self.task_handler.mqtt_manager = mqtt_manager
+        # 或者如果 task_handler 也有 set_mqtt_manager 方法
+        # if self.task_handler and hasattr(self.task_handler, 'set_mqtt_manager'):
+        #    self.task_handler.set_mqtt_manager(mqtt_manager)
+
     def get_mac_address(self) -> str:
         """
         获取MAC地址
@@ -91,21 +105,37 @@ class CommandHandler(BaseMQTTHandler):
         发送命令回复
         
         Args:
-            reply: 回复消息内容
+            reply: 回复消息内容 (可能包含 confirmation_topic)
             
         Returns:
             bool: 是否发送成功
         """
         try:
-            topic = self.mqtt_manager.topic_manager.format_topic(
-                MESSAGE_TYPE_REQUEST_SETTING,
-                mac_address=self.get_mac_address()
-            )
-            if not topic:
-                logger.error("获取回复主题失败")
+            logger.debug(f"[send_reply] 收到的原始回复字典: {reply}") # 打印收到的完整字典
+            
+            # 优先使用回复中指定的确认主题
+            target_topic = reply.get("confirmation_topic")
+            logger.debug(f"[send_reply] 从回复字典获取的 confirmation_topic: {target_topic}") # 打印获取到的值
+            
+            # 如果没有指定确认主题，则默认回复到设备配置回复主题
+            if not target_topic:
+                logger.warning(f"[send_reply] 未找到 confirmation_topic 或其值为空，使用默认回复主题")
+                target_topic = self.mqtt_manager.topic_manager.format_topic(
+                    TOPIC_TYPE_DEVICE_CONFIG_REPLY,
+                    mac_address=self.get_mac_address()
+                )
+                logger.warning(f"[send_reply] 默认回复主题: {target_topic}")
+            
+            if not target_topic:
+                logger.error("无法确定回复主题")
                 return False
                 
-            return await self.mqtt_manager.publish(topic, reply, qos=1)
+            # 从回复字典中移除临时的 confirmation_topic 键 (如果存在)
+            reply_payload = reply.copy()
+            reply_payload.pop("confirmation_topic", None)
+                
+            logger.info(f"准备发送命令回复到主题: {target_topic}")
+            return await self.mqtt_manager.publish(target_topic, reply_payload, qos=1)
             
         except Exception as e:
             logger.error(f"发送命令回复失败: {e}")
@@ -114,7 +144,7 @@ class CommandHandler(BaseMQTTHandler):
 # 全局命令处理器实例
 _command_handler = None
 
-def get_command_handler() -> CommandHandler:
+def get_command_handler(mqtt_manager) -> CommandHandler:
     """
     获取全局命令处理器实例
     
@@ -123,5 +153,8 @@ def get_command_handler() -> CommandHandler:
     """
     global _command_handler
     if _command_handler is None:
-        _command_handler = CommandHandler()
+        _command_handler = CommandHandler(mqtt_manager)
+    # 可选：更新mqtt_manager引用
+    # elif _command_handler.mqtt_manager != mqtt_manager:
+    #    _command_handler.mqtt_manager = mqtt_manager
     return _command_handler 

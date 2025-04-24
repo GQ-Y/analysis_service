@@ -12,6 +12,8 @@ MESSAGE_TYPE_BROADCAST = 80008   # 系统广播
 # 请求设置消息
 MESSAGE_TYPE_REQUEST_SETTING = 80002
 
+TOPIC_TYPE_DEVICE_CONFIG_REPLY = 'device_config_reply'
+
 # 命令类型
 REQUEST_TYPE_NODE_CMD = "node_cmd"
 REQUEST_TYPE_TASK_CMD = "task_cmd"

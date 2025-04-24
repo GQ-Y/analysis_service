@@ -13,6 +13,7 @@ import threading
 from core.config import settings
 from shared.utils.logger import setup_logger
 from .utils.status import TaskStatus
+from .processor.task_processor import TaskProcessor
 
 logger = setup_logger(__name__)
 
@@ -45,6 +46,9 @@ class TaskManager:
         # 启动清理线程
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self.cleanup_thread.start()
+        
+        # 创建并持有 TaskProcessor 实例
+        self.processor = TaskProcessor(task_manager=self)
         
         logger.info(f"任务管理器初始化完成，最大任务数: {self.max_tasks}")
         
@@ -435,12 +439,8 @@ class TaskManager:
                 logger.error(f"任务不存在: {task_id}")
                 return False
             
-            # 2. 创建任务处理器
-            from .processor.task_processor import TaskProcessor
-            processor = TaskProcessor(task_manager=self)
-            
-            # 3. 启动流分析
-            success = await processor.start_stream_analysis(task_id)
+            # 2. 使用持有的 processor 启动流分析
+            success = await self.processor.start_stream_analysis(task_id)
             
             if success:
                 logger.info(f"流分析任务启动成功: {task_id}")
@@ -453,4 +453,69 @@ class TaskManager:
             logger.error(f"启动流分析任务失败: {str(e)}")
             import traceback
             logger.error(f"错误详情:\n{traceback.format_exc()}")
+            return False 
+
+    async def stop_task(self, task_id: str, subtask_id: Optional[str] = None) -> bool:
+        """
+        停止任务
+        
+        Args:
+            task_id: 任务ID
+            subtask_id: 子任务ID（可选）
+            
+        Returns:
+            bool: 是否停止成功
+        """
+        try:
+            # 1. 获取任务信息
+            task = self.tasks.get(task_id)
+            if not task:
+                logger.error(f"要停止的任务不存在: {task_id}")
+                return False
+                
+            # 2. 检查任务状态
+            current_status = task.get("status")
+            if current_status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED]:
+                logger.info(f"任务已经处于终止状态: {task_id}, status={current_status}")
+                return True
+                
+            # 3. 更新任务状态为停止中
+            self.update_task_status(
+                task_id,
+                TaskStatus.STOPPING
+            )
+            
+            # 4. 使用持有的 processor 停止任务
+            result = await self.processor.stop_task(task_id)
+            
+            if result.get("success"):
+                logger.info(f"任务停止成功: {task_id}")
+                # 更新任务状态为已停止
+                self.update_task_status(
+                    task_id,
+                    TaskStatus.STOPPED,
+                    result=result.get("message", "任务已停止")
+                )
+                return True
+            else:
+                logger.error(f"任务停止失败: {task_id}, error={result.get('error')}")
+                # 更新任务状态为失败
+                self.update_task_status(
+                    task_id,
+                    TaskStatus.FAILED,
+                    error=result.get("error", "停止任务失败")
+                )
+                return False
+                
+        except Exception as e:
+            logger.error(f"停止任务时出错: {str(e)}")
+            import traceback
+            logger.error(f"错误详情:\n{traceback.format_exc()}")
+            
+            # 更新任务状态为失败
+            self.update_task_status(
+                task_id,
+                TaskStatus.FAILED,
+                error=str(e)
+            )
             return False 
