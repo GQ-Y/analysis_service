@@ -152,19 +152,19 @@ class MQTTClient:
         try:
             # 准备遗嘱消息数据
             will_topic = self.topic_manager.format_topic(TOPIC_TYPE_CONNECTION)
-            will_payload = {
-                "message_type": 80001,
-                "mac_address": get_mac_address(),
-                "client_id": self.client_id,
-                "status": 0,
-                "message": "离线",
-                "timestamp": datetime.now().isoformat(),
-                "compute_type": 0,
-                "ip": get_local_ip(),
-                "port": settings.SERVICES_PORT,
-                "hostname": socket.gethostname(),
-                "version": settings.VERSION
-            }
+            
+            # 使用connection_handler创建遗嘱消息
+            will_payload = self.connection_handler.create_will_message(
+                mac_address=get_mac_address(),
+                client_id=self.client_id,
+                reason=1,  # 异常断开状态码
+                resources={
+                    "task_count": 0,
+                    "image_task_count": 0,
+                    "video_task_count": 0,
+                    "stream_task_count": 0
+                }
+            )
             
             # 准备遗嘱消息 - 在gmqtt中，遗嘱消息应作为Client的初始化参数
             will_message = gmqtt.Message(

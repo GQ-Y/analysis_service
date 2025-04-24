@@ -6,11 +6,12 @@ import logging
 import json
 from typing import Dict, Any, Optional
 from datetime import datetime
+import socket
 
 from core.config import settings
 from ..mqtt_handler import BaseMQTTHandler
 from ..mqtt_topic_manager import TOPIC_TYPE_CONNECTION
-from shared.utils.tools import get_mac_address, get_hostname,get_local_ip
+from shared.utils.tools import get_mac_address, get_hostname, get_local_ip
 from ..mqtt_printer import MQTTPrinter
 
 # 配置日志
@@ -99,40 +100,79 @@ class ConnectionHandler(BaseMQTTHandler):
             self.printer.print_connection_status("失败", f"发送上线消息时出错: {e}")
             return False
             
-    def create_will_message(self, mac_address: str, client_id: str, reason: int = 403, resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def create_will_message(self, mac_address: str, client_id: str, reason: int = 1, resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         创建遗嘱消息
         
         Args:
             mac_address: MAC地址
             client_id: 客户端ID
-            reason: 原因代码
-            resources: 资源信息
+            reason: 原因代码，默认1表示离线
+            resources: 资源信息，包含任务计数等
             
         Returns:
             Dict[str, Any]: 遗嘱消息
         """
         try:
-            message = {
-                "message_type": TOPIC_TYPE_CONNECTION,  # 连接消息
-                "mac_address": mac_address,
-                "client_id": client_id,
-                "status": reason,
-                "message": "离线",
-                "timestamp": datetime.now().isoformat(),
-                "resources": resources or {
-                    "task_count": 0,
-                    "image_task_count": 0,
-                    "video_task_count": 0,
-                    "stream_task_count": 0
-                }
+            # 检测系统计算能力
+            compute_type = 0  # 默认为CPU
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    compute_type = 2  # CPU和GPU都存在
+                else:
+                    compute_type = 0  # 只有CPU
+            except ImportError:
+                compute_type = 0  # 没有安装PyTorch，默认为CPU
+            
+            # 基础信息
+            base_info = {
+                "message_type": TOPIC_TYPE_CONNECTION,  # 连接消息类型
+                "mac_address": mac_address,             # 设备MAC地址
+                "client_id": client_id,                 # 客户端ID
+                "status": reason,                       # 状态码
+                "message": "离线",                      # 状态消息
+                "timestamp": datetime.now().isoformat() # 时间戳
             }
             
+            # 系统信息
+            system_info = {
+                "compute_type": compute_type,           # 计算能力类型
+                "ip": get_local_ip(),                  # IP地址
+                "port": settings.SERVICES_PORT,        # 服务端口
+                "hostname": socket.gethostname(),      # 主机名
+                "version": settings.VERSION            # 版本号
+            }
+            
+            # 资源信息（如果没有提供，使用默认值）
+            resource_info = resources or {
+                "task_count": 0,                       # 总任务数
+                "image_task_count": 0,                 # 图像任务数
+                "video_task_count": 0,                 # 视频任务数
+                "stream_task_count": 0                 # 流任务数
+            }
+            
+            # 合并所有信息
+            message = {
+                **base_info,
+                **system_info,
+                "resources": resource_info
+            }
+            
+            logger.info(f"已创建遗嘱消息: {message}")
             return message
             
         except Exception as e:
             logger.error(f"创建遗嘱消息时出错: {e}")
-            return {}
+            # 返回最小化的遗嘱消息
+            return {
+                "message_type": TOPIC_TYPE_CONNECTION,
+                "mac_address": mac_address,
+                "client_id": client_id,
+                "status": 500,  # 内部错误
+                "message": "离线",
+                "timestamp": datetime.now().isoformat()
+            }
         
     async def handle_message(self, topic: str, message: Dict[str, Any]) -> None:
         """

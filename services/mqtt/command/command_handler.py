@@ -3,7 +3,7 @@ MQTT命令处理器
 处理来自服务端的命令消息
 """
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Coroutine
 
 from ..mqtt_handler import BaseMQTTHandler, MESSAGE_TYPE_COMMAND
 
@@ -54,7 +54,7 @@ class CommandHandler(BaseMQTTHandler):
             logger.error(f"处理命令时出错: {e}")
             return None
             
-    async def _handle_start_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_start_task(self, payload: Dict[str, Any]) -> dict[str, int | str | None | Any] | None:
         """
         处理启动任务命令
         
