@@ -13,7 +13,7 @@ from datetime import datetime
 import socket
 
 from core.config import settings
-from .mqtt_topic_manager import MQTTTopicManager, TOPIC_TYPE_CONNECTION
+from .mqtt_topic_manager import MQTTTopicManager, TOPIC_TYPE_CONNECTION, TOPIC_TYPE_REQUEST_SETTING
 from .handler.connection_handler import get_connection_handler
 from .mqtt_handler import get_mqtt_message_handler
 from .mqtt_printer import MQTTPrinter
@@ -86,6 +86,18 @@ class MQTTClient:
             logger.info("MQTT连接成功")
             self.printer.print_connection_status("成功", "MQTT连接成功")
             
+            # 订阅必要的主题
+            request_setting_topic = self.topic_manager.format_topic(
+                TOPIC_TYPE_REQUEST_SETTING,
+                mac_address=get_mac_address()
+            )
+            if request_setting_topic:
+                self.client.subscribe(request_setting_topic, qos=1)
+                logger.info(f"已订阅请求设置主题: {request_setting_topic}")
+                self.printer.print_subscription(request_setting_topic, 1, "订阅")
+                # 添加到主题管理器
+                self.topic_manager.add_subscription(request_setting_topic, qos=1)
+            
             # 发送上线消息
             asyncio.create_task(self._send_online_message())
             
@@ -143,15 +155,16 @@ class MQTTClient:
             # 打印接收到的消息
             self.printer.print_message(topic, message, "接收")
             
-            # 调用消息处理器
-            handler = self.message_handlers.get(topic)
-            if handler:
-                asyncio.create_task(handler(topic, message))
+            # 使用消息处理器处理消息
+            if self.message_handler:
+                asyncio.create_task(self.message_handler.handle_message(topic, message))
             else:
-                logger.warning(f"未找到消息处理器: {topic}")
+                logger.warning("消息处理器未初始化")
                 
         except Exception as e:
             logger.error(f"处理消息时出错: {e}")
+            import traceback
+            logger.error(f"错误详情:\n{traceback.format_exc()}")
         
     async def connect(self) -> bool:
         """
@@ -168,7 +181,7 @@ class MQTTClient:
             will_payload = self.connection_handler.create_will_message(
                 mac_address=get_mac_address(),
                 client_id=self.client_id,
-                reason=1,  # 异常断开状态码
+                reason=0,  # 异常断开状态码
                 resources={
                     "task_count": 0,
                     "image_task_count": 0,
@@ -201,7 +214,7 @@ class MQTTClient:
             await self.client.connect(
                 host=self.host,
                 port=self.port,
-                keepalive=30,  # 减小keepalive值
+                keepalive=30,
                 version=MQTTv311
             )
             

@@ -100,7 +100,7 @@ class ConnectionHandler(BaseMQTTHandler):
             self.printer.print_connection_status("失败", f"发送上线消息时出错: {e}")
             return False
             
-    def create_will_message(self, mac_address: str, client_id: str, reason: int = 1, resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def create_will_message(self, mac_address: str, client_id: str, reason: int = 0, resources: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         创建遗嘱消息
         

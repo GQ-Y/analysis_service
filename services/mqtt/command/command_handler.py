@@ -3,9 +3,16 @@ MQTT命令处理器
 处理来自服务端的命令消息
 """
 import logging
-from typing import Dict, Any, Optional, Coroutine
+from typing import Dict, Any, Optional
 
-from ..mqtt_handler import BaseMQTTHandler, MESSAGE_TYPE_COMMAND
+from ..handler.message_types import (
+    MESSAGE_TYPE_REQUEST_SETTING,
+    REQUEST_TYPE_NODE_CMD,
+    REQUEST_TYPE_TASK_CMD
+)
+from .node_command_handler import get_node_command_handler
+from .task_command_handler import get_task_command_handler
+from ..handler.base_handler import BaseMQTTHandler
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -21,9 +28,11 @@ class CommandHandler(BaseMQTTHandler):
         初始化命令处理器
         """
         super().__init__()
+        self.node_handler = get_node_command_handler()
+        self.task_handler = get_task_command_handler()
         logger.info("MQTT命令处理器已初始化")
         
-    async def handle_command(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def handle_message(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         处理命令消息
         
@@ -35,90 +44,36 @@ class CommandHandler(BaseMQTTHandler):
             Optional[Dict[str, Any]]: 处理结果
         """
         try:
-            # 获取命令类型
-            command = payload.get("command")
-            if not command:
-                logger.warning(f"消息缺少command字段: {payload}")
+            # 检查消息类型
+            message_type = payload.get("message_type")
+            if message_type != MESSAGE_TYPE_REQUEST_SETTING:
+                logger.warning(f"非法的消息类型: {message_type}")
                 return None
                 
-            # 根据命令类型处理
-            if command == "start_task":
-                return await self._handle_start_task(payload)
-            elif command == "stop_task":
-                return await self._handle_stop_task(payload)
-            else:
-                logger.warning(f"未知的命令类型: {command}")
+            # 获取请求类型
+            request_type = payload.get("request_type")
+            if not request_type:
+                logger.warning(f"消息缺少request_type字段: {payload}")
                 return None
+                
+            # 根据请求类型分发到对应的处理器
+            result = None
+            if request_type == REQUEST_TYPE_NODE_CMD:
+                result = await self.node_handler.handle_command(payload)
+            elif request_type == REQUEST_TYPE_TASK_CMD:
+                result = await self.task_handler.handle_command(payload)
+            else:
+                logger.warning(f"未知的请求类型: {request_type}")
+                return None
+                
+            # 发送响应
+            if result:
+                await self.send_reply(result)
+                
+            return result
                 
         except Exception as e:
             logger.error(f"处理命令时出错: {e}")
-            return None
-            
-    async def _handle_start_task(self, payload: Dict[str, Any]) -> dict[str, int | str | None | Any] | None:
-        """
-        处理启动任务命令
-        
-        Args:
-            payload: 命令消息内容
-            
-        Returns:
-            Dict[str, Any]: 处理结果
-        """
-        try:
-            # 获取任务参数
-            task_id = payload.get("task_id")
-            task_type = payload.get("task_type")
-            params = payload.get("params", {})
-            
-            if not task_id or not task_type:
-                logger.warning(f"启动任务命令缺少必要参数: {payload}")
-                return None
-                
-            # TODO: 实现任务启动逻辑
-            
-            # 返回处理结果
-            return {
-                "message_type": MESSAGE_TYPE_COMMAND,
-                "command": "start_task",
-                "task_id": task_id,
-                "status": "success",
-                "timestamp": self.get_timestamp()
-            }
-            
-        except Exception as e:
-            logger.error(f"处理启动任务命令时出错: {e}")
-            return None
-            
-    async def _handle_stop_task(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        处理停止任务命令
-        
-        Args:
-            payload: 命令消息内容
-            
-        Returns:
-            Dict[str, Any]: 处理结果
-        """
-        try:
-            # 获取任务ID
-            task_id = payload.get("task_id")
-            if not task_id:
-                logger.warning(f"停止任务命令缺少task_id: {payload}")
-                return None
-                
-            # TODO: 实现任务停止逻辑
-            
-            # 返回处理结果
-            return {
-                "message_type": MESSAGE_TYPE_COMMAND,
-                "command": "stop_task",
-                "task_id": task_id,
-                "status": "success",
-                "timestamp": self.get_timestamp()
-            }
-            
-        except Exception as e:
-            logger.error(f"处理停止任务命令时出错: {e}")
             return None
             
     async def send_reply(self, reply: Dict[str, Any]) -> bool:
@@ -132,12 +87,15 @@ class CommandHandler(BaseMQTTHandler):
             bool: 是否发送成功
         """
         try:
-            topic = self.mqtt_manager.topic_manager.format_topic("config_reply")
+            topic = self.mqtt_manager.topic_manager.format_topic(
+                MESSAGE_TYPE_REQUEST_SETTING,
+                mac_address=self.get_mac_address()
+            )
             if not topic:
                 logger.error("获取回复主题失败")
                 return False
                 
-            return await self.publish(topic, reply, qos=1)
+            return await self.mqtt_manager.publish(topic, reply, qos=1)
             
         except Exception as e:
             logger.error(f"发送命令回复失败: {e}")

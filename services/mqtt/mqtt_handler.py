@@ -5,12 +5,17 @@ MQTT消息处理器
 import logging
 import json
 from typing import Dict, Any, Optional, Callable
+import asyncio
 
 from .mqtt_printer import MQTTPrinter
 from .handler.base_handler import BaseMQTTHandler
 from .handler.message_types import *
 from .handler.connection_handler import get_connection_handler
 from .handler.status_handler import get_status_handler
+from .command.command_handler import get_command_handler
+from .mqtt_topic_manager import TOPIC_TYPE_REQUEST_SETTING, MQTTTopicManager
+from shared.utils.tools import get_mac_address
+from core.config import settings
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -26,11 +31,14 @@ class MQTTMessageHandler(BaseMQTTHandler):
         初始化MQTT消息处理器
         """
         super().__init__()
-        self.handlers = {}
+        
+        # 初始化主题管理器
+        self.topic_manager = MQTTTopicManager(topic_prefix=settings.MQTT_TOPIC_PREFIX)
         
         # 初始化各个处理器
         self.connection_handler = get_connection_handler()
         self.status_handler = get_status_handler()
+        self.command_handler = get_command_handler()
         
         logger.info("MQTT消息处理器已初始化")
         
@@ -48,6 +56,8 @@ class MQTTMessageHandler(BaseMQTTHandler):
             self.connection_handler.set_mqtt_manager(mqtt_manager)
         if self.status_handler:
             self.status_handler.set_mqtt_manager(mqtt_manager)
+        if self.command_handler:
+            self.command_handler.set_mqtt_manager(mqtt_manager)
             
     async def start(self):
         """
@@ -67,18 +77,6 @@ class MQTTMessageHandler(BaseMQTTHandler):
             await self.status_handler.stop()
             logger.info("状态处理器已停止")
     
-    def register_handler(self, topic: str, handler: Callable):
-        """
-        注册消息处理器
-        
-        Args:
-            topic: 消息主题
-            handler: 消息处理函数
-        """
-        self.handlers[topic] = handler
-        logger.info(f"已注册消息处理器: {topic}")
-        self.printer.print_subscription(topic, 0, "注册")
-    
     async def handle_message(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         处理MQTT消息
@@ -96,29 +94,21 @@ class MQTTMessageHandler(BaseMQTTHandler):
             
             # 获取消息类型
             message_type = payload.get("message_type")
-            if not message_type:
+            if message_type is None:
                 logger.warning(f"消息缺少message_type字段: {payload}")
                 return None
             
             # 根据消息类型选择处理器
-            if message_type == MESSAGE_TYPE_CONNECTION:
-                # 使用连接处理器
+            if message_type == MESSAGE_TYPE_COMMAND:  # 80002 命令消息
+                logger.info(f"收到命令消息，转交给命令处理器处理: {payload}")
+                return await self.command_handler.handle_message(topic, payload)
+            elif message_type == MESSAGE_TYPE_CONNECTION:  # 80001 连接消息
                 return await self.connection_handler.handle_message(topic, payload)
-            elif message_type == MESSAGE_TYPE_STATUS:
-                # 使用状态处理器
+            elif message_type == MESSAGE_TYPE_STATUS:  # 80004 状态消息
                 return await self.status_handler.handle_message(topic, payload)
             else:
-                # 尝试使用注册的处理器
-                handler = self.handlers.get(topic)
-                if handler:
-                    result = await handler(topic, payload)
-                    # 打印处理结果
-                    if result:
-                        self.printer.print_message(topic, result, "处理结果")
-                    return result
-                else:
-                    logger.warning(f"未找到对应的消息处理器: {topic}")
-                    return None
+                logger.warning(f"未知的消息类型: {message_type}")
+                return None
                     
         except Exception as e:
             logger.error(f"处理消息时出错: {e}")
