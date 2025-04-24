@@ -490,12 +490,13 @@ class TaskManager:
             
             if result.get("success"):
                 logger.info(f"任务停止成功: {task_id}")
-                # 更新任务状态为已停止
-                self.update_task_status(
-                    task_id,
-                    TaskStatus.STOPPED,
-                    result=result.get("message", "任务已停止")
-                )
+                # 更新任务状态为已停止 -> 修改为直接删除任务
+                # self.update_task_status(
+                #     task_id,
+                #     TaskStatus.STOPPED,
+                #     result=result.get("message", "任务已停止")
+                # )
+                self.delete_task(task_id) # 直接删除任务
                 return True
             else:
                 logger.error(f"任务停止失败: {task_id}, error={result.get('error')}")
