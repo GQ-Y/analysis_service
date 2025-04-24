@@ -9,12 +9,14 @@ import ssl
 from typing import Dict, Any, Optional, Callable
 import gmqtt
 from gmqtt.mqtt.constants import MQTTv311
+from datetime import datetime
+import socket
 
 from core.config import settings
 from .mqtt_topic_manager import MQTTTopicManager, TOPIC_TYPE_CONNECTION
 from .handler.connection_handler import get_connection_handler
 from .mqtt_printer import MQTTPrinter
-from shared.utils.tools import get_mac_address
+from shared.utils.tools import get_mac_address, get_local_ip
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -148,33 +150,37 @@ class MQTTClient:
             bool: 是否连接成功
         """
         try:
-            # 创建客户端
-            self.client = gmqtt.Client(self.client_id)
+            # 准备遗嘱消息数据
+            will_topic = self.topic_manager.format_topic(TOPIC_TYPE_CONNECTION)
+            will_payload = {
+                "message_type": 80001,
+                "mac_address": get_mac_address(),
+                "client_id": self.client_id,
+                "status": 0,
+                "message": "离线",
+                "timestamp": datetime.now().isoformat(),
+                "compute_type": 0,
+                "ip": get_local_ip(),
+                "port": settings.SERVICES_PORT,
+                "hostname": socket.gethostname(),
+                "version": settings.VERSION
+            }
+            
+            # 准备遗嘱消息 - 在gmqtt中，遗嘱消息应作为Client的初始化参数
+            will_message = gmqtt.Message(
+                will_topic,
+                payload=json.dumps(will_payload),
+                qos=self.qos,
+                retain=True
+            )
+            
+            # 创建客户端，将遗嘱消息作为初始化参数
+            self.client = gmqtt.Client(self.client_id, will_message=will_message)
             
             # 设置回调函数
             self.client.on_connect = self.on_connect
             self.client.on_disconnect = self.on_disconnect
             self.client.on_message = self.on_message
-            
-            # 设置遗嘱消息
-            will_message = self.connection_handler.create_will_message(
-                mac_address=get_mac_address(),
-                client_id=self.client_id,
-                reason=403,
-                resources={
-                    "task_count": 0,
-                    "image_task_count": 0,
-                    "video_task_count": 0,
-                    "stream_task_count": 0
-                }
-            )
-            will_topic = self.topic_manager.format_topic(80011)  # 连接主题
-            self.client.will_message = {
-                'topic': will_topic,
-                'payload': json.dumps(will_message),
-                'qos': self.qos,
-                'retain': False  # 移除retain标志
-            }
             
             # 设置认证信息
             if self.username and self.password:
@@ -184,9 +190,8 @@ class MQTTClient:
             await self.client.connect(
                 host=self.host,
                 port=self.port,
-                keepalive=self.keepalive,
-                version=MQTTv311,
-                ssl=False  # 明确禁用SSL
+                keepalive=30,  # 减小keepalive值
+                version=MQTTv311
             )
             
             return self.connected
@@ -196,16 +201,41 @@ class MQTTClient:
             self.printer.print_connection_status("失败", f"连接MQTT代理失败: {e}")
             return False
             
-    async def disconnect(self):
+    async def disconnect(self, trigger_will=True):
         """
         断开MQTT连接
+        
+        Args:
+            trigger_will: 是否触发遗嘱消息，默认为False
         """
         if self.client:
-            await self.client.disconnect()
-            self.connected = False
-            logger.info("MQTT连接已断开")
-            self.printer.print_connection_status("成功", "MQTT连接已断开")
+            try:
+                if trigger_will:
+                    # 强制断开连接，触发遗嘱消息
+                    if hasattr(self.client, '_connection') and self.client._connection:
+                        self.client._connection.close()
+                        logger.info("MQTT连接已强制断开，遗嘱消息将被发送")
+                        self.printer.print_connection_status("成功", "MQTT连接已强制断开，遗嘱消息将被发送")
+                else:
+                    # 正常断开连接（不会触发遗嘱消息）
+                    await self.client.disconnect()
+                    logger.info("MQTT连接已正常断开，不触发遗嘱消息")
+                    self.printer.print_connection_status("成功", "MQTT连接已正常断开，不触发遗嘱消息")
+            except Exception as e:
+                logger.warning(f"断开MQTT连接时出错: {e}")
+                # 尝试强制关闭连接
+                if hasattr(self.client, '_connection') and self.client._connection:
+                    self.client._connection.close()
             
+            self.connected = False
+            
+    # 重命名force_disconnect为trigger_will_disconnect，使其更加明确
+    async def trigger_will_disconnect(self):
+        """
+        强制断开MQTT连接以触发遗嘱消息
+        """
+        await self.disconnect(trigger_will=True)
+                
     async def _reconnect(self):
         """
         重新连接MQTT代理

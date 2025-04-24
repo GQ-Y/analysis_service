@@ -80,7 +80,7 @@ class ConnectionHandler(BaseMQTTHandler):
             }
             
             # 获取主题
-            topic = self.mqtt_manager.topic_manager.format_topic(80011)  # 连接主题
+            topic = self.mqtt_manager.topic_manager.format_topic(TOPIC_TYPE_CONNECTION)  # 连接主题
             
             # 发送消息
             success = await self.mqtt_manager.publish(topic, message, retain=True)
@@ -114,7 +114,7 @@ class ConnectionHandler(BaseMQTTHandler):
         """
         try:
             message = {
-                "message_type": 80011,  # 连接消息
+                "message_type": TOPIC_TYPE_CONNECTION,  # 连接消息
                 "mac_address": mac_address,
                 "client_id": client_id,
                 "status": reason,
@@ -147,11 +147,11 @@ class ConnectionHandler(BaseMQTTHandler):
             self.printer.print_message(topic, message, "接收")
             
             # 处理消息
-            if message.get("type") == 80011:  # 连接消息
+            if message.get("type") == TOPIC_TYPE_CONNECTION:  # 连接消息
                 await self._handle_connection_message(message)
-            elif message.get("type") == 80012:  # 请求设置消息
+            elif message.get("type") == TOPIC_TYPE_REQUEST_SETTING:  # 请求设置消息
                 await self._handle_request_setting_message(message)
-            elif message.get("type") == 80013:  # 配置回复消息
+            elif message.get("type") == TOPIC_TYPE_CONFIG_REPLY:  # 配置回复消息
                 await self._handle_config_reply_message(message)
             else:
                 logger.warning(f"未知的消息类型: {message.get('type')}")

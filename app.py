@@ -210,7 +210,7 @@ async def startup_event():
         
         # 创建MQTT客户端实例
         mqtt_client = MQTTClient(
-            client_id=f"analysis_{socket.gethostname()}"
+            client_id=get_mac_address()
         )
         
         # 保存MQTT客户端实例
