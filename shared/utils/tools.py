@@ -8,7 +8,8 @@ import random
 import platform
 import socket
 import psutil
-from typing import Dict, Any, Optional
+import os
+from typing import Dict, Any, Optional, List
 
 # 配置日志
 logger = logging.getLogger(__name__)
@@ -154,4 +155,49 @@ def get_resource_usage() -> Dict[str, Any]:
         }
     except Exception as e:
         logger.error(f"获取资源使用情况失败: {e}")
-        return {} 
+        return {}
+
+def get_local_models(models_dir: str = None) -> List[str]:
+    """
+    获取本地可用模型列表
+    扫描models目录下的所有子目录，每个子目录名称即为model_code
+    例如：
+    - data/models/model-gcc/  -> 返回 "model-gcc"
+    - data/models/yolo11n/    -> 返回 "yolo11n"
+    
+    Args:
+        models_dir: 模型目录路径，如果为None则使用默认路径 data/models/
+        
+    Returns:
+        List[str]: 模型代码列表，即models目录下的子目录名称列表
+    """
+    try:
+        # 如果未指定模型目录，则使用默认路径
+        if not models_dir:
+            # 获取当前文件所在目录的上级目录（shared目录的上级）
+            current_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            models_dir = os.path.join(current_dir, "data", "models")
+            
+        # 检查目录是否存在
+        if not os.path.exists(models_dir):
+            logger.warning(f"模型目录不存在: {models_dir}")
+            return []
+            
+        # 获取所有子目录名称（model_code）
+        model_codes = []
+        for item in os.listdir(models_dir):
+            item_path = os.path.join(models_dir, item)
+            # 只返回目录名称（model_code），并排除以.开头的隐藏目录
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                # 检查目录中是否包含模型文件（best.pt）
+                if os.path.exists(os.path.join(item_path, "best.pt")):
+                    model_codes.append(item)
+                else:
+                    logger.warning(f"模型目录 {item} 中未找到模型文件best.pt")
+                
+        logger.debug(f"找到本地模型代码: {model_codes}")
+        return model_codes
+        
+    except Exception as e:
+        logger.error(f"获取本地模型列表失败: {e}")
+        return [] 

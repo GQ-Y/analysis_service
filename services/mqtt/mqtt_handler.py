@@ -4,68 +4,16 @@ MQTT消息处理器
 """
 import logging
 import json
-import time
 from typing import Dict, Any, Optional, Callable
 
 from .mqtt_printer import MQTTPrinter
+from .handler.base_handler import BaseMQTTHandler
+from .handler.message_types import *
+from .handler.connection_handler import get_connection_handler
+from .handler.status_handler import get_status_handler
 
 # 配置日志
 logger = logging.getLogger(__name__)
-
-# 消息类型定义
-MESSAGE_TYPE_CONNECTION = 80001  # 连接/上线/遗嘱消息
-MESSAGE_TYPE_COMMAND = 80002     # 命令消息
-MESSAGE_TYPE_RESULT = 80003      # 分析结果响应
-MESSAGE_TYPE_STATUS = 80004      # 状态上报
-MESSAGE_TYPE_BROADCAST = 80008   # 系统广播
-
-class BaseMQTTHandler:
-    """
-    MQTT消息处理器基类
-    提供基础的消息处理功能
-    """
-    def __init__(self):
-        self.mqtt_manager = None
-        self.printer = MQTTPrinter()
-        
-    def set_mqtt_manager(self, mqtt_manager):
-        """
-        设置MQTT管理器
-        
-        Args:
-            mqtt_manager: MQTT管理器实例
-        """
-        self.mqtt_manager = mqtt_manager
-        
-    async def publish(self, topic: str, payload: Dict[str, Any], qos: int = 0) -> bool:
-        """
-        发布消息
-        
-        Args:
-            topic: 主题名称
-            payload: 消息内容
-            qos: 服务质量等级
-            
-        Returns:
-            bool: 发布是否成功
-        """
-        if not self.mqtt_manager:
-            logger.error("发布消息失败: MQTT管理器未设置")
-            return False
-            
-        # 打印发送的消息
-        self.printer.print_message(topic, payload, "发送")
-            
-        return await self.mqtt_manager.publish_message(topic, payload, qos)
-        
-    def get_timestamp(self) -> int:
-        """
-        获取当前时间戳
-        
-        Returns:
-            int: 当前时间戳
-        """
-        return int(time.time())
 
 class MQTTMessageHandler(BaseMQTTHandler):
     """
@@ -79,9 +27,45 @@ class MQTTMessageHandler(BaseMQTTHandler):
         """
         super().__init__()
         self.handlers = {}
-        # 注册消息处理器
-        ## self.connection_handler = get_mqtt_connection_handler()
+        
+        # 初始化各个处理器
+        self.connection_handler = get_connection_handler()
+        self.status_handler = get_status_handler()
+        
         logger.info("MQTT消息处理器已初始化")
+        
+    def set_mqtt_manager(self, mqtt_manager):
+        """
+        设置MQTT管理器，并传递给所有子处理器
+        
+        Args:
+            mqtt_manager: MQTT管理器实例
+        """
+        super().set_mqtt_manager(mqtt_manager)
+        
+        # 更新所有处理器的MQTT管理器
+        if self.connection_handler:
+            self.connection_handler.set_mqtt_manager(mqtt_manager)
+        if self.status_handler:
+            self.status_handler.set_mqtt_manager(mqtt_manager)
+            
+    async def start(self):
+        """
+        启动消息处理器
+        """
+        # 启动状态上报
+        if self.status_handler:
+            await self.status_handler.start()
+            logger.info("状态处理器已启动")
+            
+    async def stop(self):
+        """
+        停止消息处理器
+        """
+        # 停止状态上报
+        if self.status_handler:
+            await self.status_handler.stop()
+            logger.info("状态处理器已停止")
     
     def register_handler(self, topic: str, handler: Callable):
         """
@@ -118,13 +102,11 @@ class MQTTMessageHandler(BaseMQTTHandler):
             
             # 根据消息类型选择处理器
             if message_type == MESSAGE_TYPE_CONNECTION:
-                # 打印连接状态
-                self.printer.print_connection_status(
-                    "成功" if payload.get("status") == 200 else "失败",
-                    f"处理连接消息: {payload.get('message', '')}"
-                )
-                # return await self.connection_handler.handle_message(topic, payload)
-                pass
+                # 使用连接处理器
+                return await self.connection_handler.handle_message(topic, payload)
+            elif message_type == MESSAGE_TYPE_STATUS:
+                # 使用状态处理器
+                return await self.status_handler.handle_message(topic, payload)
             else:
                 # 尝试使用注册的处理器
                 handler = self.handlers.get(topic)

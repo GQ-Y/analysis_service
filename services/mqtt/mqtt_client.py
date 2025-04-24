@@ -15,6 +15,7 @@ import socket
 from core.config import settings
 from .mqtt_topic_manager import MQTTTopicManager, TOPIC_TYPE_CONNECTION
 from .handler.connection_handler import get_connection_handler
+from .mqtt_handler import get_mqtt_message_handler
 from .mqtt_printer import MQTTPrinter
 from shared.utils.tools import get_mac_address, get_local_ip
 
@@ -39,9 +40,12 @@ class MQTTClient:
         self.connected = False
         self.topic_manager = MQTTTopicManager(topic_prefix=settings.MQTT_TOPIC_PREFIX)
         self.connection_handler = get_connection_handler()
+        self.message_handler = get_mqtt_message_handler()
         self.printer = MQTTPrinter()
         
+        # 设置MQTT管理器
         self.connection_handler.set_mqtt_manager(self)
+        self.message_handler.set_mqtt_manager(self)
         
         # 连接参数
         self.host = settings.MQTT_BROKER_HOST
@@ -87,6 +91,9 @@ class MQTTClient:
             
             # 重新订阅主题
             asyncio.create_task(self._resubscribe_topics())
+            
+            # 启动消息处理器
+            asyncio.create_task(self.message_handler.start())
         else:
             self.connected = False
             logger.error(f"MQTT连接失败: {rc}")
@@ -102,6 +109,10 @@ class MQTTClient:
             exc: 异常信息
         """
         self.connected = False
+        
+        # 停止消息处理器
+        asyncio.create_task(self.message_handler.stop())
+        
         if exc:
             logger.warning(f"MQTT意外断开连接: {exc}")
             self.printer.print_connection_status("失败", f"MQTT意外断开连接: {exc}")
@@ -206,8 +217,11 @@ class MQTTClient:
         断开MQTT连接
         
         Args:
-            trigger_will: 是否触发遗嘱消息，默认为False
+            trigger_will: 是否触发遗嘱消息，默认为True
         """
+        # 停止消息处理器
+        await self.message_handler.stop()
+        
         if self.client:
             try:
                 if trigger_will:

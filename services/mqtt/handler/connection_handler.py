@@ -9,8 +9,8 @@ from datetime import datetime
 import socket
 
 from core.config import settings
-from ..mqtt_handler import BaseMQTTHandler
-from ..mqtt_topic_manager import TOPIC_TYPE_CONNECTION
+from .base_handler import BaseMQTTHandler
+from .message_types import MESSAGE_TYPE_CONNECTION
 from shared.utils.tools import get_mac_address, get_hostname, get_local_ip
 from ..mqtt_printer import MQTTPrinter
 
@@ -66,7 +66,7 @@ class ConnectionHandler(BaseMQTTHandler):
                 
             # 创建上线消息
             message = {
-                "message_type": TOPIC_TYPE_CONNECTION,  # 连接消息
+                "message_type": MESSAGE_TYPE_CONNECTION,  # 连接消息
                 "mac_address": mac_address,
                 "client_id": client_id,
                 "status": 1,
@@ -81,7 +81,7 @@ class ConnectionHandler(BaseMQTTHandler):
             }
             
             # 获取主题
-            topic = self.mqtt_manager.topic_manager.format_topic(TOPIC_TYPE_CONNECTION)  # 连接主题
+            topic = self.mqtt_manager.topic_manager.format_topic(MESSAGE_TYPE_CONNECTION)  # 连接主题
             
             # 发送消息
             success = await self.mqtt_manager.publish(topic, message, retain=True)
@@ -127,7 +127,7 @@ class ConnectionHandler(BaseMQTTHandler):
             
             # 基础信息
             base_info = {
-                "message_type": TOPIC_TYPE_CONNECTION,  # 连接消息类型
+                "message_type": MESSAGE_TYPE_CONNECTION,  # 连接消息类型
                 "mac_address": mac_address,             # 设备MAC地址
                 "client_id": client_id,                 # 客户端ID
                 "status": reason,                       # 状态码
@@ -166,7 +166,7 @@ class ConnectionHandler(BaseMQTTHandler):
             logger.error(f"创建遗嘱消息时出错: {e}")
             # 返回最小化的遗嘱消息
             return {
-                "message_type": TOPIC_TYPE_CONNECTION,
+                "message_type": MESSAGE_TYPE_CONNECTION,
                 "mac_address": mac_address,
                 "client_id": client_id,
                 "status": 500,  # 内部错误
@@ -187,7 +187,7 @@ class ConnectionHandler(BaseMQTTHandler):
             self.printer.print_message(topic, message, "接收")
             
             # 处理消息
-            if message.get("type") == TOPIC_TYPE_CONNECTION:  # 连接消息
+            if message.get("type") == MESSAGE_TYPE_CONNECTION:  # 连接消息
                 await self._handle_connection_message(message)
             elif message.get("type") == TOPIC_TYPE_REQUEST_SETTING:  # 请求设置消息
                 await self._handle_request_setting_message(message)

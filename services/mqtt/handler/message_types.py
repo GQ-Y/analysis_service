@@ -1,0 +1,10 @@
+"""
+MQTT消息类型定义
+"""
+
+# 消息类型定义
+MESSAGE_TYPE_CONNECTION = 80001  # 连接/上线/遗嘱消息
+MESSAGE_TYPE_COMMAND = 80002     # 命令消息
+MESSAGE_TYPE_RESULT = 80003      # 分析结果响应
+MESSAGE_TYPE_STATUS = 80004      # 状态上报
+MESSAGE_TYPE_BROADCAST = 80008   # 系统广播 
