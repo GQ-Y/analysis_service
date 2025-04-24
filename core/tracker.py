@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 import cv2
 from loguru import logger
+from scipy.optimize import linear_sum_assignment
 
 @dataclass
 class TrackingObject:
@@ -154,7 +155,6 @@ class SORTTracker(BaseTracker):
                     iou_matrix[t, d] = self._calculate_iou(track.bbox, det_bbox)
             
             # 使用匈牙利算法进行匹配
-            from scipy.optimize import linear_sum_assignment
             track_indices, detection_indices = linear_sum_assignment(-iou_matrix)
             
             # 更新匹配的跟踪对象
@@ -283,7 +283,6 @@ class ByteTracker(BaseTracker):
                 for d, det_bbox in enumerate(high_bboxes):
                     iou_matrix[t, d] = self._calculate_iou(track.bbox, det_bbox)
                     
-            from scipy.optimize import linear_sum_assignment
             track_indices, detection_indices = linear_sum_assignment(-iou_matrix)
             
             # 更新匹配的跟踪对象

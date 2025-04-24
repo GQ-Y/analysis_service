@@ -11,7 +11,6 @@ import aiohttp
 import numpy as np
 from typing import Dict, Any, Optional, Union
 from datetime import datetime
-from scipy.optimize import linear_sum_assignment
 import json
 
 from core.task_management.manager import TaskManager
