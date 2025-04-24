@@ -6,8 +6,7 @@ import logging
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from core.task_manager import TaskManager, TaskStatus
-from core.models import AnalysisType, RoiType
+from core import TaskManager, TaskStatus, AnalysisType, RoiType
 from shared.utils.tools import get_mac_address
 from ..handler.message_types import (
     MESSAGE_TYPE_REQUEST_SETTING,
@@ -167,7 +166,7 @@ class TaskCommandHandler:
                 },
                 
                 # 任务状态
-                "status": TaskStatus.PENDING,
+                "status": TaskStatus.WAITING,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat()
             }

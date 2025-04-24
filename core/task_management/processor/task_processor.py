@@ -8,15 +8,33 @@ import time
 import asyncio
 import base64
 import aiohttp
+import numpy as np
 from typing import Dict, Any, Optional, Union
 from datetime import datetime
+from scipy.optimize import linear_sum_assignment
+import json
 
-from core.task_manager import TaskManager, TaskStatus
-from core.detection.yolo_detector import YOLODetector
+from core.task_management.manager import TaskManager
+from core.task_management.utils.status import TaskStatus
+from core.analyzer.detection import YOLODetector
 from shared.utils.logger import setup_logger
 from core.config import settings
 
 logger = setup_logger(__name__)
+
+def convert_numpy_types(obj):
+    """转换numpy类型为Python原生类型"""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    return obj
 
 class TaskProcessor:
     """任务处理器，处理分析任务"""
@@ -51,11 +69,11 @@ class TaskProcessor:
                 logger.info(f"加载{analysis_type}模型: {model_code}")
                 
                 if analysis_type == "detection":
-                    from core.detection import YOLODetector
+                    from core.analyzer.detection import YOLODetector
                     self.detectors[detector_key] = YOLODetector()
                     await self.detectors[detector_key].load_model(model_code)
                 elif analysis_type == "segmentation":
-                    from core.segmentation import YOLOSegmentor
+                    from core.analyzer.segmentation import YOLOSegmentor
                     self.detectors[detector_key] = YOLOSegmentor()
                     await self.detectors[detector_key].load_model(model_code)
                 else:
@@ -236,7 +254,7 @@ class TaskProcessor:
             if save_images:
                 try:
                     # 获取项目根目录
-                    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
                     
                     # 使用配置中的相对路径
                     storage_config = result_config.get("storage", {})
@@ -280,8 +298,8 @@ class TaskProcessor:
                 # 按间隔分析
                 if frame_count % analysis_interval == 0:
                     try:
-                # 执行检测
-                        result = await detector.detect(frame)
+                        # 执行检测，只在检测到目标时打印日志
+                        result = await detector.detect(frame, verbose=False)
                         detections = result.get("detections", [])
                 
                         # 过滤指定类别
@@ -442,6 +460,8 @@ class TaskProcessor:
                         # 如果启用了回调,发送结果到回调地址
                         if enable_callback and callback_url:
                             try:
+                                # 转换numpy类型为Python原生类型
+                                result_data = convert_numpy_types(result_data)
                                 async with aiohttp.ClientSession() as session:
                                     async with session.post(callback_url, json=result_data) as response:
                                         if response.status != 200:

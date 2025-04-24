@@ -190,11 +190,12 @@ class YOLODetector:
             logger.error(str(e), exc_info=True)
             return b""
 
-    async def detect(self, image: np.ndarray) -> Dict[str, Any]:
+    async def detect(self, image: np.ndarray, verbose: bool = False) -> Dict[str, Any]:
         """对输入图像进行目标检测
         
         Args:
             image: BGR格式的输入图像
+            verbose: 是否打印详细日志，默认False
             
         Returns:
             包含检测结果和图像的字典:
@@ -202,8 +203,8 @@ class YOLODetector:
             - image: 带有检测框的图像字节流
         """
         try:
-            # 运行检测
-            results = self.model(image)
+            # 运行检测，设置verbose参数
+            results = self.model(image, verbose=verbose)
             
             # 解析检测结果
             detections = await self._parse_results(results)

@@ -8,23 +8,13 @@ import uuid
 import json
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
-from enum import Enum
 import asyncio
 import threading
 from core.config import settings
 from shared.utils.logger import setup_logger
+from .utils.status import TaskStatus
 
 logger = setup_logger(__name__)
-
-class TaskStatus(str, Enum):
-    """任务状态枚举"""
-    PENDING = "pending"       # 等待处理
-    PROCESSING = "processing" # 处理中
-    COMPLETED = "completed"   # 已完成
-    FAILED = "failed"        # 失败
-    CANCELLED = "cancelled"  # 已取消
-    STOPPING = "stopping"    # 停止中
-    STOPPED = "stopped"      # 已停止
 
 class TaskManager:
     """任务管理器"""
@@ -117,7 +107,7 @@ class TaskManager:
             self.tasks[task_id] = {
                 "id": task_id,
                 "data": task_data,
-                "status": TaskStatus.PENDING,
+                "status": TaskStatus.WAITING,
                 "created_at": time.time(),
                 "updated_at": time.time(),
                 "result": None,
@@ -446,7 +436,7 @@ class TaskManager:
                 return False
             
             # 2. 创建任务处理器
-            from core.task_processor import TaskProcessor
+            from .processor.task_processor import TaskProcessor
             processor = TaskProcessor(task_manager=self)
             
             # 3. 启动流分析
