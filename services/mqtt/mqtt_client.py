@@ -372,3 +372,13 @@ class MQTTClient:
         except Exception as e:
             logger.error(f"发布消息时出错: {e}")
             return False
+
+    async def close(self):
+        """关闭MQTT客户端连接"""
+        try:
+            if self.client and self.client._connection:
+                await self.client._connection.close()
+                logger.info("MQTT客户端连接已关闭")
+        except Exception as e:
+            logger.error(f"关闭MQTT客户端时出错: {str(e)}")
+            logger.error(str(e), exc_info=True)

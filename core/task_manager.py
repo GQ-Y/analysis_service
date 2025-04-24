@@ -49,6 +49,9 @@ class TaskManager:
         self.cleanup_interval = settings.TASK_QUEUE_CLEANUP_INTERVAL
         self.last_cleanup = time.time()
         
+        # 初始化任务锁
+        self.task_lock = threading.Lock()
+        
         # 启动清理线程
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self.cleanup_thread.start()
@@ -287,21 +290,24 @@ class TaskManager:
         """
         获取任务信息
         
-        参数:
+        Args:
             task_id: 任务ID
             
-        返回:
-            Dict | None: 任务信息字典，如果任务不存在则返回None
+        Returns:
+            Optional[Dict[str, Any]]: 任务信息，如果不存在则返回None
         """
-        with self.task_lock:
+        try:
             task = self.tasks.get(task_id)
+            if not task:
+                logger.warning(f"任务不存在: {task_id}")
+                return None
             
-        if task:
             # 返回任务的副本，避免直接修改
             return dict(task)
-        
-        logger.warning(f"未找到任务: {task_id}")
-        return None
+            
+        except Exception as e:
+            logger.error(f"获取任务信息失败: {str(e)}")
+            return None
         
     def update_task(self, task_id: str, updates: Dict[str, Any]) -> bool:
         """
@@ -419,4 +425,42 @@ class TaskManager:
                 del self.tasks[task_id]
                 
         if tasks_to_delete:
-            logger.info(f"已清理 {len(tasks_to_delete)} 个旧任务") 
+            logger.info(f"已清理 {len(tasks_to_delete)} 个旧任务")
+
+    async def start_stream_task(self, task_id: str, task_config: Dict[str, Any]) -> bool:
+        """
+        启动流分析任务
+        
+        Args:
+            task_id: 任务ID
+            task_config: 任务配置
+            
+        Returns:
+            bool: 是否启动成功
+        """
+        try:
+            # 1. 获取任务信息
+            task = self.tasks.get(task_id)
+            if not task:
+                logger.error(f"任务不存在: {task_id}")
+                return False
+            
+            # 2. 创建任务处理器
+            from core.task_processor import TaskProcessor
+            processor = TaskProcessor(task_manager=self)
+            
+            # 3. 启动流分析
+            success = await processor.start_stream_analysis(task_id)
+            
+            if success:
+                logger.info(f"流分析任务启动成功: {task_id}")
+                return True
+            else:
+                logger.error(f"流分析任务启动失败: {task_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"启动流分析任务失败: {str(e)}")
+            import traceback
+            logger.error(f"错误详情:\n{traceback.format_exc()}")
+            return False 

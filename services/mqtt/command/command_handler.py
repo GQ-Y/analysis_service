@@ -5,6 +5,7 @@ MQTT命令处理器
 import logging
 from typing import Dict, Any, Optional
 
+from shared.utils.tools import get_mac_address
 from ..handler.message_types import (
     MESSAGE_TYPE_REQUEST_SETTING,
     REQUEST_TYPE_NODE_CMD,
@@ -31,6 +32,15 @@ class CommandHandler(BaseMQTTHandler):
         self.node_handler = get_node_command_handler()
         self.task_handler = get_task_command_handler()
         logger.info("MQTT命令处理器已初始化")
+        
+    def get_mac_address(self) -> str:
+        """
+        获取MAC地址
+        
+        Returns:
+            str: MAC地址
+        """
+        return get_mac_address()
         
     async def handle_message(self, topic: str, payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """

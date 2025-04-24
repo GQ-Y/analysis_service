@@ -54,7 +54,7 @@ class BaseTracker(ABC):
         self.tracks: List[TrackingObject] = []
         
     @abstractmethod
-    def update(self, detections: List[Dict[str, Any]]) -> List[TrackingObject]:
+    async def update(self, detections: List[Dict[str, Any]]) -> List[TrackingObject]:
         """更新跟踪状态
         
         Args:
@@ -117,7 +117,7 @@ class SORTTracker(BaseTracker):
         super().__init__(max_age, min_hits, iou_threshold)
         self.next_track_id = 1
     
-    def update(self, detections: List[Dict[str, Any]]) -> List[TrackingObject]:
+    async def update(self, detections: List[Dict[str, Any]]) -> List[TrackingObject]:
         """更新跟踪状态"""
         self.frame_count += 1
         
@@ -199,21 +199,193 @@ class SORTTracker(BaseTracker):
         
         return self.tracks
 
+class ByteTracker(BaseTracker):
+    """ByteTrack跟踪器实现"""
+    
+    def __init__(
+        self,
+        max_age: int = 30,
+        min_hits: int = 3,
+        iou_threshold: float = 0.3,
+        track_buffer: int = 30,     # 跟踪缓冲区大小
+        match_thresh: float = 0.8,  # 匹配阈值
+        track_high_thresh: float = 0.6,  # 高置信度阈值
+        track_low_thresh: float = 0.1,   # 低置信度阈值
+        new_track_thresh: float = 0.7,   # 新轨迹阈值
+        **kwargs  # 添加kwargs来处理其他未使用的参数
+    ):
+        """初始化ByteTrack跟踪器
+        
+        Args:
+            max_age: 目标消失后保持跟踪的最大帧数
+            min_hits: 确认为有效目标所需的最小检测次数
+            iou_threshold: 跟踪器的IOU阈值
+            track_buffer: 跟踪缓冲区大小
+            match_thresh: 匹配阈值
+            track_high_thresh: 高置信度阈值
+            track_low_thresh: 低置信度阈值
+            new_track_thresh: 新轨迹阈值
+            **kwargs: 其他参数
+        """
+        super().__init__(max_age, min_hits, iou_threshold)
+        self.next_track_id = 1
+        self.track_buffer = track_buffer
+        self.match_thresh = match_thresh
+        self.high_thresh = track_high_thresh
+        self.low_thresh = track_low_thresh
+        self.new_track_thresh = new_track_thresh
+        
+        logger.info(f"初始化ByteTrack跟踪器 - 参数: max_age={max_age}, min_hits={min_hits}, "
+                   f"iou_threshold={iou_threshold}, track_buffer={track_buffer}, "
+                   f"match_thresh={match_thresh}, high_thresh={track_high_thresh}, "
+                   f"low_thresh={track_low_thresh}, new_track_thresh={new_track_thresh}")
+        
+    async def update(self, detections: List[Dict[str, Any]]) -> List[TrackingObject]:
+        """更新跟踪状态"""
+        self.frame_count += 1
+        
+        # 如果没有检测结果
+        if not detections:
+            for track in self.tracks:
+                track.time_since_update += 1
+            self.tracks = [t for t in self.tracks if t.time_since_update <= self.max_age]
+            return self.tracks
+            
+        # 将检测结果分为高置信度和低置信度两组
+        high_dets = []
+        low_dets = []
+        for det in detections:
+            if det["confidence"] >= self.high_thresh:
+                high_dets.append(det)
+            elif det["confidence"] >= self.low_thresh:
+                low_dets.append(det)
+                
+        # 先处理高置信度检测结果
+        high_bboxes = []
+        high_scores = []
+        high_classes = []
+        detection_indices = []  
+        
+        for det in high_dets:
+            bbox = det["bbox"]
+            high_bboxes.append([bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]])
+            high_scores.append(det["confidence"])
+            high_classes.append(det.get("class_id", 0))
+            
+        high_bboxes = np.array(high_bboxes) if high_bboxes else np.empty((0, 4))
+        high_scores = np.array(high_scores)
+        high_classes = np.array(high_classes)
+        
+        # 匹配高置信度检测结果
+        if self.tracks and len(high_bboxes) > 0:
+            iou_matrix = np.zeros((len(self.tracks), len(high_bboxes)))
+            for t, track in enumerate(self.tracks):
+                for d, det_bbox in enumerate(high_bboxes):
+                    iou_matrix[t, d] = self._calculate_iou(track.bbox, det_bbox)
+                    
+            from scipy.optimize import linear_sum_assignment
+            track_indices, detection_indices = linear_sum_assignment(-iou_matrix)
+            
+            # 更新匹配的跟踪对象
+            matched_detection_indices = []  # 记录成功匹配的检测索引
+            for track_idx, det_idx in zip(track_indices, detection_indices):
+                if iou_matrix[track_idx, det_idx] >= self.iou_threshold:
+                    track = self.tracks[track_idx]
+                    bbox = high_bboxes[det_idx]
+                    track.bbox = bbox
+                    track.class_id = high_classes[det_idx]
+                    track.confidence = high_scores[det_idx]
+                    track.trajectory.append(bbox)
+                    track.time_since_update = 0
+                    track.age += 1
+                    track.velocity = self._calculate_velocity(track)
+                    matched_detection_indices.append(det_idx)
+                    
+            # 更新未匹配的检测索引
+            detection_indices = matched_detection_indices
+                    
+            # 处理未匹配的跟踪对象
+            unmatched_tracks = [t for i, t in enumerate(self.tracks) if i not in track_indices]
+            for track in unmatched_tracks:
+                track.time_since_update += 1
+                
+        # 处理低置信度检测结果
+        if low_dets:
+            low_bboxes = []
+            low_scores = []
+            low_classes = []
+            
+            for det in low_dets:
+                bbox = det["bbox"]
+                low_bboxes.append([bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]])
+                low_scores.append(det["confidence"])
+                low_classes.append(det.get("class_id", 0))
+                
+            low_bboxes = np.array(low_bboxes)
+            low_scores = np.array(low_scores)
+            low_classes = np.array(low_classes)
+            
+            # 只将低置信度检测结果与未匹配的轨迹进行关联
+            unmatched_tracks = [t for t in self.tracks if t.time_since_update > 0]
+            if unmatched_tracks and len(low_bboxes) > 0:
+                iou_matrix = np.zeros((len(unmatched_tracks), len(low_bboxes)))
+                for t, track in enumerate(unmatched_tracks):
+                    for d, det_bbox in enumerate(low_bboxes):
+                        iou_matrix[t, d] = self._calculate_iou(track.bbox, det_bbox)
+                        
+                track_indices, detection_indices = linear_sum_assignment(-iou_matrix)
+                
+                # 更新匹配的跟踪对象
+                for track_idx, det_idx in zip(track_indices, detection_indices):
+                    if iou_matrix[track_idx, det_idx] >= self.iou_threshold:
+                        track = unmatched_tracks[track_idx]
+                        bbox = low_bboxes[det_idx]
+                        track.class_id = low_classes[det_idx]
+                        track.confidence = low_scores[det_idx]
+                        track.trajectory.append(bbox)
+                        track.time_since_update = 0
+                        track.age += 1
+                        track.velocity = self._calculate_velocity(track)
+                        
+        # 为未匹配的高置信度检测创建新的跟踪对象
+        if len(high_bboxes) > 0:
+            unmatched_detections = [i for i in range(len(high_bboxes)) if i not in detection_indices]
+            for det_idx in unmatched_detections:
+                bbox = high_bboxes[det_idx]
+                new_track = TrackingObject(
+                    track_id=self.next_track_id,
+                    bbox=bbox,
+                    class_id=high_classes[det_idx],
+                    confidence=high_scores[det_idx],
+                    trajectory=[bbox],
+                    age=1,
+                    time_since_update=0,
+                    velocity=np.zeros(2)
+                )
+                self.tracks.append(new_track)
+                self.next_track_id += 1
+                
+        # 移除过期的跟踪对象
+        self.tracks = [t for t in self.tracks if t.time_since_update <= self.max_age]
+        
+        return self.tracks
+
 def create_tracker(tracker_type: str, **kwargs) -> BaseTracker:
     """创建跟踪器实例
     
     Args:
-        tracker_type: 跟踪器类型，支持 'sort'
+        tracker_type: 跟踪器类型，支持 'sort'、'bytetrack'
         **kwargs: 跟踪器参数
         
     Returns:
         BaseTracker: 跟踪器实例
     """
     tracker_map = {
-        "sort": SORTTracker
+        "sort": SORTTracker,
+        "bytetrack": ByteTracker
     }
     
-    if tracker_type not in tracker_map:
-        raise ValueError(f"不支持的跟踪器类型: {tracker_type}")
+    if tracker_type.lower() not in tracker_map:
+        raise ValueError(f"不支持的跟踪器类型: {tracker_type}，支持的类型有: {list(tracker_map.keys())}")
         
-    return tracker_map[tracker_type](**kwargs) 
+    return tracker_map[tracker_type.lower()](**kwargs) 
