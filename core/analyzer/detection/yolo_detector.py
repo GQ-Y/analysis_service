@@ -192,33 +192,27 @@ class YOLODetector:
 
     async def detect(self, 
                      image: np.ndarray, 
-                     return_annotated_image: bool = False, 
-                     return_original_image: bool = False,
                      verbose: bool = False
                      ) -> Dict[str, Any]:
         """对输入图像进行目标检测
         
         Args:
             image: BGR格式的输入图像
-            return_annotated_image: 是否返回带有检测框的图像字节流
-            return_original_image: 是否返回原始图像的字节流
             verbose: 是否打印详细日志，默认False
             
         Returns:
-            包含检测结果和可选图像数据的字典:
+            包含检测结果和图像数据的字典:
             - detections: 检测结果列表
             - pre_process_time: 预处理时间 (ms)
             - inference_time: 推理时间 (ms)
             - post_process_time: 后处理时间 (ms)
-            - annotated_image_bytes: 标注后图像的 JPEG 字节流 (如果 return_annotated_image 为 True)
-            - original_image_bytes: 原始图像的 JPEG 字节流 (如果 return_original_image 为 True)
+            - annotated_image_bytes: 标注后图像的 JPEG 字节流
         """
         start_time = time.time()
         pre_process_time_ms = 0
         inference_time_ms = 0
         post_process_time_ms = 0
         annotated_image_bytes = None
-        original_image_bytes = None
 
         try:
             # 运行检测
@@ -234,49 +228,29 @@ class YOLODetector:
             # 解析检测结果
             detections = await self._parse_results(results)
             
-            # --- 条件处理图像 --- 
-            # 只有在需要返回标注图或原始图时才进行编码
-            generate_annotated = return_annotated_image
-            encode_original = return_original_image
-
-            # 生成标注图 (如果需要)
-            if generate_annotated:
-                try:
-                    annotated_image = results[0].plot() # 使用ultralytics自带的plot
-                    is_success, buffer = cv2.imencode(".jpg", annotated_image)
-                    if not is_success:
-                        logger.warning("标注图像编码失败")
-                    else:
-                        annotated_image_bytes = buffer.tobytes()
-                except Exception as plot_err:
-                     logger.error(f"绘制或编码标注图像时出错: {plot_err}")
-
-            # 编码原始图 (如果需要)
-            if encode_original:
-                try:
-                    is_success, buffer = cv2.imencode(".jpg", image)
-                    if not is_success:
-                        logger.warning("原始图像编码失败")
-                    else:
-                        original_image_bytes = buffer.tobytes()
-                except Exception as encode_err:
-                    logger.error(f"编码原始图像时出错: {encode_err}")
-            # --- 结束条件处理图像 ---
+            # --- 总是生成和编码标注图像 --- 
+            try:
+                annotated_image = results[0].plot() # 使用ultralytics自带的plot
+                is_success, buffer = cv2.imencode(".jpg", annotated_image)
+                if not is_success:
+                    logger.warning("标注图像编码失败")
+                else:
+                    annotated_image_bytes = buffer.tobytes()
+            except Exception as plot_err:
+                    logger.error(f"绘制或编码标注图像时出错: {plot_err}")
+            # --- 结束图像处理 ---
 
             total_time = (time.time() - start_time) * 1000
             # logger.debug(f"检测总耗时: {total_time:.2f}ms...")
 
-            # 构建返回字典
+            # 构建返回字典 (始终包含 annotated_image_bytes，即使为 None)
             return_data = {
                 "detections": detections,
                 "pre_process_time": pre_process_time_ms,
                 "inference_time": inference_time_ms,
-                "post_process_time": post_process_time_ms
+                "post_process_time": post_process_time_ms,
+                "annotated_image_bytes": annotated_image_bytes # 可能为 None
             }
-            if annotated_image_bytes is not None:
-                return_data["annotated_image_bytes"] = annotated_image_bytes
-            if original_image_bytes is not None:
-                return_data["original_image_bytes"] = original_image_bytes
                 
             return return_data
             
@@ -286,7 +260,8 @@ class YOLODetector:
                 "detections": [],
                 "pre_process_time": 0,
                 "inference_time": 0,
-                "post_process_time": 0
+                "post_process_time": 0,
+                "annotated_image_bytes": None # 错误时也返回 None
             }
 
     def _filter_by_roi(self, detections: List[Dict], roi: Dict, roi_type: int, img_height: int, img_width: int) -> List[Dict]:

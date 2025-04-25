@@ -234,9 +234,15 @@ async def shutdown_event():
     logger.info("Shutting down Analysis Service...")
     
     # 关闭MQTT客户端
-    if hasattr(app.state, "mqtt_client"):
-        await app.state.mqtt_client.disconnect()
-        logger.info("MQTT客户端已关闭")
+    if hasattr(app.state, "mqtt_client") and app.state.mqtt_client:
+        try:
+            logger.info("正在断开 MQTT 连接...")
+            await app.state.mqtt_client.disconnect(trigger_will=False)
+            logger.info("MQTT 客户端已正常关闭")
+        except Exception as e:
+             logger.error(f"关闭 MQTT 客户端时出错: {e}")
+    else:
+        logger.info("没有活动的 MQTT 客户端需要关闭")
     
     logger.info("Analysis Service stopped.")
 

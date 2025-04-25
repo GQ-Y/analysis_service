@@ -15,6 +15,7 @@ import json
 import multiprocessing
 from multiprocessing import Process, Queue, Event
 import copy
+import shutil # 导入 shutil 模块
 
 # from core.task_management.manager import TaskManager # 移除顶层导入
 from core.task_management.utils.status import TaskStatus
@@ -171,80 +172,54 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                 mask_data = None # 初始化 mask_data
 
                 try:
-                    # 调用 detect 方法，传递图像处理标志
-                    analysis_result = asyncio.run(detector.detect(
-                        frame,
-                        return_annotated_image=return_base64 or save_images,
-                        return_original_image=return_base64 or save_images
-                    ))
+                    # 调用 detect 方法，不再需要传递图像标志
+                    analysis_result = asyncio.run(detector.detect(frame))
 
                     # 提取结果和可能的计时信息
                     detections = analysis_result.get("detections", [])
                     inference_time = analysis_result.get("inference_time", 0)
                     pre_process_time = analysis_result.get("pre_process_time", 0)
                     post_process_time = analysis_result.get("post_process_time", 0)
-                    # 提取原始和标注图像的字节流 (如果 detect 返回了它们)
-                    original_image_bytes = analysis_result.get("original_image_bytes")
+                    # 始终提取标注图像的字节流 (可能为 None)
                     annotated_image_bytes = analysis_result.get("annotated_image_bytes")
 
                     # 如果是分割任务，尝试获取掩码
                     if analysis_type == "segmentation":
                          mask_data = analysis_result.get("masks") # 假设 detector 返回 'masks' 键
 
-                    # --- 保存图像 (如果需要) ---
-                    original_image_save_path = None
+                    # --- 保存标注图像 (仅当 save_images=True) ---
                     annotated_image_save_path = None
-                    if save_images:
+                    if save_images and annotated_image_bytes:
                         storage_config = stream_config.get("result", {}).get("storage", {})
-                        save_dir_base = storage_config.get("save_path", "results")
-                        file_pattern = storage_config.get("file_pattern", "{task_id}/{date}/{time}_{frame_id}.jpg")
+                        save_dir_base_config = storage_config.get("save_path", "results")
+                        save_dir_base = save_dir_base_config.lstrip('/').lstrip('\\\\')
                         
-                        # 创建保存目录
                         now = datetime.now()
                         date_str = now.strftime("%Y%m%d")
                         time_str = now.strftime("%H%M%S_%f")[:-3] # 到毫秒
                         save_dir_task = os.path.join(save_dir_base, str(task_id), date_str)
-                        os.makedirs(save_dir_task, exist_ok=True)
                         
-                        # 构建文件名 (移除扩展名，因为后面会指定 .jpg)
-                        base_filename = file_pattern.format(
-                            task_id=task_id,
-                            date=date_str,
-                            time=time_str,
-                            frame_id=frame_count
-                        ).replace(".jpg","") # 移除可能存在的 .jpg
+                        try:
+                            os.makedirs(save_dir_task, exist_ok=True)
+                            filename_only = f"{time_str}_{frame_count}"
+                            annotated_image_save_path = os.path.join(save_dir_task, f"{filename_only}_annotated.jpg")
+                            with open(annotated_image_save_path, "wb") as f:
+                                f.write(annotated_image_bytes)
+                        except OSError as e:
+                             logger.error(f"创建目录或保存标注图像失败: {save_dir_task}, 错误: {e}")
+                             annotated_image_save_path = None # 保存失败
+                        except Exception as e:
+                             logger.error(f"保存标注图像时发生未知错误: {e}")
+                             annotated_image_save_path = None # 保存失败
+                    # --- 结束保存标注图像 ---
 
-                        # 保存原始图像
-                        if original_image_bytes:
-                            try:
-                                original_image_save_path = os.path.join(save_dir_task, f"{base_filename}_orig.jpg")
-                                with open(original_image_save_path, "wb") as f:
-                                    f.write(original_image_bytes)
-                                # logger.debug(f"原始图像已保存: {original_image_save_path}")
-                            except Exception as save_err:
-                                logger.error(f"保存原始图像失败: {save_err}")
-                                original_image_save_path = None # 保存失败则路径为 None
-
-                        # 保存标注图像
-                        if annotated_image_bytes:
-                            try:
-                                annotated_image_save_path = os.path.join(save_dir_task, f"{base_filename}_annotated.jpg")
-                                with open(annotated_image_save_path, "wb") as f:
-                                    f.write(annotated_image_bytes)
-                                # logger.debug(f"标注图像已保存: {annotated_image_save_path}")
-                            except Exception as save_err:
-                                logger.error(f"保存标注图像失败: {save_err}")
-                                annotated_image_save_path = None # 保存失败则路径为 None
-                    # --- 结束保存图像 ---
-
-                    # --- Base64 编码 (如果需要) ---
-                    original_image_base64 = None
+                    # --- 始终进行 Base64 编码 (标注图) ---
                     annotated_image_base64 = None
-                    if return_base64:
-                        if original_image_bytes:
-                            original_image_base64 = base64.b64encode(original_image_bytes).decode('utf-8')
-                        if annotated_image_bytes:
-                            annotated_image_base64 = base64.b64encode(annotated_image_bytes).decode('utf-8')
+                    if annotated_image_bytes:
+                        try:
+                             annotated_image_base64 = base64.b64encode(annotated_image_bytes).decode('utf-8')
+                        except Exception as e:
+                             logger.error(f"Base64 编码标注图像失败: {e}")
                     # --- 结束 Base64 编码 ---
 
                     # 过滤指定类别 (确保 analysis_config 和 classes 存在且 classes 是列表)
@@ -272,10 +247,7 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                     
                     # 执行跟踪 (如果 tracker 已初始化)
                     if tracker:
-                        # 注意：跟踪器的 update 方法可能需要调整以接收和返回更丰富的 detection 对象
-                        # 这里假设 detections 已经是 tracker.update 期望的格式
                         tracked_objects = asyncio.run(tracker.update(detections)) # 假设 update 返回对象列表
-                        # 将跟踪结果转换回字典列表，包含 track_id
                         detections = [obj.to_dict() for obj in tracked_objects] # 假设跟踪对象有 to_dict 方法
                     
                     # 准备发送的结果字典
@@ -290,26 +262,20 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                     class_names_map = detector.model.names if hasattr(detector, 'model') and hasattr(detector.model, 'names') else {}
                     for det in serializable_detections:
                          class_id = det.get('class_id')
-                         # 使用映射获取名称，如果ID无效或映射不存在，则默认为 'unknown'
                          det['class_name'] = class_names_map.get(class_id, 'unknown') 
 
-                    # 构建 image_results 字典
-                    image_results_payload = None
-                    if return_base64 or save_images:
-                        image_results_payload = {}
-                        if original_image_base64 or original_image_save_path:
-                             image_results_payload["original"] = {
-                                 "format": "jpg",
-                                 "base64": original_image_base64, # 可能为 None
-                                 "save_path": original_image_save_path # 可能为 None
-                             }
-                        if annotated_image_base64 or annotated_image_save_path:
-                            image_results_payload["annotated"] = {
-                                 "format": "jpg",
-                                 "base64": annotated_image_base64, # 可能为 None
-                                 "save_path": annotated_image_save_path # 可能为 None
-                            }
-                        # TODO: Add mask image handling if needed
+                    # 构建 image_results 字典 (只包含 annotated)
+                    image_results_payload = {
+                         "annotated": {
+                             "format": "jpg",
+                             "base64": annotated_image_base64, # 始终包含，可能为 None
+                             "save_path": annotated_image_save_path # 可能为 None
+                         }
+                         # TODO: Add mask image handling if needed
+                    }
+                    # 如果 base64 和 save_path 都为 None，则不发送 image_results
+                    if annotated_image_base64 is None and annotated_image_save_path is None:
+                         image_results_payload = None 
 
                     result_payload = {
                         "type": "result",
@@ -328,10 +294,9 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                              "post_process_time": post_process_time
                         },
                         "mask_data": serializable_mask_data, # 添加掩码数据
-                        "image_results": image_results_payload # 添加图像结果
+                        "image_results": image_results_payload # 添加图像结果 (可能为 None)
                     }
                     result_queue.put(result_payload)
-                    # logger.debug(f"工作进程 {task_id}: 帧 {frame_count} 处理完成, 耗时: {processed_time:.4f}s")
                     
                 except Exception as e:
                     logger.error(f"工作进程 {task_id}: 处理帧 {frame_count} 时出错: {str(e)}")
@@ -389,9 +354,10 @@ class TaskProcessor:
         """
         self.task_manager = task_manager
         self.mqtt_manager = mqtt_manager # 存储 MQTT 管理器实例
-        self.active_tasks = {}  # 存储活动任务的进程
-        self.stop_events = {}  # 存储任务停止事件
-        self.result_queues = {}  # 存储任务结果队列
+        self.active_tasks = {}  # 存储活动任务的进程 {task_id: Process}
+        self.stop_events = {}  # 存储任务停止事件 {task_id: Event}
+        self.result_queues = {}  # 存储任务结果队列 {task_id: Queue}
+        self.result_handlers = {} # 存储结果处理协程句柄 {task_id: asyncio.Task}
         
         logger.info("任务处理器已初始化")
         
@@ -411,14 +377,14 @@ class TaskProcessor:
             if not task:
                 logger.error(f"任务不存在: {task_id}")
                 return False
-
+            
             task_data = task.get("data", {})
             if not task_data:
-                 logger.error(f"任务配置数据为空: {task_id}")
-                 # 将任务状态更新为失败
-                 self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error="任务配置数据为空")
-                 return False
-
+                logger.error(f"任务配置数据为空: {task_id}")
+                # 将任务状态更新为失败
+                self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error="任务配置数据为空")
+                return False
+            
             # DEBUG: 打印原始 task_data 和关键的中间配置字典
             logger.debug(f"任务 {task_id} - 原始 task_data: {task_data}")
             # 使用 task_data 中的实际键名
@@ -459,7 +425,9 @@ class TaskProcessor:
                     "roi": {
                         "config": roi_intermediate.get("config") if isinstance(roi_intermediate, dict) else None,
                         "type": roi_intermediate.get("type", 1) if isinstance(roi_intermediate, dict) else 1
-                    } if roi_intermediate and isinstance(roi_intermediate, dict) and roi_intermediate.get("config") else None
+                    } if roi_intermediate and isinstance(roi_intermediate, dict) and roi_intermediate.get("config") else None,
+                    # 添加 result 配置
+                    "result": task_data.get("result") if isinstance(task_data.get("result"), dict) else {}
                 }
 
                 # 验证关键配置是否存在
@@ -493,13 +461,12 @@ class TaskProcessor:
                 logger.error(f"{error_msg}, 任务ID: {task_id}")
                 self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                 return False
-
+            
             # 3. 检查任务是否已经在运行
             if task_id in self.active_tasks and self.active_tasks[task_id].is_alive():
                 logger.warning(f"任务已经在运行: {task_id}")
-                # 注意：这里不更新状态，因为任务实际上在运行
-                return False # 或者根据需求返回 True
-
+                return False
+            
             # 4. 创建停止事件和结果队列
             stop_event = Event()
             result_queue = Queue()
@@ -509,27 +476,26 @@ class TaskProcessor:
                 target=process_stream_worker,
                 args=(task_id, worker_config, stop_event, result_queue)
             )
-            process.start() # 序列化错误应该在这里解决
+            process.start()
 
             # 6. 保存进程引用和控制对象
             self.active_tasks[task_id] = process
             self.stop_events[task_id] = stop_event
             self.result_queues[task_id] = result_queue
 
-            # 7. 启动结果处理协程
-            asyncio.create_task(self._handle_results(task_id, result_queue))
-
+            # 7. 启动并保存结果处理协程句柄
+            result_handler_task = asyncio.create_task(self._handle_results(task_id, result_queue))
+            self.result_handlers[task_id] = result_handler_task
+                
             logger.info(f"流分析任务启动成功: {task_id}")
-            # 注意：任务状态应由 _handle_results 更新，这里不显式设置 PENDING 或 RUNNING
             return True
-
+                
         except Exception as e:
             error_msg = f"启动流分析任务时发生意外错误: {str(e)}"
             logger.error(error_msg)
             import traceback
             logger.error(f"错误详情:\n{traceback.format_exc()}")
-            # 确保在启动过程中发生任何异常时都将任务标记为失败
-            if 'task_id' in locals(): # 仅当 task_id 已定义时尝试更新状态
+            if 'task_id' in locals():
                  self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
             return False
             
@@ -567,7 +533,7 @@ class TaskProcessor:
                 target_topic = f"/meek/{mac_address}/result"
             else:
                 target_topic = callback_topic
-
+            
             while True:
                 # 检查任务是否已停止 (主进程中控制)
                 current_status = self.task_manager.get_task_status(task_id)
@@ -585,7 +551,7 @@ class TaskProcessor:
                 except:
                     await asyncio.sleep(0.01) # 短暂等待
                     continue
-                    
+                
                 # 处理不同类型的结果
                 if worker_result["type"] == "result":
                     # 1. 更新任务状态 (标记为处理中，并存储最新结果)
@@ -596,7 +562,16 @@ class TaskProcessor:
                         result=worker_result 
                     )
 
-                    # 2. 构建符合目标格式的 MQTT 消息
+                    # 2. 构建符合目标格式的 MQTT 消息体
+                    # 注意：这里的 result_mqtt 可能需要根据实际需求调整
+                    # 特别是分析信息和帧信息的字段结构可能会有所不同
+                    # 3. 发布结果到 MQTT 主题
+                    # 注意：这里的发布逻辑需要确保消息格式符合目标主题的要求
+
+                    # 调试输出 worker_result 的结构
+                    logger.debug(f"任务 {task_id} - worker_result: {worker_result}")
+
+                    # 如果是单帧结果，处理单帧数据
                     try:
                         # 提取关联信息
                         message_id = task_data.get("message_id")
@@ -665,13 +640,16 @@ class TaskProcessor:
                         # --- 构建完整的 result --- 
                         result_mqtt = {
                             "frame_id": worker_result.get("frame_id"),
-                            "objects": objects,
+                                "objects": objects,
                             "frame_info": frame_info_mqtt,
                             "analysis_info": analysis_info_mqtt
                             # ---- 暂未实现字段 ----
-                            # "image_results": {},
                             # "scene_understanding": {}
                         }
+                        # 添加 image_results (如果存在)
+                        image_results_payload = worker_result.get("image_results")
+                        if image_results_payload:
+                            result_mqtt["image_results"] = image_results_payload
 
                         # 构建最终 MQTT 消息体
                         mqtt_message = {
@@ -771,14 +749,16 @@ class TaskProcessor:
 
                     break # 任务完成，退出处理循环
                     
+        except asyncio.CancelledError:
+            logger.info(f"结果处理协程被取消: {task_id}")
+            # 协程被取消时，不需要再更新任务状态，由 stop_task 统一处理
+            # 可以在这里添加额外的清理逻辑（如果需要）
         except Exception as e:
             logger.error(f"处理结果循环 ({task_id}) 发生意外错误: {str(e)}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
-            # 确保即使在处理循环中出错，也尝试将任务标记为失败
-            if task_id: # 检查 task_id 是否存在
+            if task_id: 
                  try:
-                      # 检查任务是否还存在，避免重复更新或更新已删除的任务
                       if self.task_manager.get_task(task_id):
                            self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"结果处理循环异常: {e}")
                       else:
@@ -787,17 +767,9 @@ class TaskProcessor:
                       logger.error(f"尝试更新任务 {task_id} 状态为失败时出错: {update_err}")
             
         finally:
-            # 清理资源 (确保即使出错也执行)
-            # 这个清理逻辑似乎应该在 stop_task 中更合适，或者在任务管理器层面处理
-            # 避免在这里删除，因为 stop_task 可能还需要它们
             logger.info(f"结果处理循环退出: {task_id}")
-            # if task_id in self.active_tasks:
-            #     del self.active_tasks[task_id]
-            # if task_id in self.stop_events:
-            #     del self.stop_events[task_id]
-            # if task_id in self.result_queues:
-            #     del self.result_queues[task_id]
-
+            # 清理工作移到 stop_task 或 TaskManager 中
+                
     async def stop_task(self, task_id: str) -> Dict[str, Any]:
         """
         停止任务
@@ -808,42 +780,120 @@ class TaskProcessor:
         Returns:
             Dict: 停止结果
         """
+        logger.info(f"开始停止任务: {task_id}")
+        process = self.active_tasks.get(task_id)
+        stop_event = self.stop_events.get(task_id)
+        result_handler = self.result_handlers.get(task_id)
+        
+        # 1. 检查进程是否存在或是否存活
+        if not process or not process.is_alive():
+            logger.warning(f"尝试停止的任务进程不存在或已结束: {task_id}")
+            # 即使进程已结束，也尝试清理可能残留的图片目录
+            try:
+                task = self.task_manager.get_task(task_id)
+                if task and task.get("data"):
+                    storage_config = task["data"].get("result", {}).get("storage", {})
+                    save_dir_base_config = storage_config.get("save_path", "results")
+                    save_dir_base = save_dir_base_config.lstrip('/').lstrip('\\\\')
+                    task_image_dir = os.path.join(save_dir_base, str(task_id))
+                    
+                    if os.path.isdir(task_image_dir):
+                        logger.info(f"尝试删除任务图片目录: {task_image_dir}")
+                        shutil.rmtree(task_image_dir)
+                        logger.info(f"任务图片目录已删除: {task_image_dir}")
+                    else:
+                        logger.info(f"任务图片目录不存在，无需删除: {task_image_dir}")
+                else:
+                    logger.warning(f"无法获取任务 {task_id} 的配置信息，无法删除图片目录")
+            except Exception as e:
+                logger.error(f"删除任务 {task_id} 图片目录时出错: {e}")
+            # 清理句柄
+            if task_id in self.active_tasks: del self.active_tasks[task_id]
+            if task_id in self.stop_events: del self.stop_events[task_id]
+            if task_id in self.result_queues: del self.result_queues[task_id]
+            if task_id in self.result_handlers: del self.result_handlers[task_id]
+            return {
+                "success": True, # 任务已处于停止状态
+                "message": "任务不存在或已停止"
+            }
+            
         try:
-            # 1. 检查任务是否存在
-            if task_id not in self.active_tasks:
-                return {
-                    "success": False,
-                    "error": f"任务不存在或已停止: {task_id}"
-                }
+            # 1. 设置停止事件，通知工作进程
+            if stop_event:
+                logger.info(f"设置任务停止事件: {task_id}")
+                stop_event.set()
                 
-            # 2. 设置停止事件
-            if task_id in self.stop_events:
-                self.stop_events[task_id].set()
-                
-            # 3. 等待进程结束
-            process = self.active_tasks[task_id]
+            # 2. 取消结果处理协程
+            if result_handler and not result_handler.done():
+                logger.info(f"取消结果处理协程: {task_id}")
+                result_handler.cancel()
+                try:
+                    # 等待协程实际取消完成 (可选，带超时)
+                    await asyncio.wait_for(result_handler, timeout=1.0)
+                except asyncio.CancelledError:
+                    logger.info(f"结果处理协程 {task_id} 已成功取消")
+                except asyncio.TimeoutError:
+                    logger.warning(f"等待结果处理协程 {task_id} 取消超时")
+                except Exception as cancel_err:
+                     logger.error(f"取消结果协程 {task_id} 时出错: {cancel_err}")
+
+            # 3. 等待进程结束 (带超时)
+            logger.info(f"等待工作进程结束: {task_id}")
             process.join(timeout=5.0)
             
             # 4. 如果进程仍在运行，强制终止
             if process.is_alive():
+                logger.warning(f"工作进程 {task_id} 未在5秒内正常退出，强制终止")
                 process.terminate()
-                process.join()
+                process.join(timeout=1.0) # 等待终止完成
+                if process.is_alive():
+                     logger.error(f"强制终止进程 {task_id} 失败")
+            else:
+                 logger.info(f"工作进程 {task_id} 已正常结束")
                 
-            # 5. 清理资源
-            if task_id in self.active_tasks:
-                del self.active_tasks[task_id]
-            if task_id in self.stop_events:
-                del self.stop_events[task_id]
-            if task_id in self.result_queues:
-                del self.result_queues[task_id]
-                
+            # 5. 进程停止后，删除图片目录
+            try:
+                task = self.task_manager.get_task(task_id)
+                if task and task.get("data"):
+                    storage_config = task["data"].get("result", {}).get("storage", {})
+                    save_dir_base_config = storage_config.get("save_path", "results")
+                    save_dir_base = save_dir_base_config.lstrip('/').lstrip('\\\\')
+                    task_image_dir = os.path.join(save_dir_base, str(task_id))
+                    
+                    if os.path.isdir(task_image_dir):
+                        logger.info(f"尝试删除任务图片目录: {task_image_dir}")
+                        shutil.rmtree(task_image_dir)
+                        logger.info(f"任务图片目录已删除: {task_image_dir}")
+                    else:
+                        logger.info(f"任务图片目录不存在，无需删除: {task_image_dir}")
+                else:
+                    logger.warning(f"无法获取任务 {task_id} 的配置信息，无法删除图片目录")
+            except Exception as e:
+                logger.error(f"删除任务 {task_id} 图片目录时出错: {e}")
+                # 删除失败不应阻止后续清理
+
+            # 6. 清理资源 (确保所有相关句柄都被移除)
+            logger.info(f"清理任务资源: {task_id}")
+            if task_id in self.active_tasks: del self.active_tasks[task_id]
+            if task_id in self.stop_events: del self.stop_events[task_id]
+            if task_id in self.result_queues: del self.result_queues[task_id]
+            if task_id in self.result_handlers: del self.result_handlers[task_id]
+
+            logger.info(f"任务停止成功: {task_id}")
             return {
                 "success": True,
-                "message": "任务已停止"
+                "message": "任务已成功停止"
             }
             
         except Exception as e:
-            logger.error(f"停止任务失败: {str(e)}")
+            logger.error(f"停止任务 {task_id} 过程中发生错误(进程停止部分): {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # 即使停止过程中出错，也尝试清理资源
+            if task_id in self.active_tasks: del self.active_tasks[task_id]
+            if task_id in self.stop_events: del self.stop_events[task_id]
+            if task_id in self.result_queues: del self.result_queues[task_id]
+            if task_id in self.result_handlers: del self.result_handlers[task_id]
             return {
                 "success": False,
                 "error": f"停止任务失败: {str(e)}"
