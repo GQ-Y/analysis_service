@@ -129,6 +129,11 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         logger.info(f"工作进程 {task_id}: 流信息 - FPS: {fps}, 宽度: {width}, 高度: {height}")
         
+        # 提取结果配置
+        result_config = stream_config.get("result", {})
+        save_images = result_config.get("save_images", False)
+        return_base64 = result_config.get("return_base64", False)
+        
         # 5. 处理每一帧
         frame_count = 0
         analysis_interval = stream_config.get("analysis_interval", 1)
@@ -166,18 +171,81 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                 mask_data = None # 初始化 mask_data
 
                 try:
-                    # 使用 asyncio.run() 执行异步检测/分割
-                    # 修改 detector 的 detect 方法以返回更详细的信息
-                    analysis_result = asyncio.run(detector.detect(frame))
+                    # 调用 detect 方法，传递图像处理标志
+                    analysis_result = asyncio.run(detector.detect(
+                        frame,
+                        return_annotated_image=return_base64 or save_images,
+                        return_original_image=return_base64 or save_images
+                    ))
 
                     # 提取结果和可能的计时信息
                     detections = analysis_result.get("detections", [])
                     inference_time = analysis_result.get("inference_time", 0)
                     pre_process_time = analysis_result.get("pre_process_time", 0)
                     post_process_time = analysis_result.get("post_process_time", 0)
+                    # 提取原始和标注图像的字节流 (如果 detect 返回了它们)
+                    original_image_bytes = analysis_result.get("original_image_bytes")
+                    annotated_image_bytes = analysis_result.get("annotated_image_bytes")
+
                     # 如果是分割任务，尝试获取掩码
                     if analysis_type == "segmentation":
                          mask_data = analysis_result.get("masks") # 假设 detector 返回 'masks' 键
+
+                    # --- 保存图像 (如果需要) ---
+                    original_image_save_path = None
+                    annotated_image_save_path = None
+                    if save_images:
+                        storage_config = stream_config.get("result", {}).get("storage", {})
+                        save_dir_base = storage_config.get("save_path", "results")
+                        file_pattern = storage_config.get("file_pattern", "{task_id}/{date}/{time}_{frame_id}.jpg")
+                        
+                        # 创建保存目录
+                        now = datetime.now()
+                        date_str = now.strftime("%Y%m%d")
+                        time_str = now.strftime("%H%M%S_%f")[:-3] # 到毫秒
+                        save_dir_task = os.path.join(save_dir_base, str(task_id), date_str)
+                        os.makedirs(save_dir_task, exist_ok=True)
+                        
+                        # 构建文件名 (移除扩展名，因为后面会指定 .jpg)
+                        base_filename = file_pattern.format(
+                            task_id=task_id,
+                            date=date_str,
+                            time=time_str,
+                            frame_id=frame_count
+                        ).replace(".jpg","") # 移除可能存在的 .jpg
+
+                        # 保存原始图像
+                        if original_image_bytes:
+                            try:
+                                original_image_save_path = os.path.join(save_dir_task, f"{base_filename}_orig.jpg")
+                                with open(original_image_save_path, "wb") as f:
+                                    f.write(original_image_bytes)
+                                # logger.debug(f"原始图像已保存: {original_image_save_path}")
+                            except Exception as save_err:
+                                logger.error(f"保存原始图像失败: {save_err}")
+                                original_image_save_path = None # 保存失败则路径为 None
+
+                        # 保存标注图像
+                        if annotated_image_bytes:
+                            try:
+                                annotated_image_save_path = os.path.join(save_dir_task, f"{base_filename}_annotated.jpg")
+                                with open(annotated_image_save_path, "wb") as f:
+                                    f.write(annotated_image_bytes)
+                                # logger.debug(f"标注图像已保存: {annotated_image_save_path}")
+                            except Exception as save_err:
+                                logger.error(f"保存标注图像失败: {save_err}")
+                                annotated_image_save_path = None # 保存失败则路径为 None
+                    # --- 结束保存图像 ---
+
+                    # --- Base64 编码 (如果需要) ---
+                    original_image_base64 = None
+                    annotated_image_base64 = None
+                    if return_base64:
+                        if original_image_bytes:
+                            original_image_base64 = base64.b64encode(original_image_bytes).decode('utf-8')
+                        if annotated_image_bytes:
+                            annotated_image_base64 = base64.b64encode(annotated_image_bytes).decode('utf-8')
+                    # --- 结束 Base64 编码 ---
 
                     # 过滤指定类别 (确保 analysis_config 和 classes 存在且 classes 是列表)
                     analysis_config = stream_config.get("analysis", {})
@@ -218,12 +286,30 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                     serializable_detections = convert_numpy_types(detections)
                     serializable_mask_data = convert_numpy_types(mask_data) if mask_data else None
 
-                    # **获取类别名称 (从 detector.model.names 获取)**
+                    # 获取类别名称 (从 detector.model.names 获取)
                     class_names_map = detector.model.names if hasattr(detector, 'model') and hasattr(detector.model, 'names') else {}
                     for det in serializable_detections:
                          class_id = det.get('class_id')
                          # 使用映射获取名称，如果ID无效或映射不存在，则默认为 'unknown'
                          det['class_name'] = class_names_map.get(class_id, 'unknown') 
+
+                    # 构建 image_results 字典
+                    image_results_payload = None
+                    if return_base64 or save_images:
+                        image_results_payload = {}
+                        if original_image_base64 or original_image_save_path:
+                             image_results_payload["original"] = {
+                                 "format": "jpg",
+                                 "base64": original_image_base64, # 可能为 None
+                                 "save_path": original_image_save_path # 可能为 None
+                             }
+                        if annotated_image_base64 or annotated_image_save_path:
+                            image_results_payload["annotated"] = {
+                                 "format": "jpg",
+                                 "base64": annotated_image_base64, # 可能为 None
+                                 "save_path": annotated_image_save_path # 可能为 None
+                            }
+                        # TODO: Add mask image handling if needed
 
                     result_payload = {
                         "type": "result",
@@ -241,7 +327,8 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                              "pre_process_time": pre_process_time,
                              "post_process_time": post_process_time
                         },
-                        "mask_data": serializable_mask_data # 添加掩码数据
+                        "mask_data": serializable_mask_data, # 添加掩码数据
+                        "image_results": image_results_payload # 添加图像结果
                     }
                     result_queue.put(result_payload)
                     # logger.debug(f"工作进程 {task_id}: 帧 {frame_count} 处理完成, 耗时: {processed_time:.4f}s")
