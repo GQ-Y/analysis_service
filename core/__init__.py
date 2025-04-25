@@ -1,6 +1,6 @@
 """
-核心包
-包含分析服务的核心功能模块
+Core 模块
+包含核心功能实现
 """
 
 from .exceptions import (
@@ -31,7 +31,7 @@ from .resource import ResourceMonitor
 from .config import settings
 
 # 导出任务管理相关组件
-from .task_management import TaskManager, TaskStatus
+from .task_management.utils.status import TaskStatus
 
 __all__ = [
     # 异常类
@@ -56,7 +56,6 @@ __all__ = [
     "CrossCameraResult",
     
     # 任务管理
-    "TaskManager",
     "TaskStatus",
     
     # 其他核心组件

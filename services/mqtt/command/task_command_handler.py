@@ -2,11 +2,14 @@
 任务命令处理器
 处理任务相关的命令，如启动、停止任务等
 """
-import logging
+import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from core import TaskManager, TaskStatus, AnalysisType, RoiType
+from loguru import logger
+
+from core.task_management.utils.status import TaskStatus
+from core.models import AnalysisType, RoiType
 from shared.utils.tools import get_mac_address
 from ..handler.message_types import (
     MESSAGE_TYPE_REQUEST_SETTING,
@@ -16,7 +19,7 @@ from ..handler.message_types import (
 )
 
 # 配置日志
-logger = logging.getLogger(__name__)
+logger = logger.bind(name=__name__)
 
 class TaskCommandHandler:
     """
@@ -28,7 +31,9 @@ class TaskCommandHandler:
         """
         初始化任务命令处理器
         """
-        self.task_manager = TaskManager()
+        # 延迟导入 TaskManager，避免循环导入
+        from core.task_management.manager import TaskManager
+        self.task_manager = TaskManager(mqtt_manager=mqtt_manager)
         self.mqtt_manager = mqtt_manager # 保存mqtt_manager实例
         logger.info("任务命令处理器已初始化")
         
@@ -115,6 +120,11 @@ class TaskCommandHandler:
             
             # 2. 构建任务配置
             task_config = {
+                # 关联原始请求信息
+                "message_id": payload.get("message_id"),
+                "message_uuid": payload.get("message_uuid"),
+                "confirmation_topic": payload.get("confirmation_topic"), # 也保存确认主题
+
                 # 基本信息
                 "task_id": task_id,
                 "name": task_info["name"],
@@ -190,6 +200,7 @@ class TaskCommandHandler:
             }
             
             # 3. 添加任务到管理器，使用接收到的任务ID
+            # 注意：现在 task_config 包含了 message_id 和 message_uuid
             success_add = self.task_manager.add_task(task_id, task_config)
             if not success_add:
                 logger.error(f"添加任务失败: {task_id}")

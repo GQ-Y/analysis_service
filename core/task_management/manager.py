@@ -14,18 +14,21 @@ from core.config import settings
 from shared.utils.logger import setup_logger
 from .utils.status import TaskStatus
 from .processor.task_processor import TaskProcessor
+from services.mqtt import MQTTManager
 
 logger = setup_logger(__name__)
 
 class TaskManager:
     """任务管理器"""
     
-    def __init__(self, max_tasks: int = None):
+    def __init__(self, mqtt_manager: MQTTManager, max_tasks: int = None):
         """初始化任务管理器
         
         Args:
+            mqtt_manager: MQTT管理器实例
             max_tasks: 最大任务数，默认从配置中读取
         """
+        self.mqtt_manager = mqtt_manager # 存储 MQTT 管理器实例
         # 设置最大任务数
         self.max_tasks = max_tasks or settings.TASK_QUEUE_MAX_CONCURRENT
         
@@ -47,8 +50,8 @@ class TaskManager:
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self.cleanup_thread.start()
         
-        # 创建并持有 TaskProcessor 实例
-        self.processor = TaskProcessor(task_manager=self)
+        # 创建并持有 TaskProcessor 实例, 传递 mqtt_manager
+        self.processor = TaskProcessor(task_manager=self, mqtt_manager=self.mqtt_manager)
         
         logger.info(f"任务管理器初始化完成，最大任务数: {self.max_tasks}")
         
@@ -150,7 +153,7 @@ class TaskManager:
                 "error": error
             })
             
-            logger.info(f"更新任务状态: {task_id} -> {status}")
+            # logger.info(f"更新任务状态: {task_id} -> {status}")
             return True
             
         except Exception as e:

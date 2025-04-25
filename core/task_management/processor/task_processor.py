@@ -21,6 +21,10 @@ from core.task_management.utils.status import TaskStatus
 from core.analyzer.detection import YOLODetector
 from shared.utils.logger import setup_logger
 from core.config import settings
+# 导入 MqttManager 用于类型提示
+from services.mqtt import MQTTManager
+# 导入 get_mac_address 和 json
+from shared.utils.tools import get_mac_address
 
 # 条件导入，仅用于类型检查
 if TYPE_CHECKING:
@@ -200,14 +204,16 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
 class TaskProcessor:
     """任务处理器，处理分析任务"""
     
-    def __init__(self, task_manager: 'TaskManager'):
+    def __init__(self, task_manager: 'TaskManager', mqtt_manager: MQTTManager):
         """
         初始化任务处理器
         
         Args:
             task_manager: 任务管理器实例
+            mqtt_manager: MQTT管理器实例
         """
         self.task_manager = task_manager
+        self.mqtt_manager = mqtt_manager # 存储 MQTT 管理器实例
         self.active_tasks = {}  # 存储活动任务的进程
         self.stop_events = {}  # 存储任务停止事件
         self.result_queues = {}  # 存储任务结果队列
@@ -360,7 +366,18 @@ class TaskProcessor:
             task_id: 任务ID
             result_queue: 结果队列
         """
+        task_info = None # 初始化 task_info
         try:
+            # 提前获取一次任务信息，主要为了获取配置
+            task_info = self.task_manager.get_task(task_id)
+            if not task_info:
+                logger.error(f"处理结果时未找到任务信息: {task_id}")
+                return # 任务信息是后续处理的基础，找不到则直接退出
+
+            task_data = task_info.get("data", {})
+            result_config = task_data.get("result", {})
+            subtask_info = task_data.get("subtask", {})
+
             while True:
                 # 检查任务是否已停止
                 if task_id not in self.active_tasks:
@@ -375,12 +392,72 @@ class TaskProcessor:
                     
                 # 处理不同类型的结果
                 if result["type"] == "result":
-                    # 更新任务状态
+                    # 1. 更新任务状态 (保留原有逻辑)
                     self.task_manager.update_task_status(
                         task_id,
                         TaskStatus.PROCESSING,
-                        result=result
+                        result=result # 存储原始结果供可能的后续查询
                     )
+
+                    # 2. 准备并发布MQTT结果消息
+                    try:
+                        # 提取必要信息 (message_id, uuid 从 task_data 获取)
+                        message_id = task_data.get("message_id")
+                        message_uuid = task_data.get("message_uuid")
+                        subtask_id = subtask_info.get("id")
+                        mac_address = get_mac_address()
+
+                        # 确定目标主题
+                        callback_topic = result_config.get("callback_topic")
+                        if not callback_topic:
+                            target_topic = f"/meek/{mac_address}/result"
+                        else:
+                            target_topic = callback_topic
+
+                        # 构建 objects 列表 (仅包含可用字段)
+                        objects = []
+                        for det in result.get("detections", []):
+                            obj = {
+                                "class_id": det.get("class_id"),
+                                "confidence": det.get("confidence"),
+                                "bbox": det.get("bbox")
+                                # 注意：缺少 class_name, attributes, keypoints, mask, nested_objects 等字段
+                            }
+                            if "track_id" in det:
+                                obj["track_id"] = det["track_id"]
+                            objects.append(obj)
+
+                        # 构建 MQTT 消息体
+                        mqtt_message = {
+                            "message_id": message_id,
+                            "message_uuid": message_uuid,
+                            "message_type": 80003, # 固定为结果消息类型
+                            "mac_address": mac_address,
+                            "data": {
+                                "task_id": task_id,
+                                "subtask_id": subtask_id,
+                                "status": "1", # 表示成功处理此帧结果
+                                "progress": 100, # 暂时设为100，流处理可能需要不同的进度逻辑
+                                "timestamp": int(result.get("timestamp", time.time())),
+                                "result": {
+                                    "frame_id": result.get("frame_id"),
+                                    "objects": objects
+                                    # 注意：缺少 frame_info, image_results, analysis_info, scene_understanding 等部分
+                                }
+                            }
+                        }
+
+                        # 序列化并发布
+                        json_payload = json.dumps(mqtt_message)
+                        asyncio.create_task(self.mqtt_manager.publish(target_topic, json_payload))
+                        logger.debug(f"任务 {task_id} 结果已发布到主题: {target_topic}")
+
+                    except Exception as pub_err:
+                        logger.error(f"任务 {task_id} 发布MQTT结果时出错: {pub_err}")
+                        # 这里可以选择是否将任务标记为失败，取决于业务需求
+                        # self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"发布结果失败: {pub_err}")
+
+
                 elif result["type"] == "error":
                     # 更新任务状态为失败
                     self.task_manager.update_task_status(
@@ -399,10 +476,14 @@ class TaskProcessor:
                     break
                     
         except Exception as e:
-            logger.error(f"处理结果时出错: {str(e)}")
+            logger.error(f"处理结果时出错 ({task_id}): {str(e)}")
+            # 确保即使在处理循环中出错，也尝试将任务标记为失败
+            if task_info and task_id: # 检查 task_info 和 task_id 是否存在
+                 self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"结果处理循环异常: {e}")
+
             
         finally:
-            # 清理资源
+            # 清理资源 (确保即使出错也执行)
             if task_id in self.active_tasks:
                 del self.active_tasks[task_id]
             if task_id in self.stop_events:
