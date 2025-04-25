@@ -56,55 +56,54 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
         stop_event: 停止事件
         result_queue: 结果队列
     """
+    start_time_process = time.time() # 记录进程启动时间
+    detector = None # 初始化 detector
+    cap = None # 初始化 cap
     try:
         # 1. 初始化检测器
         model_code = stream_config["model"]["code"]
         analysis_type = stream_config["subtask"]["type"]
         
-        detector = None
+        logger.info(f"工作进程 {task_id}: 开始初始化 {analysis_type} 检测器: {model_code}")
+        
+        # 根据分析类型选择并初始化检测器
         if analysis_type == "detection":
             from core.analyzer.detection import YOLODetector
             detector = YOLODetector()
-            # 使用 asyncio.run() 执行异步加载
-            try:
-                asyncio.run(detector.load_model(model_code))
-            except Exception as load_err:
-                 result_queue.put({
-                     "type": "error",
-                     "message": f"加载模型失败: {load_err}"
-                 })
-                 return
         elif analysis_type == "segmentation":
             from core.analyzer.segmentation import YOLOSegmentor
             detector = YOLOSegmentor()
-             # 使用 asyncio.run() 执行异步加载
-            try:
-                asyncio.run(detector.load_model(model_code))
-            except Exception as load_err:
-                 result_queue.put({
-                     "type": "error",
-                     "message": f"加载模型失败: {load_err}"
-                 })
-                 return
         else:
-            raise ValueError(f"不支持的分析类型: {analysis_type}")
-            
-        if not detector:
-            result_queue.put({
-                "type": "error",
-                "message": "初始化检测器失败"
-            })
-            return
+             # 直接放入队列并返回
+             result_queue.put({
+                 "type": "error",
+                 "message": f"不支持的分析类型: {analysis_type}"
+             })
+             return
+
+        # 加载模型
+        try:
+            asyncio.run(detector.load_model(model_code))
+            logger.info(f"工作进程 {task_id}: 模型 {model_code} 加载成功")
+        except Exception as load_err:
+             logger.error(f"工作进程 {task_id}: 加载模型失败: {load_err}")
+             result_queue.put({
+                 "type": "error",
+                 "message": f"加载模型失败: {load_err}"
+             })
+             return
             
         # 2. 初始化跟踪器（如果需要）
         tracker = None
-        if stream_config.get("analysis", {}).get("track_config"):
+        track_config = stream_config.get("analysis", {}).get("track_config")
+        if track_config and isinstance(track_config, dict) and track_config.get("enabled", True): # 检查 track_config 是否存在且为字典
             try:
                 from core.tracker import create_tracker
-                track_config = stream_config["analysis"]["track_config"]
-                tracker_type = track_config.pop("tracker_type", "sort")
-                tracker = create_tracker(tracker_type, **track_config)
+                tracker_type = track_config.pop("tracker_type", "sort") # pop 会修改字典，后续不再包含 tracker_type
+                tracker = create_tracker(tracker_type, **track_config) # 使用剩余配置
+                logger.info(f"工作进程 {task_id}: 跟踪器 {tracker_type} 创建成功")
             except Exception as e:
+                logger.error(f"工作进程 {task_id}: 创建跟踪器失败: {str(e)}")
                 result_queue.put({
                     "type": "error",
                     "message": f"创建跟踪器失败: {str(e)}"
@@ -113,93 +112,182 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
         
         # 3. 打开视频流
         stream_url = stream_config["source"]["urls"][0]
+        logger.info(f"工作进程 {task_id}: 尝试打开视频流: {stream_url}")
         cap = cv2.VideoCapture(stream_url)
         if not cap.isOpened():
+            logger.error(f"工作进程 {task_id}: 无法打开视频流: {stream_url}")
             result_queue.put({
                 "type": "error",
                 "message": f"无法打开视频流: {stream_url}"
             })
             return
+        logger.info(f"工作进程 {task_id}: 视频流打开成功")
             
         # 4. 获取流信息
         fps = cap.get(cv2.CAP_PROP_FPS)
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        logger.info(f"工作进程 {task_id}: 流信息 - FPS: {fps}, 宽度: {width}, 高度: {height}")
         
         # 5. 处理每一帧
         frame_count = 0
         analysis_interval = stream_config.get("analysis_interval", 1)
+        if not isinstance(analysis_interval, int) or analysis_interval <= 0:
+            logger.warning(f"工作进程 {task_id}: 无效的 analysis_interval ({analysis_interval})，使用默认值 1")
+            analysis_interval = 1
+        
+        logger.info(f"工作进程 {task_id}: 开始处理帧，分析间隔: {analysis_interval}")
         
         while not stop_event.is_set():
+            frame_start_time = time.time() # 记录帧处理开始时间
             ret, frame = cap.read()
             if not ret:
-                logger.warning(f"读取视频流失败，尝试重新连接: {stream_url}")
+                logger.warning(f"工作进程 {task_id}: 读取视频流失败，尝试重新连接: {stream_url}")
                 cap.release()
+                time.sleep(1) # 使用 time.sleep 替代 await asyncio.sleep
                 cap = cv2.VideoCapture(stream_url)
-                continue
+                if not cap.isOpened():
+                    logger.error(f"工作进程 {task_id}: 重新连接视频流失败: {stream_url}")
+                    result_queue.put({
+                        "type": "error",
+                        "message": f"无法重新连接视频流: {stream_url}"
+                    })
+                    break # 退出循环
+                logger.info(f"工作进程 {task_id}: 视频流重新连接成功")
+                continue # 继续下一次循环尝试读取
                 
             # 按间隔分析
             if frame_count % analysis_interval == 0:
+                frame_process_start_time = time.time()
+                inference_time = 0
+                pre_process_time = 0
+                post_process_time = 0
+                detections = []
+                mask_data = None # 初始化 mask_data
+
                 try:
-                    # 使用 asyncio.run() 执行异步检测
-                    result = asyncio.run(detector.detect(frame))
-                    detections = result.get("detections", [])
-                    
-                    # 过滤指定类别
-                    if stream_config.get("analysis", {}).get("classes"):
-                        allowed_classes = stream_config["analysis"]["classes"]
+                    # 使用 asyncio.run() 执行异步检测/分割
+                    # 修改 detector 的 detect 方法以返回更详细的信息
+                    analysis_result = asyncio.run(detector.detect(frame))
+
+                    # 提取结果和可能的计时信息
+                    detections = analysis_result.get("detections", [])
+                    inference_time = analysis_result.get("inference_time", 0)
+                    pre_process_time = analysis_result.get("pre_process_time", 0)
+                    post_process_time = analysis_result.get("post_process_time", 0)
+                    # 如果是分割任务，尝试获取掩码
+                    if analysis_type == "segmentation":
+                         mask_data = analysis_result.get("masks") # 假设 detector 返回 'masks' 键
+
+                    # 过滤指定类别 (确保 analysis_config 和 classes 存在且 classes 是列表)
+                    analysis_config = stream_config.get("analysis", {})
+                    allowed_classes = analysis_config.get("classes") if isinstance(analysis_config, dict) else None
+                    if allowed_classes and isinstance(allowed_classes, list):
                         detections = [
                             det for det in detections 
-                            if det["class_id"] in allowed_classes
+                            if det.get("class_id") in allowed_classes # 使用 .get() 更安全
                         ]
                     
-                    # 应用ROI过滤
-                    if stream_config.get("roi"):
-                        roi_config = stream_config["roi"]["config"]
-                        roi_type = stream_config["roi"].get("type", 1)
-                        detections = detector._filter_by_roi(
-                            detections, 
-                            roi_config, 
-                            roi_type,
-                            height,
-                            width
-                        )
+                    # 应用ROI过滤 (确保 roi_config 存在)
+                    roi = stream_config.get("roi")
+                    if roi and isinstance(roi, dict):
+                         roi_config = roi.get("config")
+                         roi_type = roi.get("type", 1) # 默认为1 (假设1代表某种ROI类型)
+                         if roi_config: # 仅当 config 存在时过滤
+                            detections = detector._filter_by_roi(
+                                detections, 
+                                roi_config, 
+                                roi_type,
+                                height, # 使用之前获取的高度
+                                width  # 使用之前获取的宽度
+                            )
                     
-                    # 执行跟踪
+                    # 执行跟踪 (如果 tracker 已初始化)
                     if tracker:
-                        # 使用 asyncio.run() 执行异步跟踪更新
-                        tracked_objects = asyncio.run(tracker.update(detections))
-                        detections = [obj.to_dict() for obj in tracked_objects]
-                        
-                    # 发送结果
-                    result_queue.put({
+                        # 注意：跟踪器的 update 方法可能需要调整以接收和返回更丰富的 detection 对象
+                        # 这里假设 detections 已经是 tracker.update 期望的格式
+                        tracked_objects = asyncio.run(tracker.update(detections)) # 假设 update 返回对象列表
+                        # 将跟踪结果转换回字典列表，包含 track_id
+                        detections = [obj.to_dict() for obj in tracked_objects] # 假设跟踪对象有 to_dict 方法
+                    
+                    # 准备发送的结果字典
+                    frame_process_end_time = time.time()
+                    processed_time = frame_process_end_time - frame_process_start_time
+
+                    # 转换 NumPy 类型
+                    serializable_detections = convert_numpy_types(detections)
+                    serializable_mask_data = convert_numpy_types(mask_data) if mask_data else None
+
+                    # **获取类别名称 (从 detector.model.names 获取)**
+                    class_names_map = detector.model.names if hasattr(detector, 'model') and hasattr(detector.model, 'names') else {}
+                    for det in serializable_detections:
+                         class_id = det.get('class_id')
+                         # 使用映射获取名称，如果ID无效或映射不存在，则默认为 'unknown'
+                         det['class_name'] = class_names_map.get(class_id, 'unknown') 
+
+                    result_payload = {
                         "type": "result",
                         "frame_id": frame_count,
-                        "detections": convert_numpy_types(detections),
-                        "timestamp": time.time()
-                    })
+                        "timestamp": time.time(),
+                        "detections": serializable_detections,
+                        "frame_info": {
+                            "width": width,
+                            "height": height,
+                            "fps": fps,
+                            "processed_time": processed_time # 单帧处理时间
+                        },
+                        "analysis_info": {
+                             "inference_time": inference_time,
+                             "pre_process_time": pre_process_time,
+                             "post_process_time": post_process_time
+                        },
+                        "mask_data": serializable_mask_data # 添加掩码数据
+                    }
+                    result_queue.put(result_payload)
+                    # logger.debug(f"工作进程 {task_id}: 帧 {frame_count} 处理完成, 耗时: {processed_time:.4f}s")
                     
                 except Exception as e:
-                    logger.error(f"处理帧时出错: {str(e)}")
-                    continue
+                    logger.error(f"工作进程 {task_id}: 处理帧 {frame_count} 时出错: {str(e)}")
+                    import traceback
+                    logger.error(f"详细错误: {traceback.format_exc()}")
+                    # 不因为单帧错误而停止整个进程，继续处理下一帧
+                    continue # 跳过当前帧的处理
                     
             frame_count += 1
+            # 短暂休眠避免CPU占用过高（可选）
+            time.sleep(0.001) # 使用 time.sleep
             
         # 6. 清理资源
-        cap.release()
+        if cap:
+             cap.release()
+        logger.info(f"工作进程 {task_id}: 视频流已释放")
         
         # 7. 发送完成消息
+        total_processed_frames = frame_count // analysis_interval
+        end_time_process = time.time()
+        total_duration = end_time_process - start_time_process
+        logger.info(f"工作进程 {task_id}: 处理完成，总帧数: {frame_count}, 已分析帧数: {total_processed_frames}, 总耗时: {total_duration:.2f}s")
         result_queue.put({
             "type": "complete",
             "total_frames": frame_count,
-            "processed_frames": frame_count // analysis_interval
+            "processed_frames": total_processed_frames,
+            "duration": total_duration
         })
         
     except Exception as e:
+        logger.error(f"工作进程 {task_id}: 发生未处理的严重错误: {str(e)}")
+        import traceback
+        logger.error(f"详细错误: {traceback.format_exc()}")
+        # 发送错误消息到主进程
         result_queue.put({
             "type": "error",
-            "message": str(e)
+            "message": f"工作进程发生严重错误: {str(e)}"
         })
+    finally:
+        # 确保资源被释放
+        if cap and cap.isOpened():
+            cap.release()
+        logger.info(f"工作进程 {task_id}: 退出")
 
 class TaskProcessor:
     """任务处理器，处理分析任务"""
@@ -360,7 +448,7 @@ class TaskProcessor:
             
     async def _handle_results(self, task_id: str, result_queue: Queue):
         """
-        处理任务结果
+        处理来自工作进程的任务结果
         
         Args:
             task_id: 任务ID
@@ -375,122 +463,254 @@ class TaskProcessor:
                 return # 任务信息是后续处理的基础，找不到则直接退出
 
             task_data = task_info.get("data", {})
+            if not task_data:
+                logger.error(f"任务 {task_id} 配置数据为空，无法处理结果")
+                return
+
             result_config = task_data.get("result", {})
             subtask_info = task_data.get("subtask", {})
+            model_config = task_data.get("model", {})
+            source_config = task_data.get("source", {})
+
+            mac_address = get_mac_address()
+
+            # 确定目标主题
+            callback_topic = result_config.get("callback_topic")
+            if not callback_topic:
+                target_topic = f"/meek/{mac_address}/result"
+            else:
+                target_topic = callback_topic
 
             while True:
-                # 检查任务是否已停止
+                # 检查任务是否已停止 (主进程中控制)
+                current_status = self.task_manager.get_task_status(task_id)
+                if current_status in [TaskStatus.STOPPED, TaskStatus.FAILED, TaskStatus.COMPLETED]:
+                     logger.info(f"任务 {task_id} 已停止，结果处理循环退出")
+                     break
+                # 检查任务是否还在 active_tasks 中 (以防万一)
                 if task_id not in self.active_tasks:
+                    logger.warning(f"任务 {task_id} 不在 active_tasks 中，结果处理循环退出")
                     break
                     
                 # 非阻塞方式获取结果
                 try:
-                    result = result_queue.get_nowait()
+                    worker_result = result_queue.get_nowait()
                 except:
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.01) # 短暂等待
                     continue
                     
                 # 处理不同类型的结果
-                if result["type"] == "result":
-                    # 1. 更新任务状态 (保留原有逻辑)
+                if worker_result["type"] == "result":
+                    # 1. 更新任务状态 (标记为处理中，并存储最新结果)
+                    # 注意：存储的 result 现在是 worker_result 的原始结构
                     self.task_manager.update_task_status(
                         task_id,
                         TaskStatus.PROCESSING,
-                        result=result # 存储原始结果供可能的后续查询
+                        result=worker_result 
                     )
 
-                    # 2. 准备并发布MQTT结果消息
+                    # 2. 构建符合目标格式的 MQTT 消息
                     try:
-                        # 提取必要信息 (message_id, uuid 从 task_data 获取)
+                        # 提取关联信息
                         message_id = task_data.get("message_id")
                         message_uuid = task_data.get("message_uuid")
                         subtask_id = subtask_info.get("id")
-                        mac_address = get_mac_address()
 
-                        # 确定目标主题
-                        callback_topic = result_config.get("callback_topic")
-                        if not callback_topic:
-                            target_topic = f"/meek/{mac_address}/result"
-                        else:
-                            target_topic = callback_topic
+                        # 提取帧和分析信息
+                        frame_info_worker = worker_result.get("frame_info", {})
+                        analysis_info_worker = worker_result.get("analysis_info", {})
+                        mask_data_worker = worker_result.get("mask_data")
 
-                        # 构建 objects 列表 (仅包含可用字段)
+                        # --- 构建 objects 列表 --- 
                         objects = []
-                        for det in result.get("detections", []):
-                            obj = {
+                        for det in worker_result.get("detections", []):
+                            obj_data = {
                                 "class_id": det.get("class_id"),
+                                "class_name": det.get("class_name", "unknown"), # 使用从 worker 传来的 class_name
                                 "confidence": det.get("confidence"),
                                 "bbox": det.get("bbox")
-                                # 注意：缺少 class_name, attributes, keypoints, mask, nested_objects 等字段
+                                # ---- 暂未实现字段 ----
+                                # "attributes": {},
+                                # "keypoints": [],
+                                # "nested_objects": []
                             }
                             if "track_id" in det:
-                                obj["track_id"] = det["track_id"]
-                            objects.append(obj)
+                                obj_data["track_id"] = det.get("track_id")
+                            # 如果有掩码数据 (假设分割任务的 detection 也包含掩码引用或数据)
+                            if mask_data_worker and det.get('mask_ref'): # 假设 det 有 mask_ref 指向 mask_data
+                                 obj_data["mask"] = {
+                                     "format": "rle", # 假设是 RLE 格式
+                                     "data": mask_data_worker.get(det['mask_ref']), # 通过引用获取
+                                     "size": [frame_info_worker.get("width"), frame_info_worker.get("height")]
+                                 }
+                            elif mask_data_worker and isinstance(mask_data_worker, dict) and analysis_info_worker.get("type") == "segmentation": # 另一种可能是掩码直接在顶层
+                                 # 这个逻辑取决于分割器如何返回掩码，需要适配
+                                 # 假设 mask_data_worker 是 {'format': 'rle', 'data': '...', 'size': [w,h]}
+                                 obj_data["mask"] = mask_data_worker 
 
-                        # 构建 MQTT 消息体
+                            objects.append(obj_data)
+
+                        # --- 构建 frame_info --- 
+                        frame_info_mqtt = {
+                            "width": frame_info_worker.get("width"),
+                            "height": frame_info_worker.get("height"),
+                            "processed_time": frame_info_worker.get("processed_time"),
+                            "frame_index": worker_result.get("frame_id"),
+                            "timestamp": int(worker_result.get("timestamp", time.time())),
+                            "source_info": {
+                                "type": source_config.get("type"),
+                                "path": source_config.get("urls", [None])[0], # 取第一个 URL 作为路径
+                                "frame_rate": frame_info_worker.get("fps")
+                            }
+                        }
+                        
+                        # --- 构建 analysis_info --- 
+                        analysis_info_mqtt = {
+                            "model_name": model_config.get("code"),
+                            "model_version": model_config.get("version"),
+                            "inference_time": analysis_info_worker.get("inference_time"),
+                            "pre_process_time": analysis_info_worker.get("pre_process_time"),
+                            "post_process_time": analysis_info_worker.get("post_process_time"),
+                            "device": model_config.get("device"),
+                            "batch_size": model_config.get("batch_size", 1)
+                        }
+
+                        # --- 构建完整的 result --- 
+                        result_mqtt = {
+                            "frame_id": worker_result.get("frame_id"),
+                            "objects": objects,
+                            "frame_info": frame_info_mqtt,
+                            "analysis_info": analysis_info_mqtt
+                            # ---- 暂未实现字段 ----
+                            # "image_results": {},
+                            # "scene_understanding": {}
+                        }
+
+                        # 构建最终 MQTT 消息体
                         mqtt_message = {
                             "message_id": message_id,
                             "message_uuid": message_uuid,
-                            "message_type": 80003, # 固定为结果消息类型
+                            "message_type": 80003, # 响应消息类型
                             "mac_address": mac_address,
                             "data": {
                                 "task_id": task_id,
                                 "subtask_id": subtask_id,
-                                "status": "1", # 表示成功处理此帧结果
-                                "progress": 100, # 暂时设为100，流处理可能需要不同的进度逻辑
-                                "timestamp": int(result.get("timestamp", time.time())),
-                                "result": {
-                                    "frame_id": result.get("frame_id"),
-                                    "objects": objects
-                                    # 注意：缺少 frame_info, image_results, analysis_info, scene_understanding 等部分
-                                }
+                                "status": "0", # 0: 进行中 (因为这是单帧结果)
+                                "progress": 0, # 流式处理的进度不好确定，暂设为0
+                                "timestamp": int(worker_result.get("timestamp", time.time())), # 使用 worker 的时间戳
+                                "result": result_mqtt
                             }
                         }
 
                         # 序列化并发布
                         json_payload = json.dumps(mqtt_message)
                         asyncio.create_task(self.mqtt_manager.publish(target_topic, json_payload))
-                        logger.debug(f"任务 {task_id} 结果已发布到主题: {target_topic}")
+                        logger.debug(f"任务 {task_id} 结果已按新格式发布到主题: {target_topic}")
 
-                    except Exception as pub_err:
-                        logger.error(f"任务 {task_id} 发布MQTT结果时出错: {pub_err}")
-                        # 这里可以选择是否将任务标记为失败，取决于业务需求
-                        # self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"发布结果失败: {pub_err}")
+                    except Exception as build_err:
+                        logger.error(f"任务 {task_id} 构建或发布 MQTT 结果时出错: {build_err}")
+                        import traceback
+                        logger.error(f"详细错误: {traceback.format_exc()}")
+                        # 可选：标记任务失败
+                        # self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"构建结果失败: {build_err}")
 
-
-                elif result["type"] == "error":
+                elif worker_result["type"] == "error":
+                    logger.error(f"工作进程 {task_id} 报告错误: {worker_result['message']}")
                     # 更新任务状态为失败
                     self.task_manager.update_task_status(
                         task_id,
                         TaskStatus.FAILED,
-                        error=result["message"]
+                        error=worker_result["message"]
                     )
-                    break
-                elif result["type"] == "complete":
+                    # 发送失败状态的MQTT消息
+                    try:
+                         error_message = {
+                            "message_id": task_data.get("message_id"),
+                            "message_uuid": task_data.get("message_uuid"),
+                            "message_type": 80003, # 响应消息类型
+                            "mac_address": mac_address,
+                            "data": {
+                                "task_id": task_id,
+                                "subtask_id": subtask_info.get("id"),
+                                "status": "-1", # -1: 分析失败
+                                "progress": 0,
+                                "timestamp": int(time.time()),
+                                "result": { # 包含错误信息
+                                    "error_message": worker_result['message']
+                                }
+                            }
+                         }
+                         json_payload = json.dumps(error_message)
+                         asyncio.create_task(self.mqtt_manager.publish(target_topic, json_payload))
+                         logger.info(f"任务 {task_id} 的失败状态已发布到主题: {target_topic}")
+                    except Exception as pub_err:
+                         logger.error(f"任务 {task_id} 发布失败状态时出错: {pub_err}")
+
+                    break # 工作进程出错，退出处理循环
+
+                elif worker_result["type"] == "complete":
+                    logger.info(f"工作进程 {task_id} 处理完成: {worker_result}")
                     # 更新任务状态为完成
                     self.task_manager.update_task_status(
                         task_id,
                         TaskStatus.COMPLETED,
-                        result=result
+                        result=worker_result # 存储完成信息
                     )
-                    break
+                     # 发送完成状态的MQTT消息
+                    try:
+                         complete_message = {
+                            "message_id": task_data.get("message_id"),
+                            "message_uuid": task_data.get("message_uuid"),
+                            "message_type": 80003, # 响应消息类型
+                            "mac_address": mac_address,
+                            "data": {
+                                "task_id": task_id,
+                                "subtask_id": subtask_info.get("id"),
+                                "status": "1", # 1: 已完成
+                                "progress": 100,
+                                "timestamp": int(time.time()),
+                                "result": { # 可以包含完成时的统计信息
+                                    "total_frames": worker_result.get("total_frames"),
+                                    "processed_frames": worker_result.get("processed_frames"),
+                                    "duration": worker_result.get("duration")
+                                }
+                            }
+                         }
+                         json_payload = json.dumps(complete_message)
+                         asyncio.create_task(self.mqtt_manager.publish(target_topic, json_payload))
+                         logger.info(f"任务 {task_id} 的完成状态已发布到主题: {target_topic}")
+                    except Exception as pub_err:
+                         logger.error(f"任务 {task_id} 发布完成状态时出错: {pub_err}")
+
+                    break # 任务完成，退出处理循环
                     
         except Exception as e:
-            logger.error(f"处理结果时出错 ({task_id}): {str(e)}")
+            logger.error(f"处理结果循环 ({task_id}) 发生意外错误: {str(e)}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
             # 确保即使在处理循环中出错，也尝试将任务标记为失败
-            if task_info and task_id: # 检查 task_info 和 task_id 是否存在
-                 self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"结果处理循环异常: {e}")
-
+            if task_id: # 检查 task_id 是否存在
+                 try:
+                      # 检查任务是否还存在，避免重复更新或更新已删除的任务
+                      if self.task_manager.get_task(task_id):
+                           self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=f"结果处理循环异常: {e}")
+                      else:
+                           logger.warning(f"尝试更新已不存在的任务 {task_id} 的状态为失败")
+                 except Exception as update_err:
+                      logger.error(f"尝试更新任务 {task_id} 状态为失败时出错: {update_err}")
             
         finally:
             # 清理资源 (确保即使出错也执行)
-            if task_id in self.active_tasks:
-                del self.active_tasks[task_id]
-            if task_id in self.stop_events:
-                del self.stop_events[task_id]
-            if task_id in self.result_queues:
-                del self.result_queues[task_id]
-                
+            # 这个清理逻辑似乎应该在 stop_task 中更合适，或者在任务管理器层面处理
+            # 避免在这里删除，因为 stop_task 可能还需要它们
+            logger.info(f"结果处理循环退出: {task_id}")
+            # if task_id in self.active_tasks:
+            #     del self.active_tasks[task_id]
+            # if task_id in self.stop_events:
+            #     del self.stop_events[task_id]
+            # if task_id in self.result_queues:
+            #     del self.result_queues[task_id]
+
     async def stop_task(self, task_id: str) -> Dict[str, Any]:
         """
         停止任务

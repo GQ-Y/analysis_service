@@ -46,7 +46,7 @@ class CommandHandler(BaseMQTTHandler):
         # 或者如果 task_handler 也有 set_mqtt_manager 方法
         # if self.task_handler and hasattr(self.task_handler, 'set_mqtt_manager'):
         #    self.task_handler.set_mqtt_manager(mqtt_manager)
-
+        
     def get_mac_address(self) -> str:
         """
         获取MAC地址
@@ -122,8 +122,8 @@ class CommandHandler(BaseMQTTHandler):
                 logger.warning(f"[send_reply] 未找到 confirmation_topic 或其值为空，使用默认回复主题")
                 target_topic = self.mqtt_manager.topic_manager.format_topic(
                     TOPIC_TYPE_DEVICE_CONFIG_REPLY,
-                    mac_address=self.get_mac_address()
-                )
+                mac_address=self.get_mac_address()
+            )
                 logger.warning(f"[send_reply] 默认回复主题: {target_topic}")
             
             if not target_topic:
