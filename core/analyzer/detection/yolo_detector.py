@@ -159,36 +159,224 @@ class YOLODetector:
         rgb = tuple(round(x * 255) for x in colorsys.hsv_to_rgb(hue, 0.8, 0.95))
         return rgb
 
-    async def _encode_result_image(self, image: np.ndarray) -> bytes:
-        """将结果图像编码为字节流
+    async def _encode_result_image(
+        self,
+        image: np.ndarray,
+        detection_results: List[Dict],
+        return_image: bool = False
+    ) -> Union[str, np.ndarray, None]:
+        """将检测结果绘制到图片上，并压缩到合适大小
         
         Args:
-            image: 需要编码的图像数组
+            image: 原始图像数据
+            detection_results: 检测结果列表，包含边界框、类别等信息
+            return_image: 是否返回图像数据而非base64编码
             
         Returns:
-            编码后的图像字节流
+            Union[str, np.ndarray, None]: base64编码的图像，或图像数据，或None（出错时）
         """
         try:
-            # 将图像从BGR转换为RGB
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            # 复制图片以免修改原图
+            result_image = image.copy()
             
-            # 将numpy数组转换为PIL图像
-            pil_image = Image.fromarray(rgb_image)
+            # 使用PIL进行绘制，更灵活的处理中文和文本绘制
+            img_pil = Image.fromarray(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(img_pil)
             
-            # 创建一个字节流缓冲区
-            buffer = io.BytesIO()
+            # 尝试加载字体
+            try:
+                # 尝试加载系统中文字体
+                font_size = 16  # 字体大小
+                font_paths = [
+                    # macOS 系统字体
+                    "/System/Library/Fonts/STHeiti Light.ttc",  # 华文细黑
+                    "/System/Library/Fonts/STHeiti Medium.ttc", # 华文中黑
+                    "/System/Library/Fonts/PingFang.ttc",       # 苹方
+                    "/System/Library/Fonts/Hiragino Sans GB.ttc", # 冬青黑体
+                    
+                    # Windows 系统字体
+                    "C:/Windows/Fonts/msyh.ttc",     # 微软雅黑
+                    "C:/Windows/Fonts/simsun.ttc",   # 宋体
+                    "C:/Windows/Fonts/simhei.ttf",   # 黑体
+                    
+                    # Linux 系统字体
+                    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+                    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                    
+                    # 项目本地字体（作为后备）
+                    "fonts/simhei.ttf"
+                ]
+                
+                font = None
+                for font_path in font_paths:
+                    try:
+                        if os.path.exists(font_path):
+                            font = ImageFont.truetype(font_path, font_size)
+                            logger.debug(f"成功加载字体: {font_path}")
+                            break
+                    except Exception as font_err:
+                        logger.debug(f"加载字体失败: {font_path}, 错误: {font_err}")
+                
+                # 如果所有字体都失败，使用默认字体
+                if font is None:
+                    logger.warning("无法加载中文字体，将使用默认字体")
+                    font = ImageFont.load_default()
+            except Exception as e:
+                logger.warning(f"加载字体出错: {str(e)}，将使用默认字体")
+                font = ImageFont.load_default()
             
-            # 将图像保存为JPEG格式到缓冲区
-            pil_image.save(buffer, format='JPEG')
+            # 绘制检测结果
+            for i, det in enumerate(detection_results):
+                try:
+                    # 获取检测框
+                    bbox = det.get("bbox", {})
+                    if not bbox:
+                        continue
+                        
+                    x1, y1 = bbox.get("x1", 0), bbox.get("y1", 0)
+                    x2, y2 = bbox.get("x2", 0), bbox.get("y2", 0)
+                    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                    
+                    # 获取类别信息
+                    class_name = det.get("class_name", "unknown")
+                    confidence = det.get("confidence", 0.0)
+                    
+                    # 生成不同颜色
+                    class_id = det.get("class_id", i)
+                    color = self._get_color_by_id(class_id)
+                    
+                    # 绘制边界框
+                    draw.rectangle([x1, y1, x2, y2], outline=color, width=2)
+                    
+                    # 准备标签文本
+                    label = f"{class_name} {confidence:.2f}"
+                    
+                    # 获取文本大小 - 兼容不同版本的PIL
+                    try:
+                        # 新版PIL使用textbbox
+                        text_bbox = draw.textbbox((0, 0), label, font=font)
+                        text_width = text_bbox[2] - text_bbox[0]
+                        text_height = text_bbox[3] - text_bbox[1]
+                    except AttributeError:
+                        # 旧版PIL使用getsize
+                        try:
+                            text_width, text_height = font.getsize(label)
+                        except AttributeError:
+                            # 更旧版本
+                            text_width, text_height = draw.textsize(label, font=font)
+                    
+                    # 确定标签位置
+                    label_y = max(0, y1 - text_height - 2) if y1 - text_height - 2 > 0 else y1
+                    
+                    # 绘制标签背景
+                    background_shape = [(x1, label_y), (x1 + text_width + 4, label_y + text_height + 4)]
+                    draw.rectangle(background_shape, fill=color)
+                    
+                    # 绘制文本
+                    text_position = (x1 + 2, label_y + 2)
+                    draw.text(
+                        text_position,
+                        label,
+                        font=font,
+                        fill=(255, 255, 255)  # 白色文字
+                    )
+                except Exception as det_err:
+                    logger.warning(f"绘制检测框 {i} 出错: {det_err}")
             
-            # 获取字节流
-            image_bytes = buffer.getvalue()
+            # 转换回OpenCV格式
+            result_image = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
             
-            return image_bytes
+            if return_image:
+                return result_image
+            
+            # 图像压缩函数
+            def compress_image(img, max_size_kb=800, initial_quality=90):
+                """压缩图像到指定大小"""
+                logger.debug(f"开始压缩图像，目标大小: {max_size_kb}KB")
+                quality = initial_quality
+                min_quality = 20  # 最低质量阈值
+                
+                # 将OpenCV图像转为PIL图像
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(img_rgb)
+                
+                # 降低分辨率
+                img_width, img_height = img_pil.size
+                # 如果图像尺寸过大，先调整大小
+                max_dim = 1920  # 最大宽度或高度
+                if img_width > max_dim or img_height > max_dim:
+                    scale = max_dim / max(img_width, img_height)
+                    new_width = int(img_width * scale)
+                    new_height = int(img_height * scale)
+                    img_pil = img_pil.resize((new_width, new_height), Image.LANCZOS)
+                    logger.debug(f"图像调整大小: {img_width}x{img_height} -> {new_width}x{new_height}")
+                
+                # 尝试不同的质量级别进行压缩，直到大小合适或达到最低质量
+                while quality >= min_quality:
+                    buffer = io.BytesIO()
+                    img_pil.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    size_kb = buffer.tell() / 1024
+                    
+                    logger.debug(f"压缩质量: {quality}, 大小: {size_kb:.2f}KB")
+                    
+                    if size_kb <= max_size_kb:
+                        logger.info(f"图像已压缩: 质量={quality}, 大小={size_kb:.2f}KB")
+                        return buffer.getvalue()
+                    
+                    # 降低质量，继续尝试
+                    quality -= 10
+                
+                # 如果达到最低质量但仍然大于目标大小，尝试进一步调整尺寸
+                if size_kb > max_size_kb:
+                    logger.warning(f"质量压缩不足，尝试减小尺寸")
+                    
+                    # 计算需要的缩放比例
+                    scale_factor = 0.8  # 每次缩小到原尺寸的80%
+                    current_width, current_height = img_pil.size
+                    
+                    while quality <= min_quality and size_kb > max_size_kb and min(current_width, current_height) > 400:
+                        # 降低分辨率
+                        new_width = int(current_width * scale_factor)
+                        new_height = int(current_height * scale_factor)
+                        resized_img = img_pil.resize((new_width, new_height), Image.LANCZOS)
+                        
+                        # 压缩
+                        buffer = io.BytesIO()
+                        resized_img.save(buffer, format='JPEG', quality=min_quality, optimize=True)
+                        size_kb = buffer.tell() / 1024
+                        
+                        logger.debug(f"调整大小: {current_width}x{current_height} -> {new_width}x{new_height}, 大小: {size_kb:.2f}KB")
+                        
+                        if size_kb <= max_size_kb:
+                            logger.info(f"图像已压缩: 尺寸={new_width}x{new_height}, 质量={min_quality}, 大小={size_kb:.2f}KB")
+                            return buffer.getvalue()
+                        
+                        # 更新当前尺寸
+                        current_width, current_height = new_width, new_height
+                        img_pil = resized_img
+                
+                # 如果所有方法都失败，返回最后一次压缩的结果
+                logger.warning(f"图像压缩到最小尺寸和质量仍超过目标大小: {size_kb:.2f}KB > {max_size_kb}KB")
+                return buffer.getvalue()
+            
+            try:
+                # 将图片编码为JPEG并压缩
+                image_bytes = compress_image(result_image)
+                image_size_kb = len(image_bytes) / 1024
+                logger.info(f"检测结果图像压缩后大小: {image_size_kb:.2f}KB")
+                
+                # Base64编码
+                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                logger.debug(f"成功生成base64图片，长度: {len(image_base64)}")
+                return image_base64
+            
+            except Exception as e:
+                logger.error(f"图片编码为base64失败: {str(e)}")
+                return None
+                
         except Exception as e:
-            logger.error(f"编码结果图像时出错: {str(e)}")
-            logger.error(str(e), exc_info=True)
-            return b""
+            logger.error(f"处理检测结果图片失败: {str(e)}")
+            return None
 
     async def detect(self, 
                      image: np.ndarray, 
@@ -206,17 +394,19 @@ class YOLODetector:
             - pre_process_time: 预处理时间 (ms)
             - inference_time: 推理时间 (ms)
             - post_process_time: 后处理时间 (ms)
-            - annotated_image_bytes: 标注后图像的 JPEG 字节流
+            - annotated_image: 标注后图像的 base64 字符串
         """
         start_time = time.time()
         pre_process_time_ms = 0
         inference_time_ms = 0
         post_process_time_ms = 0
-        annotated_image_bytes = None
+        annotated_image = None  # 改为字符串而非字节流
 
         try:
             # 运行检测
+            logger.debug("【调试】开始执行目标检测")
             results = self.model(image, verbose=verbose)
+            logger.debug("【调试】模型推理完成")
             
             # 获取计时信息
             if results and hasattr(results[0], 'speed'):
@@ -226,30 +416,35 @@ class YOLODetector:
                 post_process_time_ms = speed_info.get('postprocess', 0)
             
             # 解析检测结果
+            logger.debug("【调试】开始解析检测结果")
             detections = await self._parse_results(results)
+            logger.debug(f"【调试】检测到 {len(detections)} 个目标")
             
-            # --- 总是生成和编码标注图像 --- 
+            # --- 总是生成和编码标注图像（使用压缩版本） --- 
             try:
-                annotated_image = results[0].plot() # 使用ultralytics自带的plot
-                is_success, buffer = cv2.imencode(".jpg", annotated_image)
-                if not is_success:
-                    logger.warning("标注图像编码失败")
-                else:
-                    annotated_image_bytes = buffer.tobytes()
+                logger.debug("【调试】开始生成和压缩标注图像")
+                annotated_image_np = results[0].plot() # 使用ultralytics自带的plot
+                # 使用压缩方法编码图像 - 改为直接返回base64字符串而不是True
+                annotated_image = await self._encode_result_image(annotated_image_np, detections, False)
+                if annotated_image:
+                    kb_size = len(base64.b64decode(annotated_image)) / 1024
+                    logger.debug(f"【调试】标注图像已压缩，大小: {kb_size:.2f}KB")
             except Exception as plot_err:
-                    logger.error(f"绘制或编码标注图像时出错: {plot_err}")
+                logger.error(f"绘制或编码标注图像时出错: {plot_err}")
+                import traceback
+                logger.error(f"详细错误: {traceback.format_exc()}")
             # --- 结束图像处理 ---
 
             total_time = (time.time() - start_time) * 1000
-            # logger.debug(f"检测总耗时: {total_time:.2f}ms...")
+            logger.debug(f"【调试】检测总耗时: {total_time:.2f}ms")
 
-            # 构建返回字典 (始终包含 annotated_image_bytes，即使为 None)
+            # 构建返回字典 (字段名改为annotated_image)
             return_data = {
                 "detections": detections,
                 "pre_process_time": pre_process_time_ms,
                 "inference_time": inference_time_ms,
                 "post_process_time": post_process_time_ms,
-                "annotated_image_bytes": annotated_image_bytes # 可能为 None
+                "annotated_image": annotated_image  # 改为字符串
             }
                 
             return return_data
@@ -261,7 +456,7 @@ class YOLODetector:
                 "pre_process_time": 0,
                 "inference_time": 0,
                 "post_process_time": 0,
-                "annotated_image_bytes": None # 错误时也返回 None
+                "annotated_image": None  # 错误时返回None
             }
 
     def _filter_by_roi(self, detections: List[Dict], roi: Dict, roi_type: int, img_height: int, img_width: int) -> List[Dict]:
@@ -493,7 +688,7 @@ class YOLODetector:
         try:
             # 生成带检测结果的图片
             logger.info("开始生成检测结果图片...")
-            result_image = await self._encode_result_image(image)
+            result_image = await self._encode_result_image(image, detections, True)
             if result_image is None:
                 logger.error("生成检测结果图片失败")
                 return None

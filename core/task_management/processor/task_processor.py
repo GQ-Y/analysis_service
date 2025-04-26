@@ -180,16 +180,16 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                     inference_time = analysis_result.get("inference_time", 0)
                     pre_process_time = analysis_result.get("pre_process_time", 0)
                     post_process_time = analysis_result.get("post_process_time", 0)
-                    # 始终提取标注图像的字节流 (可能为 None)
-                    annotated_image_bytes = analysis_result.get("annotated_image_bytes")
+                    # 获取标注图像的base64字符串(与detector.detect方法的返回值保持一致)
+                    annotated_image_base64 = analysis_result.get("annotated_image")
 
                     # 如果是分割任务，尝试获取掩码
                     if analysis_type == "segmentation":
                          mask_data = analysis_result.get("masks") # 假设 detector 返回 'masks' 键
 
-                    # --- 保存标注图像 (仅当 save_images=True) ---
+                    # --- 保存标注图像 (仅当 save_images=True 且有base64字符串时) ---
                     annotated_image_save_path = None
-                    if save_images and annotated_image_bytes:
+                    if save_images and annotated_image_base64:
                         storage_config = stream_config.get("result", {}).get("storage", {})
                         save_dir_base_config = storage_config.get("save_path", "results")
                         save_dir_base = save_dir_base_config.lstrip('/').lstrip('\\\\')
@@ -203,24 +203,20 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                             os.makedirs(save_dir_task, exist_ok=True)
                             filename_only = f"{time_str}_{frame_count}"
                             annotated_image_save_path = os.path.join(save_dir_task, f"{filename_only}_annotated.jpg")
+                            
+                            # 从base64解码为二进制并保存
                             with open(annotated_image_save_path, "wb") as f:
-                                f.write(annotated_image_bytes)
+                                image_bytes = base64.b64decode(annotated_image_base64)
+                                f.write(image_bytes)
+                                logger.debug(f"保存标注图像到: {annotated_image_save_path}, 大小: {len(image_bytes)/1024:.2f}KB")
                         except OSError as e:
                              logger.error(f"创建目录或保存标注图像失败: {save_dir_task}, 错误: {e}")
                              annotated_image_save_path = None # 保存失败
                         except Exception as e:
                              logger.error(f"保存标注图像时发生未知错误: {e}")
+                             logger.exception(e)  # 打印堆栈跟踪
                              annotated_image_save_path = None # 保存失败
                     # --- 结束保存标注图像 ---
-
-                    # --- 始终进行 Base64 编码 (标注图) ---
-                    annotated_image_base64 = None
-                    if annotated_image_bytes:
-                        try:
-                             annotated_image_base64 = base64.b64encode(annotated_image_bytes).decode('utf-8')
-                        except Exception as e:
-                             logger.error(f"Base64 编码标注图像失败: {e}")
-                    # --- 结束 Base64 编码 ---
 
                     # 过滤指定类别 (确保 analysis_config 和 classes 存在且 classes 是列表)
                     analysis_config = stream_config.get("analysis", {})
@@ -265,17 +261,17 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                          det['class_name'] = class_names_map.get(class_id, 'unknown') 
 
                     # 构建 image_results 字典 (只包含 annotated)
-                    image_results_payload = {
-                         "annotated": {
-                             "format": "jpg",
-                             "base64": annotated_image_base64, # 始终包含，可能为 None
-                             "save_path": annotated_image_save_path # 可能为 None
-                         }
-                         # TODO: Add mask image handling if needed
-                    }
-                    # 如果 base64 和 save_path 都为 None，则不发送 image_results
-                    if annotated_image_base64 is None and annotated_image_save_path is None:
-                         image_results_payload = None 
+                    image_results_payload = {}
+                    if annotated_image_base64 or annotated_image_save_path:
+                        image_results_payload = {
+                            "annotated": {
+                                "format": "jpg",
+                                "base64": annotated_image_base64,  # 直接使用base64字符串
+                                "save_path": annotated_image_save_path  # 可能为 None
+                            }
+                        }
+                    else:
+                        image_results_payload = None
 
                     result_payload = {
                         "type": "result",

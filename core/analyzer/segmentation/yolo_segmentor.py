@@ -24,6 +24,7 @@ from core.exceptions import (
     ProcessingException,
     ResourceNotFoundException
 )
+import io
 
 logger = setup_logger(__name__)
 
@@ -158,7 +159,7 @@ class YOLOSegmentor:
         segmentation_results: List[Dict],
         return_image: bool = False
     ) -> Union[str, np.ndarray, None]:
-        """将分割结果绘制到图片上"""
+        """将分割结果绘制到图片上，并压缩到合适大小"""
         try:
             # 复制图片以免修改原图
             result_image = image.copy()
@@ -267,9 +268,18 @@ class YOLOSegmentor:
                 label = f"{class_name} {confidence:.2f}"
                 
                 # 计算文本大小
-                text_bbox = draw.textbbox((0, 0), label, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
+                try:
+                    # 新版PIL使用textbbox
+                    text_bbox = draw.textbbox((0, 0), label, font=font)
+                    text_width = text_bbox[2] - text_bbox[0]
+                    text_height = text_bbox[3] - text_bbox[1]
+                except AttributeError:
+                    # 旧版PIL使用getsize
+                    try:
+                        text_width, text_height = font.getsize(label)
+                    except AttributeError:
+                        # 更旧版本
+                        text_width, text_height = draw.textsize(label, font=font)
                 
                 # 确保标签不会超出图片顶部
                 label_y = max(y1 - text_height - 4, 0)
@@ -293,14 +303,54 @@ class YOLOSegmentor:
             if return_image:
                 return result_image
             
+            # 图像压缩函数
+            def compress_image(img, max_size_kb=800, initial_quality=90):
+                """压缩图像到指定大小"""
+                quality = initial_quality
+                min_quality = 20  # 最低质量阈值
+                
+                # 将OpenCV图像转为PIL图像
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(img_rgb)
+                
+                # 降低分辨率
+                img_width, img_height = img_pil.size
+                # 如果图像尺寸过大，先调整大小
+                max_dim = 1920  # 最大宽度或高度
+                if img_width > max_dim or img_height > max_dim:
+                    scale = max_dim / max(img_width, img_height)
+                    new_width = int(img_width * scale)
+                    new_height = int(img_height * scale)
+                    img_pil = img_pil.resize((new_width, new_height), Image.LANCZOS)
+                    logger.debug(f"图像调整大小: {img_width}x{img_height} -> {new_width}x{new_height}")
+                
+                # 尝试不同的质量级别进行压缩，直到大小合适或达到最低质量
+                while quality >= min_quality:
+                    buffer = io.BytesIO()
+                    img_pil.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    size_kb = buffer.tell() / 1024
+                    
+                    logger.debug(f"压缩质量: {quality}, 大小: {size_kb:.2f}KB")
+                    
+                    if size_kb <= max_size_kb:
+                        logger.info(f"图像已压缩: 质量={quality}, 大小={size_kb:.2f}KB")
+                        return buffer.getvalue()
+                    
+                    # 降低质量，继续尝试
+                    quality -= 10
+                
+                # 如果达到最低质量但仍然大于目标大小，返回最后一次压缩的结果
+                logger.warning(f"图像压缩到最低质量({min_quality})仍超过目标大小: {size_kb:.2f}KB > {max_size_kb}KB")
+                return buffer.getvalue()
+            
             try:
-                # 将图片编码为base64，使用较高的图片质量
-                encode_params = [cv2.IMWRITE_JPEG_QUALITY, 95]
-                _, buffer = cv2.imencode('.jpg', result_image, encode_params)
-                if buffer is None:
-                    logger.error("图片编码失败")
-                    return None
-                image_base64 = base64.b64encode(buffer).decode('utf-8')
+                # 将图片编码为JPEG并压缩
+                image_bytes = compress_image(result_image)
+                image_size_kb = len(image_bytes) / 1024
+                logger.info(f"图像压缩后大小: {image_size_kb:.2f}KB")
+                
+                # Base64编码
+                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                 logger.debug(f"成功生成base64图片，长度: {len(image_base64)}")
                 return image_base64
             
@@ -312,7 +362,7 @@ class YOLOSegmentor:
             logger.error(f"处理分割结果图片失败: {str(e)}")
             return None
 
-    async def segment(self, image, config: Optional[Dict] = None) -> List[Dict[str, Any]]:
+    async def segment(self, image, config: Optional[Dict] = None) -> Dict[str, Any]:
         """执行分割
         
         Args:
@@ -325,6 +375,14 @@ class YOLOSegmentor:
                 - roi_type: ROI类型（1=矩形，2=多边形，3=直线，4=圆形）
                 - imgsz: 输入图片大小
                 - retina_masks: 是否使用精细的视网膜掩码 (True提供更精确的掩码)
+                
+        Returns:
+            Dict[str, Any]: 分割结果字典，包含以下字段：
+                - segmentations: 分割结果列表
+                - pre_process_time: 预处理时间 (ms)
+                - inference_time: 推理时间 (ms)
+                - post_process_time: 后处理时间 (ms)
+                - annotated_image: 标注后图像的base64字符串
         """
         try:
             if self.model is None:
@@ -359,6 +417,9 @@ class YOLOSegmentor:
             else:
                 resized_image = image.copy()
             
+            # 记录开始时间
+            start_time = time.time()
+            
             # 执行推理 - 在整个图像上进行分割
             results = self.model(
                 resized_image,
@@ -367,6 +428,18 @@ class YOLOSegmentor:
                 classes=classes,
                 retina_masks=retina_masks
             )
+            
+            # 记录推理时间
+            inference_time = (time.time() - start_time) * 1000  # 转换为毫秒
+            
+            # 获取可能的速度信息
+            pre_process_time = 0
+            post_process_time = 0
+            if results and hasattr(results[0], 'speed'):
+                speed_info = results[0].speed
+                pre_process_time = speed_info.get('preprocess', 0)
+                inference_time = speed_info.get('inference', 0)
+                post_process_time = speed_info.get('postprocess', 0)
             
             # 处理分割结果
             segmentation_results = []
@@ -437,7 +510,34 @@ class YOLOSegmentor:
                     roi_type = roi_type_from_roi
                 segmentation_results = self._filter_by_roi(segmentation_results, roi, roi_type, h, w)
             
-            return segmentation_results
+            # 生成标注图像（使用压缩方法，返回base64字符串）
+            annotated_image = None
+            try:
+                # 使用ultralytics的绘图功能
+                if results and len(results) > 0 and results[0].masks is not None:
+                    annotated_image_np = results[0].plot()
+                    # 使用压缩方法生成base64字符串
+                    annotated_image = await self._encode_result_image(annotated_image_np, segmentation_results, False)
+                else:
+                    # 如果没有检测到分割结果，使用自己的绘制函数
+                    annotated_image_np = self.draw_segmentations(image, segmentation_results)
+                    # 使用压缩方法生成base64字符串
+                    annotated_image = await self._encode_result_image(annotated_image_np, segmentation_results, False)
+                    
+                if annotated_image:
+                    logger.info(f"生成标注图像成功，base64长度: {len(annotated_image)}")
+            except Exception as e:
+                logger.error(f"生成标注图像失败: {str(e)}")
+                logger.exception(e)  # 打印完整堆栈
+            
+            # 构建返回结果
+            return {
+                "segmentations": segmentation_results,
+                "pre_process_time": pre_process_time,
+                "inference_time": inference_time,
+                "post_process_time": post_process_time,
+                "annotated_image": annotated_image  # 添加标注图像（base64字符串）
+            }
                     
         except Exception as e:
             logger.error(f"分割失败: {str(e)}")
