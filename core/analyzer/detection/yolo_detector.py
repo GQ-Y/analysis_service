@@ -289,12 +289,12 @@ class YOLODetector:
             if return_image:
                 return result_image
             
-            # 图像压缩函数
-            def compress_image(img, max_size_kb=800, initial_quality=90):
+            # 图像压缩函数 - 保持目标大小为300KB
+            def compress_image(img, max_size_kb=200, initial_quality=85):
                 """压缩图像到指定大小"""
                 logger.debug(f"开始压缩图像，目标大小: {max_size_kb}KB")
                 quality = initial_quality
-                min_quality = 20  # 最低质量阈值
+                min_quality = 15  # 最低质量阈值
                 
                 # 将OpenCV图像转为PIL图像
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -303,18 +303,18 @@ class YOLODetector:
                 # 降低分辨率
                 img_width, img_height = img_pil.size
                 # 如果图像尺寸过大，先调整大小
-                max_dim = 1920  # 最大宽度或高度
+                max_dim = 1280  # 更低的最大宽度或高度以减小初始图像大小
                 if img_width > max_dim or img_height > max_dim:
                     scale = max_dim / max(img_width, img_height)
                     new_width = int(img_width * scale)
                     new_height = int(img_height * scale)
                     img_pil = img_pil.resize((new_width, new_height), Image.LANCZOS)
-                    logger.debug(f"图像调整大小: {img_width}x{img_height} -> {new_width}x{new_height}")
+                    logger.debug(f"图像初始调整大小: {img_width}x{img_height} -> {new_width}x{new_height}")
                 
                 # 尝试不同的质量级别进行压缩，直到大小合适或达到最低质量
                 while quality >= min_quality:
                     buffer = io.BytesIO()
-                    img_pil.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    img_pil.save(buffer, format='JPEG', quality=quality, optimize=True, subsampling=2)
                     size_kb = buffer.tell() / 1024
                     
                     logger.debug(f"压缩质量: {quality}, 大小: {size_kb:.2f}KB")
@@ -323,44 +323,43 @@ class YOLODetector:
                         logger.info(f"图像已压缩: 质量={quality}, 大小={size_kb:.2f}KB")
                         return buffer.getvalue()
                     
-                    # 降低质量，继续尝试
-                    quality -= 10
+                    # 降低质量幅度更大，加快压缩
+                    if size_kb > max_size_kb * 2:  # 如果当前大小超过目标的2倍
+                        quality -= 15
+                    else:
+                        quality -= 8  # 否则使用较小的步长
                 
-                # 如果达到最低质量但仍然大于目标大小，尝试进一步调整尺寸
-                if size_kb > max_size_kb:
-                    logger.warning(f"质量压缩不足，尝试减小尺寸")
-                    
-                    # 计算需要的缩放比例
-                    scale_factor = 0.8  # 每次缩小到原尺寸的80%
-                    current_width, current_height = img_pil.size
-                    
-                    while quality <= min_quality and size_kb > max_size_kb and min(current_width, current_height) > 400:
-                        # 降低分辨率
-                        new_width = int(current_width * scale_factor)
-                        new_height = int(current_height * scale_factor)
-                        resized_img = img_pil.resize((new_width, new_height), Image.LANCZOS)
-                        
-                        # 压缩
-                        buffer = io.BytesIO()
-                        resized_img.save(buffer, format='JPEG', quality=min_quality, optimize=True)
-                        size_kb = buffer.tell() / 1024
-                        
-                        logger.debug(f"调整大小: {current_width}x{current_height} -> {new_width}x{new_height}, 大小: {size_kb:.2f}KB")
-                        
-                        if size_kb <= max_size_kb:
-                            logger.info(f"图像已压缩: 尺寸={new_width}x{new_height}, 质量={min_quality}, 大小={size_kb:.2f}KB")
-                            return buffer.getvalue()
-                        
-                        # 更新当前尺寸
-                        current_width, current_height = new_width, new_height
-                        img_pil = resized_img
+                # 如果降低质量还不够，尝试逐步减小图像尺寸
+                current_width, current_height = img_pil.size
+                scale_factor = 0.75  # 每次缩小到原尺寸的75%
                 
-                # 如果所有方法都失败，返回最后一次压缩的结果
+                while quality <= min_quality and size_kb > max_size_kb and min(current_width, current_height) > 320:
+                    # 降低分辨率
+                    new_width = int(current_width * scale_factor)
+                    new_height = int(current_height * scale_factor)
+                    resized_img = img_pil.resize((new_width, new_height), Image.LANCZOS)
+                    
+                    # 压缩
+                    buffer = io.BytesIO()
+                    resized_img.save(buffer, format='JPEG', quality=min_quality, optimize=True, subsampling=2)
+                    size_kb = buffer.tell() / 1024
+                    
+                    logger.debug(f"调整大小: {current_width}x{current_height} -> {new_width}x{new_height}, 大小: {size_kb:.2f}KB")
+                    
+                    if size_kb <= max_size_kb:
+                        logger.info(f"图像已压缩: 尺寸={new_width}x{new_height}, 质量={min_quality}, 大小={size_kb:.2f}KB")
+                        return buffer.getvalue()
+                    
+                    # 更新当前尺寸
+                    current_width, current_height = new_width, new_height
+                    img_pil = resized_img
+                
+                # 如果所有方法都失败，使用最小尺寸和最低质量的结果
                 logger.warning(f"图像压缩到最小尺寸和质量仍超过目标大小: {size_kb:.2f}KB > {max_size_kb}KB")
                 return buffer.getvalue()
             
             try:
-                # 将图片编码为JPEG并压缩
+                # 将图片编码为JPEG并压缩到约300KB
                 image_bytes = compress_image(result_image)
                 image_size_kb = len(image_bytes) / 1024
                 logger.info(f"检测结果图像压缩后大小: {image_size_kb:.2f}KB")
@@ -424,11 +423,13 @@ class YOLODetector:
             try:
                 logger.debug("【调试】开始生成和压缩标注图像")
                 annotated_image_np = results[0].plot() # 使用ultralytics自带的plot
-                # 使用压缩方法编码图像 - 改为直接返回base64字符串而不是True
+                # 使用压缩方法编码图像 - 将图像压缩到约300KB
                 annotated_image = await self._encode_result_image(annotated_image_np, detections, False)
                 if annotated_image:
                     kb_size = len(base64.b64decode(annotated_image)) / 1024
                     logger.debug(f"【调试】标注图像已压缩，大小: {kb_size:.2f}KB")
+                    if kb_size > 350:  # 如果超过预期，记录警告
+                        logger.warning(f"标注图像大小({kb_size:.2f}KB)超过目标大小(300KB)")
             except Exception as plot_err:
                 logger.error(f"绘制或编码标注图像时出错: {plot_err}")
                 import traceback

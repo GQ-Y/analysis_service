@@ -304,10 +304,10 @@ class YOLOSegmentor:
                 return result_image
             
             # 图像压缩函数
-            def compress_image(img, max_size_kb=800, initial_quality=90):
+            def compress_image(img, max_size_kb=300, initial_quality=85):
                 """压缩图像到指定大小"""
                 quality = initial_quality
-                min_quality = 20  # 最低质量阈值
+                min_quality = 15  # 最低质量阈值
                 
                 # 将OpenCV图像转为PIL图像
                 img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -316,18 +316,18 @@ class YOLOSegmentor:
                 # 降低分辨率
                 img_width, img_height = img_pil.size
                 # 如果图像尺寸过大，先调整大小
-                max_dim = 1920  # 最大宽度或高度
+                max_dim = 1280  # 更低的最大宽度或高度以减小初始图像大小
                 if img_width > max_dim or img_height > max_dim:
                     scale = max_dim / max(img_width, img_height)
                     new_width = int(img_width * scale)
                     new_height = int(img_height * scale)
                     img_pil = img_pil.resize((new_width, new_height), Image.LANCZOS)
-                    logger.debug(f"图像调整大小: {img_width}x{img_height} -> {new_width}x{new_height}")
+                    logger.debug(f"图像初始调整大小: {img_width}x{img_height} -> {new_width}x{new_height}")
                 
                 # 尝试不同的质量级别进行压缩，直到大小合适或达到最低质量
                 while quality >= min_quality:
                     buffer = io.BytesIO()
-                    img_pil.save(buffer, format='JPEG', quality=quality, optimize=True)
+                    img_pil.save(buffer, format='JPEG', quality=quality, optimize=True, subsampling=2)
                     size_kb = buffer.tell() / 1024
                     
                     logger.debug(f"压缩质量: {quality}, 大小: {size_kb:.2f}KB")
@@ -336,11 +336,39 @@ class YOLOSegmentor:
                         logger.info(f"图像已压缩: 质量={quality}, 大小={size_kb:.2f}KB")
                         return buffer.getvalue()
                     
-                    # 降低质量，继续尝试
-                    quality -= 10
+                    # 降低质量幅度更大，加快压缩
+                    if size_kb > max_size_kb * 2:  # 如果当前大小超过目标的2倍
+                        quality -= 15
+                    else:
+                        quality -= 8  # 否则使用较小的步长
                 
-                # 如果达到最低质量但仍然大于目标大小，返回最后一次压缩的结果
-                logger.warning(f"图像压缩到最低质量({min_quality})仍超过目标大小: {size_kb:.2f}KB > {max_size_kb}KB")
+                # 如果降低质量还不够，尝试逐步减小图像尺寸
+                current_width, current_height = img_pil.size
+                scale_factor = 0.75  # 每次缩小到原尺寸的75%
+                
+                while quality <= min_quality and size_kb > max_size_kb and min(current_width, current_height) > 320:
+                    # 降低分辨率
+                    new_width = int(current_width * scale_factor)
+                    new_height = int(current_height * scale_factor)
+                    resized_img = img_pil.resize((new_width, new_height), Image.LANCZOS)
+                    
+                    # 压缩
+                    buffer = io.BytesIO()
+                    resized_img.save(buffer, format='JPEG', quality=min_quality, optimize=True, subsampling=2)
+                    size_kb = buffer.tell() / 1024
+                    
+                    logger.debug(f"调整大小: {current_width}x{current_height} -> {new_width}x{new_height}, 大小: {size_kb:.2f}KB")
+                    
+                    if size_kb <= max_size_kb:
+                        logger.info(f"图像已压缩: 尺寸={new_width}x{new_height}, 质量={min_quality}, 大小={size_kb:.2f}KB")
+                        return buffer.getvalue()
+                    
+                    # 更新当前尺寸
+                    current_width, current_height = new_width, new_height
+                    img_pil = resized_img
+                
+                # 如果所有方法都失败，使用最小尺寸和最低质量的结果
+                logger.warning(f"图像压缩到最小尺寸和质量仍超过目标大小: {size_kb:.2f}KB > {max_size_kb}KB")
                 return buffer.getvalue()
             
             try:
