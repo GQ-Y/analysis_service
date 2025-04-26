@@ -173,51 +173,14 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
 
                 try:
                     # 调用 detect 方法，不再需要传递图像标志
-                    analysis_result = asyncio.run(detector.detect(frame))
+                    analysis_result = asyncio.run(detector.detect(frame, generate_image=False))
 
                     # 提取结果和可能的计时信息
                     detections = analysis_result.get("detections", [])
                     inference_time = analysis_result.get("inference_time", 0)
                     pre_process_time = analysis_result.get("pre_process_time", 0)
                     post_process_time = analysis_result.get("post_process_time", 0)
-                    # 获取标注图像的base64字符串(与detector.detect方法的返回值保持一致)
-                    annotated_image_base64 = analysis_result.get("annotated_image")
-
-                    # 如果是分割任务，尝试获取掩码
-                    if analysis_type == "segmentation":
-                         mask_data = analysis_result.get("masks") # 假设 detector 返回 'masks' 键
-
-                    # --- 保存标注图像 (仅当 save_images=True 且有base64字符串时) ---
-                    annotated_image_save_path = None
-                    if save_images and annotated_image_base64:
-                        storage_config = stream_config.get("result", {}).get("storage", {})
-                        save_dir_base_config = storage_config.get("save_path", "results")
-                        save_dir_base = save_dir_base_config.lstrip('/').lstrip('\\\\')
-                        
-                        now = datetime.now()
-                        date_str = now.strftime("%Y%m%d")
-                        time_str = now.strftime("%H%M%S_%f")[:-3] # 到毫秒
-                        save_dir_task = os.path.join(save_dir_base, str(task_id), date_str)
-                        
-                        try:
-                            os.makedirs(save_dir_task, exist_ok=True)
-                            filename_only = f"{time_str}_{frame_count}"
-                            annotated_image_save_path = os.path.join(save_dir_task, f"{filename_only}_annotated.jpg")
-                            
-                            # 从base64解码为二进制并保存
-                            with open(annotated_image_save_path, "wb") as f:
-                                image_bytes = base64.b64decode(annotated_image_base64)
-                                f.write(image_bytes)
-                                logger.debug(f"保存标注图像到: {annotated_image_save_path}, 大小: {len(image_bytes)/1024:.2f}KB")
-                        except OSError as e:
-                             logger.error(f"创建目录或保存标注图像失败: {save_dir_task}, 错误: {e}")
-                             annotated_image_save_path = None # 保存失败
-                        except Exception as e:
-                             logger.error(f"保存标注图像时发生未知错误: {e}")
-                             logger.exception(e)  # 打印堆栈跟踪
-                             annotated_image_save_path = None # 保存失败
-                    # --- 结束保存标注图像 ---
-
+                    
                     # 过滤指定类别 (确保 analysis_config 和 classes 存在且 classes 是列表)
                     analysis_config = stream_config.get("analysis", {})
                     allowed_classes = analysis_config.get("classes") if isinstance(analysis_config, dict) else None
@@ -245,24 +208,83 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                     if tracker:
                         tracked_objects = asyncio.run(tracker.update(detections)) # 假设 update 返回对象列表
                         detections = [obj.to_dict() for obj in tracked_objects] # 假设跟踪对象有 to_dict 方法
-                    
-                    # 准备发送的结果字典
-                    frame_process_end_time = time.time()
-                    processed_time = frame_process_end_time - frame_process_start_time
 
-                    # 转换 NumPy 类型
-                    serializable_detections = convert_numpy_types(detections)
-                    serializable_mask_data = convert_numpy_types(mask_data) if mask_data else None
+                    # 在过滤和跟踪后，使用过滤后的结果生成标注图像
+                    annotated_image_base64 = None
+                    if detections:  # 只有在有目标时才生成标注图像
+                        # 绘制标注图像 (使用过滤后的检测结果)
+                        annotated_frame = asyncio.run(detector.draw_detections(frame.copy(), detections))
+                        
+                        # 压缩和编码图像
+                        if save_images or return_base64:
+                            # 使用内部方法编码图像为base64 - 修复协程执行错误
+                            annotated_image_base64 = asyncio.run(detector._encode_result_image(annotated_frame, detections, False))
+                    else:
+                        # 如果没有检测到目标，不生成标注图像
+                        logger.debug(f"工作进程 {task_id}: 帧 {frame_count} 过滤后无目标，不生成标注图像")
+
+                    # 如果是分割任务，尝试获取掩码
+                    if analysis_type == "segmentation":
+                         mask_data = analysis_result.get("masks") # 假设 detector 返回 'masks' 键
+
+                    # --- 保存标注图像 (仅当 save_images=True 且有base64字符串时) ---
+                    annotated_image_save_path = None
+                    if save_images and annotated_image_base64:
+                        storage_config = stream_config.get("result", {}).get("storage", {})
+                        save_dir_base_config = storage_config.get("save_path", "results")
+                        save_dir_base = save_dir_base_config.lstrip('/').lstrip('\\\\')
+                        
+                        now = datetime.now()
+                        date_str = now.strftime("%Y%m%d")
+                        time_str = now.strftime("%H%M%S_%f")[:-3] # 到毫秒
+                        save_dir_task = os.path.join(save_dir_base, str(task_id), date_str)
+                        
+                        try:
+                            os.makedirs(save_dir_task, exist_ok=True)
+                            filename_only = f"{time_str}_{frame_count}"
+                            annotated_image_save_path = os.path.join(save_dir_task, f"{filename_only}_annotated.jpg")
+                            
+                            # 从base64解码为二进制并保存
+                            # 确保我们有一个字符串而不是协程
+                            if isinstance(annotated_image_base64, str):
+                                with open(annotated_image_save_path, "wb") as f:
+                                    image_bytes = base64.b64decode(annotated_image_base64)
+                                    f.write(image_bytes)
+                                    logger.debug(f"保存标注图像到: {annotated_image_save_path}, 大小: {len(image_bytes)/1024:.2f}KB")
+                            else:
+                                logger.error(f"无法保存图像：annotated_image_base64 不是字符串, 类型: {type(annotated_image_base64)}")
+                                annotated_image_save_path = None
+                        except OSError as e:
+                             logger.error(f"创建目录或保存标注图像失败: {save_dir_task}, 错误: {e}")
+                             annotated_image_save_path = None # 保存失败
+                        except Exception as e:
+                             logger.error(f"保存标注图像时发生未知错误: {e}")
+                             logger.exception(e)  # 打印堆栈跟踪
+                             annotated_image_save_path = None # 保存失败
+                    # --- 结束保存标注图像 ---
 
                     # 获取类别名称 (从 detector.model.names 获取)
                     class_names_map = detector.model.names if hasattr(detector, 'model') and hasattr(detector.model, 'names') else {}
-                    for det in serializable_detections:
+                    for det in detections:
                          class_id = det.get('class_id')
                          det['class_name'] = class_names_map.get(class_id, 'unknown') 
+
+                    # 记录处理时间
+                    frame_process_end_time = time.time()
+                    processed_time = frame_process_end_time - frame_process_start_time
+                    
+                    # 转换NumPy类型为可序列化格式
+                    serializable_detections = convert_numpy_types(detections)
+                    serializable_mask_data = convert_numpy_types(mask_data) if mask_data else None
 
                     # 构建 image_results 字典 (只包含 annotated)
                     image_results_payload = {}
                     if annotated_image_base64 or annotated_image_save_path:
+                        # 确保annotated_image_base64是字符串
+                        if not isinstance(annotated_image_base64, str) and annotated_image_base64 is not None:
+                            logger.warning(f"annotated_image_base64不是字符串，类型: {type(annotated_image_base64)}，将设为None")
+                            annotated_image_base64 = None
+                            
                         image_results_payload = {
                             "annotated": {
                                 "format": "jpg",
@@ -273,26 +295,31 @@ def process_stream_worker(task_id: str, stream_config: Dict, stop_event: Event, 
                     else:
                         image_results_payload = None
 
-                    result_payload = {
-                        "type": "result",
-                        "frame_id": frame_count,
-                        "timestamp": time.time(),
-                        "detections": serializable_detections,
-                        "frame_info": {
-                            "width": width,
-                            "height": height,
-                            "fps": fps,
-                            "processed_time": processed_time # 单帧处理时间
-                        },
-                        "analysis_info": {
-                             "inference_time": inference_time,
-                             "pre_process_time": pre_process_time,
-                             "post_process_time": post_process_time
-                        },
-                        "mask_data": serializable_mask_data, # 添加掩码数据
-                        "image_results": image_results_payload # 添加图像结果 (可能为 None)
-                    }
-                    result_queue.put(result_payload)
+                    # 增加空结果检查 - 只有当检测到目标时才上报结果
+                    if detections:
+                        result_payload = {
+                            "type": "result",
+                            "frame_id": frame_count,
+                            "timestamp": time.time(),
+                            "detections": serializable_detections,
+                            "frame_info": {
+                                "width": width,
+                                "height": height,
+                                "fps": fps,
+                                "processed_time": processed_time
+                            },
+                            "analysis_info": {
+                                 "inference_time": inference_time,
+                                 "pre_process_time": pre_process_time,
+                                 "post_process_time": post_process_time
+                            },
+                            "mask_data": serializable_mask_data, # 添加掩码数据
+                            "image_results": image_results_payload # 添加图像结果 (可能为 None)
+                        }
+                        result_queue.put(result_payload)
+                        logger.debug(f"工作进程 {task_id}: 帧 {frame_count} 检测到 {len(detections)} 个目标，结果已上报")
+                    else:
+                        logger.debug(f"工作进程 {task_id}: 帧 {frame_count} 未检测到目标或目标不符合要求，跳过上报")
                     
                 except Exception as e:
                     logger.error(f"工作进程 {task_id}: 处理帧 {frame_count} 时出错: {str(e)}")

@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 # 主题类型常量
 TOPIC_TYPE_CONNECTION = 80001      # 连接/上线/遗嘱主题
 TOPIC_TYPE_REQUEST_SETTING = 80002  # 命令接收
-TOPIC_TYPE_CONFIG_REPLY = 80003    # 命令回复
+TOPIC_TYPE_CONFIG_REPLY = 80002    # 命令回复
 TOPIC_TYPE_STATUS = 80004          # 状态上报
-TOPIC_TYPE_RESULT = 80005          # 分析结果
+TOPIC_TYPE_RESULT = 80003          # 分析结果
 TOPIC_TYPE_BROADCAST = 80006       # 系统广播
 
 # 节点相关主题类型

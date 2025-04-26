@@ -379,13 +379,15 @@ class YOLODetector:
 
     async def detect(self, 
                      image: np.ndarray, 
-                     verbose: bool = False
+                     verbose: bool = False,
+                     generate_image: bool = False
                      ) -> Dict[str, Any]:
         """对输入图像进行目标检测
         
         Args:
             image: BGR格式的输入图像
             verbose: 是否打印详细日志，默认False
+            generate_image: 是否生成标注图像，默认False
             
         Returns:
             包含检测结果和图像数据的字典:
@@ -393,7 +395,7 @@ class YOLODetector:
             - pre_process_time: 预处理时间 (ms)
             - inference_time: 推理时间 (ms)
             - post_process_time: 后处理时间 (ms)
-            - annotated_image: 标注后图像的 base64 字符串
+            - annotated_image: 标注后图像的 base64 字符串 (仅当generate_image=True时)
         """
         start_time = time.time()
         pre_process_time_ms = 0
@@ -419,22 +421,24 @@ class YOLODetector:
             detections = await self._parse_results(results)
             logger.debug(f"【调试】检测到 {len(detections)} 个目标")
             
-            # --- 总是生成和编码标注图像（使用压缩版本） --- 
-            try:
-                logger.debug("【调试】开始生成和压缩标注图像")
-                annotated_image_np = results[0].plot() # 使用ultralytics自带的plot
-                # 使用压缩方法编码图像 - 将图像压缩到约300KB
-                annotated_image = await self._encode_result_image(annotated_image_np, detections, False)
-                if annotated_image:
-                    kb_size = len(base64.b64decode(annotated_image)) / 1024
-                    logger.debug(f"【调试】标注图像已压缩，大小: {kb_size:.2f}KB")
-                    if kb_size > 350:  # 如果超过预期，记录警告
-                        logger.warning(f"标注图像大小({kb_size:.2f}KB)超过目标大小(300KB)")
-            except Exception as plot_err:
-                logger.error(f"绘制或编码标注图像时出错: {plot_err}")
-                import traceback
-                logger.error(f"详细错误: {traceback.format_exc()}")
-            # --- 结束图像处理 ---
+            # 只有在请求时才生成和编码标注图像
+            if generate_image and detections:
+                try:
+                    logger.debug("【调试】开始生成和压缩标注图像")
+                    annotated_image_np = results[0].plot() # 使用ultralytics自带的plot
+                    # 使用压缩方法编码图像 - 将图像压缩到约300KB
+                    annotated_image = await self._encode_result_image(annotated_image_np, detections, False)
+                    if annotated_image:
+                        kb_size = len(base64.b64decode(annotated_image)) / 1024
+                        logger.debug(f"【调试】标注图像已压缩，大小: {kb_size:.2f}KB")
+                        if kb_size > 350:  # 如果超过预期，记录警告
+                            logger.warning(f"标注图像大小({kb_size:.2f}KB)超过目标大小(300KB)")
+                except Exception as plot_err:
+                    logger.error(f"绘制或编码标注图像时出错: {plot_err}")
+                    import traceback
+                    logger.error(f"详细错误: {traceback.format_exc()}")
+            elif generate_image and not detections:
+                logger.debug("【调试】未检测到目标，不生成标注图像")
 
             total_time = (time.time() - start_time) * 1000
             logger.debug(f"【调试】检测总耗时: {total_time:.2f}ms")
