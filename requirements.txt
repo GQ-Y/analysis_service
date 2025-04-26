@@ -18,3 +18,4 @@ GPUtil>=1.4.0
 httpx>=0.24.0
 gmqtt>=0.7.0
 python-dotenv>=1.0.0
+rich>=13.0.0
