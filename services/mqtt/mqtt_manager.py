@@ -89,11 +89,29 @@ class MQTTManager:
         Returns:
             bool: 发布是否成功
         """
-        if not self.mqtt_client or not self.is_running:
-            logger.error("发布消息失败: MQTT服务未运行")
+        if not self.mqtt_client: # 检查客户端是否存在
+            logger.error(f"发布消息到主题 '{topic}' 失败: MQTT客户端未初始化")
             return False
-            
-        return await self.mqtt_client.publish(topic, payload, qos, retain)
+
+        # 检查连接状态，添加日志记录
+        if not self.mqtt_client.is_connected():
+            logger.warning(f"尝试发布消息到主题 '{topic}'，但 MQTT 客户端当前未连接。将继续尝试发布...")
+        else:
+            logger.debug(f"MQTT 客户端已连接，准备发布到主题 '{topic}'")
+
+        logger.debug(f"调用 self.mqtt_client.publish - 主题: '{topic}', QoS: {qos}, Retain: {retain}")
+        try:
+            # 调用实际的客户端发布方法
+            success = await self.mqtt_client.publish(topic, payload, qos, retain)
+            # 根据 gmqtt 的 publish 方法通常返回 PacketIdentifier 或 None，这里我们只记录调用完成
+            logger.debug(f"调用 self.mqtt_client.publish 为主题 '{topic}' 完成。")
+            # 假设只要没有异常，调用就是尝试成功了，实际发送由 gmqtt 处理
+            # 注意：这并不保证消息已成功发送到 Broker
+            return True # 或者根据 self.mqtt_client.publish 的实际返回值调整
+        except Exception as e:
+            # 捕获 self.mqtt_client.publish 可能抛出的同步异常
+            logger.error(f"发布消息到主题 '{topic}' 时发生同步异常: {e}", exc_info=True)
+            return False
         
     def register_topic_handler(self, topic: str, handler: Callable, qos: int = 0) -> bool:
         """

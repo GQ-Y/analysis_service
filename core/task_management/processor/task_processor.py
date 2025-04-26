@@ -569,7 +569,6 @@ class TaskProcessor:
                     # 注意：这里的发布逻辑需要确保消息格式符合目标主题的要求
 
                     # 调试输出 worker_result 的结构
-                    logger.debug(f"任务 {task_id} - worker_result: {worker_result}")
 
                     # 如果是单帧结果，处理单帧数据
                     try:

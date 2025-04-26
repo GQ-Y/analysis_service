@@ -80,10 +80,10 @@ class AnalysisServiceConfig(BaseSettings):
     COMMUNICATION_MODE: str = "mqtt"
     
     # MQTT配置
-    MQTT_BROKER_HOST: str = "mqtt.yingzhu.net"
+    MQTT_BROKER_HOST: str = "localhost"
     MQTT_BROKER_PORT: int = 1883
-    MQTT_USERNAME: str = "yolo"
-    MQTT_PASSWORD: str = "yolo"
+    MQTT_USERNAME: str = "admin"
+    MQTT_PASSWORD: str = "admin"
     MQTT_TOPIC_PREFIX: str = "meek"
     MQTT_QOS: int = 1
     MQTT_KEEPALIVE: int = 60

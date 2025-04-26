@@ -144,7 +144,7 @@ class TaskCommandHandler:
                 
                 # 数据源配置
                 "source": {
-                    "type": source_info["type"],
+                    "type": source_info.get("stream_info", {}).get("format"), # 从 stream_info 获取 format 作为 type
                     "urls": source_info["urls"],
                     "stream_info": source_info.get("stream_info", {})
                 },
@@ -235,7 +235,8 @@ class TaskCommandHandler:
                     )
                 
                 # 根据任务类型启动相应的处理器
-                if source_info["type"] == "stream":
+                source_type = source_info.get("stream_info", {}).get("format") # 先获取类型
+                if source_type == "stream" or source_type == "rtsp": # 使用获取到的类型进行判断 (假设 rtsp 也视为 stream)
                     logger.info(f"启动流分析任务: {task_id}")
                     # 异步启动流处理，使用接收到的任务ID
                     success_start = await self.task_manager.start_stream_task(
@@ -243,10 +244,10 @@ class TaskCommandHandler:
                         task_config
                     )
                 else:
-                    logger.error(f"不支持的数据源类型: {source_info['type']}")
+                    logger.error(f"不支持的数据源类型: {source_type}") # 使用获取到的类型记录日志
                     return self._create_response(
                         success=False,
-                        message=f"不支持的数据源类型: {source_info['type']}",
+                        message=f"不支持的数据源类型: {source_type}", # 使用获取到的类型返回错误信息
                         original_request=payload,
                         task_id=task_id,
                         subtask_id=subtask_id
