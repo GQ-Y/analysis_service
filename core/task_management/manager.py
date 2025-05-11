@@ -14,21 +14,18 @@ from core.config import settings
 from shared.utils.logger import setup_logger
 from .utils.status import TaskStatus
 from .processor.task_processor import TaskProcessor
-from services.mqtt import MQTTManager
 
 logger = setup_logger(__name__)
 
 class TaskManager:
     """任务管理器"""
     
-    def __init__(self, mqtt_manager: MQTTManager, max_tasks: int = None):
+    def __init__(self, max_tasks: int = None):
         """初始化任务管理器
         
         Args:
-            mqtt_manager: MQTT管理器实例
             max_tasks: 最大任务数，默认从配置中读取
         """
-        self.mqtt_manager = mqtt_manager # 存储 MQTT 管理器实例
         # 设置最大任务数
         self.max_tasks = max_tasks or settings.TASK_QUEUE_MAX_CONCURRENT
         
@@ -50,8 +47,8 @@ class TaskManager:
         self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
         self.cleanup_thread.start()
         
-        # 创建并持有 TaskProcessor 实例, 传递 mqtt_manager
-        self.processor = TaskProcessor(task_manager=self, mqtt_manager=self.mqtt_manager)
+        # 创建并持有 TaskProcessor 实例
+        self.processor = TaskProcessor(task_manager=self)
         
         logger.info(f"任务管理器初始化完成，最大任务数: {self.max_tasks}")
         
@@ -261,27 +258,27 @@ class TaskManager:
         """
         创建新任务
         
-        参数:
-            task_type: 任务类型 (image, video, stream)
+        Args:
+            task_type: 任务类型
             params: 任务参数
             
-        返回:
+        Returns:
             str: 任务ID
         """
         task_id = str(uuid.uuid4())
+        task_data = {
+            "id": task_id,
+            "type": task_type,
+            "params": params,
+            "created_at": time.time()
+        }
         
-        with self.task_lock:
-            self.tasks[task_id] = {
-                "id": task_id,
-                "type": task_type,
-                "params": params,
-                "status": "pending",
-                "create_time": int(time.time()),
-                "progress": 0
-            }
-            
-        logger.info(f"已创建任务: {task_id}, 类型: {task_type}")
-        return task_id
+        if self.add_task(task_id, task_data):
+            logger.info(f"创建任务成功: {task_id}, 类型: {task_type}")
+            return task_id
+        else:
+            logger.error(f"创建任务失败: {task_id}, 类型: {task_type}")
+            return None
         
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -291,16 +288,14 @@ class TaskManager:
             task_id: 任务ID
             
         Returns:
-            Optional[Dict[str, Any]]: 任务信息，如果不存在则返回None
+            Dict[str, Any]: 任务信息
         """
         try:
-            task = self.tasks.get(task_id)
-            if not task:
+            if task_id not in self.tasks:
                 logger.warning(f"任务不存在: {task_id}")
                 return None
             
-            # 返回任务的副本，避免直接修改
-            return dict(task)
+            return self.tasks[task_id]
             
         except Exception as e:
             logger.error(f"获取任务信息失败: {str(e)}")
@@ -310,123 +305,134 @@ class TaskManager:
         """
         更新任务信息
         
-        参数:
+        Args:
             task_id: 任务ID
-            updates: 要更新的字段和值
+            updates: 更新内容
             
-        返回:
-            bool: 更新是否成功
+        Returns:
+            bool: 是否更新成功
         """
-        with self.task_lock:
+        try:
             if task_id not in self.tasks:
-                logger.warning(f"尝试更新不存在的任务: {task_id}")
+                logger.warning(f"任务不存在: {task_id}")
                 return False
-                
+            
             # 更新任务信息
-            for key, value in updates.items():
-                self.tasks[task_id][key] = value
-                
-            # 如果状态有变化，添加时间戳
-            if "status" in updates:
-                status = updates["status"]
-                self.tasks[task_id][f"{status}_time"] = int(time.time())
-                
-        logger.debug(f"已更新任务: {task_id}, 更新: {updates}")
-        return True
+            self.tasks[task_id]["data"].update(updates)
+            self.tasks[task_id]["updated_at"] = time.time()
+            
+            logger.info(f"更新任务信息成功: {task_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"更新任务信息失败: {str(e)}")
+            return False
         
     def delete_task(self, task_id: str) -> bool:
         """
         删除任务
         
-        参数:
+        Args:
             task_id: 任务ID
             
-        返回:
-            bool: 删除是否成功
+        Returns:
+            bool: 是否删除成功
         """
-        with self.task_lock:
+        try:
             if task_id not in self.tasks:
-                logger.warning(f"尝试删除不存在的任务: {task_id}")
+                logger.warning(f"任务不存在: {task_id}")
                 return False
-                
+            
+            # 删除任务
             del self.tasks[task_id]
             
-        logger.info(f"已删除任务: {task_id}")
-        return True
+            logger.info(f"删除任务成功: {task_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"删除任务失败: {str(e)}")
+            return False
         
     def get_all_tasks(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        获取所有任务列表
+        获取所有任务
         
-        参数:
-            status: 可选的状态过滤器
+        Args:
+            status: 任务状态过滤
             
-        返回:
-            List[Dict]: 任务信息列表
+        Returns:
+            List[Dict[str, Any]]: 任务列表
         """
-        with self.task_lock:
+        try:
+            tasks = list(self.tasks.values())
+            
+            # 按状态过滤
             if status:
-                tasks = [dict(task) for task in self.tasks.values() if task.get("status") == status]
-            else:
-                tasks = [dict(task) for task in self.tasks.values()]
-                
-        return tasks
+                tasks = [task for task in tasks if task["status"] == status]
+            
+            return tasks
+            
+        except Exception as e:
+            logger.error(f"获取任务列表失败: {str(e)}")
+            return []
         
     def get_task_output_path(self, task_id: str, filename: str) -> str:
         """
         获取任务输出文件路径
         
-        参数:
+        Args:
             task_id: 任务ID
             filename: 文件名
             
-        返回:
-            str: 输出文件的完整路径
+        Returns:
+            str: 文件路径
         """
-        task = self.get_task(task_id)
-        if not task:
-            raise ValueError(f"任务不存在: {task_id}")
+        try:
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return None
             
-        task_type = task.get("type")
+            # 创建任务输出目录
+            task_output_dir = os.path.join(self.output_dir, task_id)
+            os.makedirs(task_output_dir, exist_ok=True)
+            
+            # 返回文件路径
+            return os.path.join(task_output_dir, filename)
+            
+        except Exception as e:
+            logger.error(f"获取任务输出路径失败: {str(e)}")
+            return None
         
-        if task_type == "image":
-            return os.path.join(self.output_dir, "images", filename)
-        elif task_type == "video" or task_type == "stream":
-            return os.path.join(self.output_dir, "videos", filename)
-        else:
-            return os.path.join(self.output_dir, filename)
-            
     def cleanup_old_tasks(self, max_age_hours: int = 24):
         """
         清理旧任务
         
-        参数:
-            max_age_hours: 任务的最大保留时间（小时）
+        Args:
+            max_age_hours: 最大保留时间(小时)
         """
-        current_time = int(time.time())
-        max_age_seconds = max_age_hours * 3600
-        
-        with self.task_lock:
-            tasks_to_delete = []
+        try:
+            current_time = time.time()
+            max_age_seconds = max_age_hours * 3600
             
+            expired_tasks = []
             for task_id, task in self.tasks.items():
-                create_time = task.get("create_time", 0)
-                
-                # 如果任务已经完成/失败且时间超过最大保留时间
-                if (task.get("status") in ["completed", "failed", "stopped"] and
-                    current_time - create_time > max_age_seconds):
-                    tasks_to_delete.append(task_id)
+                # 检查任务是否过期
+                if current_time - task["created_at"] > max_age_seconds:
+                    expired_tasks.append(task_id)
                     
-            # 删除旧任务
-            for task_id in tasks_to_delete:
+            # 删除过期任务
+            for task_id in expired_tasks:
                 del self.tasks[task_id]
+                logger.info(f"清理过期任务: {task_id}")
                 
-        if tasks_to_delete:
-            logger.info(f"已清理 {len(tasks_to_delete)} 个旧任务")
-
+            logger.info(f"清理完成，已删除 {len(expired_tasks)} 个过期任务")
+            
+        except Exception as e:
+            logger.error(f"清理旧任务失败: {str(e)}")
+        
     async def start_stream_task(self, task_id: str, task_config: Dict[str, Any]) -> bool:
         """
-        启动流分析任务
+        启动流任务
         
         Args:
             task_id: 任务ID
@@ -436,90 +442,52 @@ class TaskManager:
             bool: 是否启动成功
         """
         try:
-            # 1. 获取任务信息
-            task = self.tasks.get(task_id)
-            if not task:
-                logger.error(f"任务不存在: {task_id}")
+            # 检查任务是否存在
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
                 return False
             
-            # 2. 使用持有的 processor 启动流分析
-            success = await self.processor.start_stream_analysis(task_id)
+            # 尝试启动流任务
+            result = await self.processor.start_stream_analysis(task_id, task_config)
             
-            if success:
-                logger.info(f"流分析任务启动成功: {task_id}")
+            if result:
+                logger.info(f"启动流任务成功: {task_id}")
                 return True
             else:
-                logger.error(f"流分析任务启动失败: {task_id}")
+                logger.error(f"启动流任务失败: {task_id}")
                 return False
                 
         except Exception as e:
-            logger.error(f"启动流分析任务失败: {str(e)}")
-            import traceback
-            logger.error(f"错误详情:\n{traceback.format_exc()}")
-            return False 
-
+            logger.error(f"启动流任务异常: {str(e)}")
+            return False
+            
     async def stop_task(self, task_id: str, subtask_id: Optional[str] = None) -> bool:
         """
         停止任务
         
         Args:
             task_id: 任务ID
-            subtask_id: 子任务ID（可选）
+            subtask_id: 子任务ID
             
         Returns:
             bool: 是否停止成功
         """
         try:
-            # 1. 获取任务信息
-            task = self.tasks.get(task_id)
-            if not task:
-                logger.error(f"要停止的任务不存在: {task_id}")
+            # 检查任务是否存在
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
                 return False
-                
-            # 2. 检查任务状态
-            current_status = task.get("status")
-            if current_status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.STOPPED]:
-                logger.info(f"任务已经处于终止状态: {task_id}, status={current_status}")
-                return True
-                
-            # 3. 更新任务状态为停止中
-            self.update_task_status(
-                task_id,
-                TaskStatus.STOPPING
-            )
             
-            # 4. 使用持有的 processor 停止任务
+            # 尝试停止任务
             result = await self.processor.stop_task(task_id)
             
-            if result.get("success"):
-                logger.info(f"任务停止成功: {task_id}")
-                # 更新任务状态为已停止 -> 修改为直接删除任务
-                # self.update_task_status(
-                #     task_id,
-                #     TaskStatus.STOPPED,
-                #     result=result.get("message", "任务已停止")
-                # )
-                self.delete_task(task_id) # 直接删除任务
+            if result:
+                logger.info(f"停止任务成功: {task_id}")
                 return True
             else:
-                logger.error(f"任务停止失败: {task_id}, error={result.get('error')}")
-                # 更新任务状态为失败
-                self.update_task_status(
-                    task_id,
-                    TaskStatus.FAILED,
-                    error=result.get("error", "停止任务失败")
-                )
+                logger.error(f"停止任务失败: {task_id}")
                 return False
                 
         except Exception as e:
-            logger.error(f"停止任务时出错: {str(e)}")
-            import traceback
-            logger.error(f"错误详情:\n{traceback.format_exc()}")
-            
-            # 更新任务状态为失败
-            self.update_task_status(
-                task_id,
-                TaskStatus.FAILED,
-                error=str(e)
-            )
+            logger.error(f"停止任务异常: {str(e)}")
             return False 

@@ -11,6 +11,7 @@ import numpy as np
 import cv2
 from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
+from abc import ABC, abstractmethod
 
 # 添加父级目录到sys.path以允许导入core模块
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -24,11 +25,14 @@ from shared.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-class BaseAnalyzerService:
-    """分析服务基类，提供基础接口和共享功能"""
+class BaseAnalyzerService(ABC):
+    """
+    基础分析器服务接口
+    所有分析器服务必须继承此类并实现相应方法
+    """
     
     def __init__(self):
-        """初始化基础分析服务"""
+        """初始化基础分析器服务"""
         logger.info("初始化基础分析服务")
         
         # 加载的检测器
@@ -356,4 +360,61 @@ class BaseAnalyzerService:
             "name": "base_analyzer",
             "version": settings.VERSION,
             "environment": settings.ENVIRONMENT
-        } 
+        }
+
+    @abstractmethod
+    async def start(self):
+        """启动服务"""
+        pass
+        
+    @abstractmethod
+    async def process_image(self, image_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        处理图像
+        
+        Args:
+            image_path: 图像路径
+            params: 处理参数
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        pass
+        
+    @abstractmethod
+    async def process_video(self, video_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        处理视频
+        
+        Args:
+            video_path: 视频路径
+            params: 处理参数
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        pass
+        
+    @abstractmethod
+    async def process_stream(self, stream_url: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        处理视频流
+        
+        Args:
+            stream_url: 视频流URL
+            params: 处理参数
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        pass
+        
+    @abstractmethod
+    async def get_status(self) -> Dict[str, Any]:
+        """
+        获取服务状态
+        
+        Returns:
+            Dict[str, Any]: 服务状态
+        """
+        pass 

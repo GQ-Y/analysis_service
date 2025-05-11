@@ -96,4 +96,16 @@ class CrossCameraResult(BaseModel):
     confidence: float = Field(..., description="置信度")
     bbox: BoundingBox = Field(..., description="边界框")
     frame_id: int = Field(..., description="帧ID")
-    timestamp: int = Field(..., description="时间戳") 
+    timestamp: int = Field(..., description="时间戳")
+
+class AnalysisResult(BaseModel):
+    """分析结果模型"""
+    task_id: str = Field(..., description="任务ID")
+    timestamp: float = Field(..., description="时间戳")
+    analysis_type: str = Field(..., description="分析类型")
+    detection_results: Optional[List[Dict[str, Any]]] = Field(None, description="检测结果")
+    segmentation_results: Optional[List[Dict[str, Any]]] = Field(None, description="分割结果")
+    tracking_results: Optional[List[Dict[str, Any]]] = Field(None, description="跟踪结果")
+    frame_info: Optional[Dict[str, Any]] = Field(None, description="帧信息")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="元数据")
+    image_data: Optional[Dict[str, Any]] = Field(None, description="图像数据") 
