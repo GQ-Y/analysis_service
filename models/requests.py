@@ -124,7 +124,7 @@ class ImageAnalysisRequest(BaseModel):
         None,
         description="检测配置参数"
     )
-    
+
     model_config = {"protected_namespaces": ()}
 
 class VideoAnalysisRequest(BaseModel):
@@ -169,7 +169,7 @@ class VideoAnalysisRequest(BaseModel):
         None,
         description="目标跟踪配置参数，仅在enable_tracking为true时有效"
     )
-    
+
     model_config = {"protected_namespaces": ()}
 
     @property
@@ -195,7 +195,7 @@ class StreamTask(BaseModel):
         example="流分析-1"
     )
     stream_url: str = Field(
-        ..., 
+        ...,
         description="流地址",
         example="rtsp://example.com/stream"
     )
@@ -211,7 +211,7 @@ class StreamTask(BaseModel):
         None,
         description="检测配置参数"
     )
-    
+
     model_config = {"protected_namespaces": ()}
 
 class StreamAnalysisRequest(BaseModel):
@@ -296,6 +296,56 @@ class StreamAnalysisRequest(BaseModel):
             ]
         }
     }
+
+class BatchStreamTask(BaseModel):
+    """批量流分析任务请求"""
+    tasks: List[StreamTask] = Field(
+        ...,
+        description="流分析任务列表",
+        min_items=1,
+        example=[{
+            "model_code": "model-gcc",
+            "stream_url": "rtsp://example.com/stream1",
+            "config": {
+                "confidence": 0.5,
+                "iou": 0.45,
+                "classes": [0, 2],
+                "roi": {"x1": 0.1, "y1": 0.1, "x2": 0.9, "y2": 0.9},
+                "imgsz": 640,
+                "nested_detection": True
+            }
+        }]
+    )
+    callback_urls: Optional[str] = Field(
+        None,
+        description="回调地址，多个用逗号分隔。如果此字段为空，即使enable_callback为true也不会发送回调",
+        example="http://callback1,http://callback2"
+    )
+    analyze_interval: int = Field(
+        1,
+        description="分析间隔(秒)",
+        ge=1,
+        example=1
+    )
+    alarm_interval: int = Field(
+        60,
+        description="报警间隔(秒)",
+        ge=0,
+        example=60
+    )
+    random_interval: Tuple[int, int] = Field(
+        (0, 0),
+        description="随机延迟区间(秒)",
+        example=(0, 0)
+    )
+    push_interval: int = Field(
+        5,
+        description="推送间隔(秒)",
+        ge=1,
+        example=5
+    )
+
+    model_config = {"protected_namespaces": ()}
 
 class TaskStatusRequest(BaseModel):
     """任务状态请求"""

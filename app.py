@@ -7,18 +7,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from contextlib import asynccontextmanager
 from core.config import settings
 from core.exceptions import AnalysisException
 from core.models import StandardResponse
 from shared.utils.logger import setup_logger
-from shared.utils.tools import get_mac_address
+from routers import task_router
 import time
 import uuid
 import logging
 import uvicorn
 import psutil
 import GPUtil
-import socket
 
 # 设置日志
 logger = setup_logger(__name__)
@@ -33,18 +33,18 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         start_time = time.time()
         request_id = str(uuid.uuid4())
-        
+
         # 添加请求ID和开始时间到请求状态
         request.state.request_id = request_id
         request.state.start_time = int(start_time * 1000)
-        
+
         try:
             # 只在调试模式下记录请求开始信息
             if settings.DEBUG_ENABLED:
                 logger.info(f"请求开始: {request_id} - {request.method} {request.url.path}")
-            
+
             response = await call_next(request)
-            
+
             # 只在调试模式下记录响应信息
             if settings.DEBUG_ENABLED:
                 process_time = (time.time() - start_time) * 1000
@@ -52,11 +52,11 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                     f"请求完成: {request_id} - {request.method} {request.url.path} "
                     f"- 状态: {response.status_code} - 耗时: {process_time:.2f}ms"
                 )
-            
+
             # 添加请求ID到响应头
             response.headers["X-Request-ID"] = request_id
             return response
-            
+
         except Exception as e:
             # 错误日志仍然需要记录，但使用 ERROR 级别
             process_time = (time.time() - start_time) * 1000
@@ -67,11 +67,79 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             raise
 
 # 创建FastAPI应用
+def show_service_banner(service_name: str):
+    """显示服务启动标识"""
+    banner = f"""
+███╗   ███╗███████╗███████╗██╗  ██╗██╗   ██╗ ██████╗ ██╗      ██████╗     @{service_name}
+████╗ ████║██╔════╝██╔════╝██║ ██╔╝╚██╗ ██╔╝██╔═══██╗██║     ██╔═══██╗
+██╔████╔██║█████╗  █████╗  █████╔╝  ╚████╔╝ ██║   ██║██║     ██║   ██║
+██║╚██╔╝██║██╔══╝  ██╔══╝  ██╔═██╗   ╚██╔╝  ██║   ██║██║     ██║   ██║
+██║ ╚═╝ ██║███████╗███████╗██║  ██╗   ██║   ╚██████╔╝███████╗╚██████╔╝
+╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝
+    """
+    print(banner)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """应用生命周期管理"""
+    # 启动时执行
+    show_service_banner("analysis_service")
+    logger.info("Starting Analysis Service...")
+
+    if settings.DEBUG_ENABLED:
+        logger.info("分析服务启动...")
+        logger.info(f"环境: {settings.ENVIRONMENT}")
+        logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
+        logger.info(f"版本: {settings.VERSION}")
+        logger.info(f"注册的路由: {[route.path for route in app.routes]}")
+
+    # 初始化HTTP通信模式
+    logger.info("使用HTTP通信模式，正在初始化服务...")
+    try:
+        # 初始化Redis连接
+        from services.task_store import TaskStore
+
+        # 构建Redis URL
+        redis_url = f"redis://{':' + settings.REDIS_PASSWORD + '@' if settings.REDIS_PASSWORD else ''}{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        logger.info(f"连接到Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
+        
+        # 创建任务存储实例
+        task_store = TaskStore(redis_url)
+        await task_store.connect()
+
+        # 保存任务存储实例到应用状态
+        app.state.task_store = task_store
+
+        logger.info("任务存储服务初始化成功")
+
+    except Exception as e:
+        logger.error(f"HTTP服务初始化失败: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+    yield  # 这里是应用运行期间
+
+    # 关闭时执行
+    logger.info("Shutting down Analysis Service...")
+
+    # 关闭任务存储连接
+    if hasattr(app.state, "task_store") and app.state.task_store:
+        try:
+            logger.info("正在关闭任务存储连接...")
+            await app.state.task_store.disconnect()
+            logger.info("任务存储连接已关闭")
+        except Exception as e:
+             logger.error(f"关闭任务存储连接时出错: {e}")
+    else:
+        logger.info("没有活动的任务存储连接需要关闭")
+
+    logger.info("Analysis Service stopped.")
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="""
     分析服务模块
-    
+
     提供以下功能:
     - 视觉对象检测和分析
     - 实例分割
@@ -83,7 +151,8 @@ app = FastAPI(
     docs_url="/api/v1/docs",
     redoc_url="/api/v1/redoc",
     openapi_url="/api/v1/openapi.json",
-    debug=settings.DEBUG_ENABLED
+    debug=settings.DEBUG_ENABLED,
+    lifespan=lifespan
 )
 
 # 添加Gzip压缩
@@ -92,6 +161,18 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)
 # 只在调试模式下添加请求日志中间件
 if settings.DEBUG_ENABLED:
     app.add_middleware(RequestLoggingMiddleware)
+
+# 添加CORS中间件
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 注册路由
+app.include_router(task_router)
 
 # 全局异常处理
 @app.exception_handler(AnalysisException)
@@ -106,7 +187,7 @@ async def analysis_exception_handler(request: Request, exc: AnalysisException):
             code=exc.code,
             message=exc.message,
             data=exc.data
-        ).dict()
+        ).model_dump()
     )
 
 @app.exception_handler(Exception)
@@ -117,7 +198,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         logger.exception(error_msg)
     else:
         logger.error(error_msg)
-        
+
     return JSONResponse(
         status_code=500,
         content={
@@ -137,18 +218,18 @@ async def health_check():
     """健康检查接口"""
     # 获取CPU使用率
     cpu_percent = psutil.cpu_percent(interval=1)
-    
+
     # 获取内存使用情况
     memory = psutil.virtual_memory()
     memory_percent = memory.percent
-    
+
     # 获取GPU使用情况
     try:
         gpus = GPUtil.getGPUs()
         gpu_usage = f"{gpus[0].load * 100:.1f}%" if gpus else "N/A"
     except:
         gpu_usage = "N/A"
-    
+
     return StandardResponse(
         requestId=str(uuid.uuid4()),
         path="/health",
@@ -164,87 +245,6 @@ async def health_check():
             "memory": f"{memory_percent:.1f}%"
         }
     )
-
-def show_service_banner(service_name: str):
-    """显示服务启动标识"""
-    banner = f"""
-███╗   ███╗███████╗███████╗██╗  ██╗██╗   ██╗ ██████╗ ██╗      ██████╗     @{service_name}
-████╗ ████║██╔════╝██╔════╝██║ ██╔╝╚██╗ ██╔╝██╔═══██╗██║     ██╔═══██╗
-██╔████╔██║█████╗  █████╗  █████╔╝  ╚████╔╝ ██║   ██║██║     ██║   ██║
-██║╚██╔╝██║██╔══╝  ██╔══╝  ██╔═██╗   ╚██╔╝  ██║   ██║██║     ██║   ██║
-██║ ╚═╝ ██║███████╗███████╗██║  ██╗   ██║   ╚██████╔╝███████╗╚██████╔╝
-╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝ 
-    """
-    print(banner)
-
-@app.on_event("startup")
-async def startup_event():
-    """应用启动时的初始化"""
-    show_service_banner("analysis_service")
-    logger.info("Starting Analysis Service...")
-    
-    if settings.DEBUG_ENABLED:
-        logger.info("分析服务启动...")
-        logger.info(f"环境: {settings.ENVIRONMENT}")
-        logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
-        logger.info(f"版本: {settings.VERSION}")
-        logger.info(f"注册的路由: {[route.path for route in app.routes]}")
-    
-    # 初始化MQTT通信模式
-    logger.info("使用MQTT通信模式，正在初始化MQTT客户端...")
-    try:
-        from services.mqtt import MQTTClient
-        
-        # 记录MQTT配置信息
-        mqtt_config = {
-            "broker_host": settings.MQTT_BROKER_HOST,
-            "broker_port": settings.MQTT_BROKER_PORT,
-            "username": settings.MQTT_USERNAME,
-            "password": "******" if settings.MQTT_PASSWORD else None,
-            "client_id": get_mac_address(),
-            "keep_alive": settings.MQTT_KEEPALIVE,
-            "qos": settings.MQTT_QOS,
-            "topic_prefix": settings.MQTT_TOPIC_PREFIX
-        }
-        logger.info(f"MQTT配置: {mqtt_config}")
-        
-        # 创建MQTT客户端实例
-        mqtt_client = MQTTClient(
-            client_id=get_mac_address()
-        )
-        
-        # 保存MQTT客户端实例
-        app.state.mqtt_client = mqtt_client
-        
-        # 连接MQTT服务器
-        connect_result = await mqtt_client.connect()
-        if connect_result:
-            logger.info("MQTT客户端已连接")
-        else:
-            logger.error("MQTT客户端连接失败!")
-            
-    except Exception as e:
-        logger.error(f"MQTT客户端初始化失败: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-    
-@app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭时的清理"""
-    logger.info("Shutting down Analysis Service...")
-    
-    # 关闭MQTT客户端
-    if hasattr(app.state, "mqtt_client") and app.state.mqtt_client:
-        try:
-            logger.info("正在断开 MQTT 连接...")
-            await app.state.mqtt_client.disconnect(trigger_will=False)
-            logger.info("MQTT 客户端已正常关闭")
-        except Exception as e:
-             logger.error(f"关闭 MQTT 客户端时出错: {e}")
-    else:
-        logger.info("没有活动的 MQTT 客户端需要关闭")
-    
-    logger.info("Analysis Service stopped.")
 
 if __name__ == "__main__":
     uvicorn.run(

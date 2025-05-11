@@ -77,7 +77,7 @@ class AnalysisServiceConfig(BaseSettings):
     SERVICES_PORT: int = 8002
     
     # 通信配置
-    COMMUNICATION_MODE: str = "mqtt"
+    COMMUNICATION_MODE: str = "http"
     
     # MQTT配置
     MQTT_BROKER_HOST: str = "localhost"

@@ -156,6 +156,26 @@ class ResourceStatusResponse(BaseApiResponse[ResourceUsageData]):
     """资源状态响应"""
     pass
 
+class TaskInfo(BaseModel):
+    """任务信息"""
+    task_id: str = Field(..., description="任务ID")
+    task_name: Optional[str] = Field(None, description="任务名称")
+    status: int = Field(..., description="任务状态：0-等待中 1-运行中 2-已完成 -1-失败 3-停止中 4-已停止")
+    status_text: str = Field(..., description="状态文本描述")
+    model_code: str = Field(..., description="模型代码")
+    stream_url: str = Field(..., description="流URL")
+    callback_urls: Optional[str] = Field(None, description="回调地址")
+    output_url: Optional[str] = Field(None, description="输出URL")
+    analysis_type: Optional[str] = Field(None, description="分析类型")
+    enable_callback: bool = Field(False, description="是否启用回调")
+    save_result: bool = Field(False, description="是否保存结果")
+    error_message: Optional[str] = Field(None, description="错误信息")
+    start_time: Optional[str] = Field(None, description="开始时间")
+    stop_time: Optional[str] = Field(None, description="停止时间")
+    duration: Optional[float] = Field(None, description="运行时长(分钟)")
+    created_at: str = Field(..., description="创建时间")
+    updated_at: str = Field(..., description="更新时间")
+
 # 向后兼容的类型别名
 StreamResponse = StreamAnalysisResponse
-BaseResponse = BaseApiResponse[Dict[str, Any]] 
+BaseResponse = BaseApiResponse[Dict[str, Any]]

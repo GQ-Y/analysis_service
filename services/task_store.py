@@ -5,7 +5,7 @@ import json
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 import aioredis
-from analysis_service.models.task import TaskBase, QueueTask
+from models.task import TaskBase, QueueTask
 from shared.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
