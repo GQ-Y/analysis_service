@@ -2,7 +2,7 @@
 任务CRUD操作
 """
 import uuid
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime
 from models.task import TaskBase, QueueTask
 from services.task_store import TaskStore
@@ -20,6 +20,27 @@ class TaskCRUD:
             task_store: 任务存储服务
         """
         self.store = task_store
+
+    async def list_tasks(
+        self,
+        status: Optional[int] = None,
+        limit: int = 100
+    ) -> List[TaskBase]:
+        """获取任务列表
+
+        Args:
+            status: 任务状态过滤
+            limit: 返回数量限制
+
+        Returns:
+            List[TaskBase]: 任务列表
+        """
+        try:
+            # 获取任务列表
+            return await self.store.list_tasks(status, limit)
+        except Exception as e:
+            logger.error(f"获取任务列表失败: {str(e)}")
+            return []
 
     async def create_task(
         self,

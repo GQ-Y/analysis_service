@@ -29,28 +29,68 @@ router = APIRouter(
 # 依赖注入
 async def get_task_service() -> TaskService:
     """获取任务服务实例"""
-    task_store = TaskStore(settings.REDIS_URL)
+    # 构建Redis URL
+    redis_url = f"redis://{':' + settings.REDIS_PASSWORD + '@' if settings.REDIS_PASSWORD else ''}{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+    task_store = TaskStore(redis_url)
     await task_store.connect()
     task_crud = TaskCRUD(task_store)
     return TaskService(task_crud)
 
-@router.post("/start", response_model=BaseResponse)
+@router.post("/start", response_model=BaseResponse, summary="启动单个流分析任务")
 async def start_task(
     task: StreamTask,
     task_service: TaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     启动单个流分析任务
-    
+
+    支持的配置参数包括：
+    - model_code: 模型代码，必填
+    - stream_url: 流地址，必填
+    - task_name: 任务名称，可选
+    - output_url: 输出地址，可选
+    - save_result: 是否保存结果，默认为false
+    - config: 检测配置参数，可选，包括：
+        - confidence: 置信度阈值，范围0-1
+        - iou: IoU阈值，范围0-1
+        - classes: 需要检测的类别ID列表
+        - roi: 感兴趣区域，支持矩形、多边形和线段
+        - nested_detection: 是否进行嵌套检测
+
     Args:
         task: 流分析任务参数
-        
+
     Returns:
-        BaseResponse: 响应结果
+        BaseResponse: 响应结果，包含task_id
     """
     request_id = str(uuid.uuid4())
-    
+
     try:
+        # 准备配置参数
+        config = {}
+        if task.config:
+            config = task.config.model_dump()
+
+            # 处理ROI配置
+            if hasattr(task.config, "roi") and task.config.roi:
+                config["roi"] = task.config.roi
+
+            # 处理检测类别
+            if hasattr(task.config, "classes") and task.config.classes:
+                config["detect_classes"] = task.config.classes
+
+            # 处理置信度阈值
+            if hasattr(task.config, "confidence") and task.config.confidence is not None:
+                config["confidence"] = task.config.confidence
+
+            # 处理IoU阈值
+            if hasattr(task.config, "iou") and task.config.iou is not None:
+                config["iou_threshold"] = task.config.iou
+
+            # 处理嵌套检测
+            if hasattr(task.config, "nested_detection"):
+                config["nested_detection"] = task.config.nested_detection
+
         # 启动任务
         result = await task_service.start_task(
             model_code=task.model_code,
@@ -59,11 +99,11 @@ async def start_task(
             callback_urls=None,  # 单任务模式不支持回调
             output_url=task.output_url,
             analysis_type="detection",  # 默认为检测任务
-            config=task.config.model_dump() if task.config else None,
+            config=config,
             enable_callback=False,
             save_result=task.save_result
         )
-        
+
         if not result["success"]:
             return BaseResponse(
                 requestId=request_id,
@@ -73,7 +113,7 @@ async def start_task(
                 code=500,
                 data=None
             )
-            
+
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/start",
@@ -82,7 +122,7 @@ async def start_task(
             code=200,
             data={"task_id": result["task_id"]}
         )
-        
+
     except Exception as e:
         logger.error(f"启动任务失败: {str(e)}")
         return BaseResponse(
@@ -94,28 +134,82 @@ async def start_task(
             data=None
         )
 
-@router.post("/batch/start", response_model=BaseResponse)
+@router.post("/batch/start", response_model=BaseResponse, summary="批量启动流分析任务")
 async def start_batch_tasks(
     batch_task: BatchStreamTask,
     task_service: TaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     批量启动流分析任务
-    
+
+    支持的参数包括：
+    - tasks: 流分析任务列表，每个任务包含：
+        - model_code: 模型代码，必填
+        - stream_url: 流地址，必填
+        - task_name: 任务名称，可选
+        - output_url: 输出地址，可选
+        - save_result: 是否保存结果，默认为false
+        - config: 检测配置参数，可选
+    - callback_urls: 回调地址，多个用逗号分隔，可选
+    - analyze_interval: 分析间隔(秒)，默认为1
+    - alarm_interval: 报警间隔(秒)，默认为60
+    - random_interval: 随机延迟区间(秒)，默认为(0,0)
+    - push_interval: 推送间隔(秒)，默认为5
+
+    全局配置参数会应用到每个子任务中。
+
     Args:
         batch_task: 批量流分析任务参数
-        
+
     Returns:
-        BaseResponse: 响应结果
+        BaseResponse: 响应结果，包含成功和失败的任务信息
     """
     request_id = str(uuid.uuid4())
-    
+
     try:
         # 批量启动任务
         task_ids = []
         failed_tasks = []
-        
+
         for task in batch_task.tasks:
+            # 准备配置参数
+            config = {}
+            if task.config:
+                config = task.config.model_dump()
+
+                # 处理ROI配置
+                if hasattr(task.config, "roi") and task.config.roi:
+                    config["roi"] = task.config.roi
+
+                # 处理检测类别
+                if hasattr(task.config, "classes") and task.config.classes:
+                    config["detect_classes"] = task.config.classes
+
+                # 处理置信度阈值
+                if hasattr(task.config, "confidence") and task.config.confidence is not None:
+                    config["confidence"] = task.config.confidence
+
+                # 处理IoU阈值
+                if hasattr(task.config, "iou") and task.config.iou is not None:
+                    config["iou_threshold"] = task.config.iou
+
+                # 处理嵌套检测
+                if hasattr(task.config, "nested_detection"):
+                    config["nested_detection"] = task.config.nested_detection
+
+            # 如果批量任务中有全局配置，合并到每个任务的配置中
+            if hasattr(batch_task, "analyze_interval") and batch_task.analyze_interval:
+                config["analyze_interval"] = batch_task.analyze_interval
+
+            if hasattr(batch_task, "alarm_interval") and batch_task.alarm_interval:
+                config["alarm_interval"] = batch_task.alarm_interval
+
+            if hasattr(batch_task, "push_interval") and batch_task.push_interval:
+                config["push_interval"] = batch_task.push_interval
+
+            if hasattr(batch_task, "random_interval") and batch_task.random_interval:
+                config["random_interval"] = batch_task.random_interval
+
             result = await task_service.start_task(
                 model_code=task.model_code,
                 stream_url=task.stream_url,
@@ -123,11 +217,11 @@ async def start_batch_tasks(
                 callback_urls=batch_task.callback_urls,
                 output_url=task.output_url,
                 analysis_type="detection",  # 默认为检测任务
-                config=task.config.model_dump() if task.config else None,
+                config=config,
                 enable_callback=bool(batch_task.callback_urls),
                 save_result=task.save_result
             )
-            
+
             if result["success"]:
                 task_ids.append(result["task_id"])
             else:
@@ -135,7 +229,7 @@ async def start_batch_tasks(
                     "stream_url": task.stream_url,
                     "error": result["message"]
                 })
-                
+
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/batch/start",
@@ -150,7 +244,7 @@ async def start_batch_tasks(
                 "failed": len(failed_tasks)
             }
         )
-        
+
     except Exception as e:
         logger.error(f"批量启动任务失败: {str(e)}")
         return BaseResponse(
@@ -162,26 +256,28 @@ async def start_batch_tasks(
             data=None
         )
 
-@router.post("/stop/{task_id}", response_model=BaseResponse)
+@router.post("/stop/{task_id}", response_model=BaseResponse, summary="停止分析任务")
 async def stop_task(
     task_id: str = Path(..., description="任务ID"),
     task_service: TaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
-    停止任务
-    
+    停止正在运行的分析任务
+
+    通过任务ID停止一个正在运行的分析任务。任务将首先进入"停止中"状态，然后在资源释放完成后变为"已停止"状态。
+
     Args:
-        task_id: 任务ID
-        
+        task_id: 要停止的任务ID
+
     Returns:
-        BaseResponse: 响应结果
+        BaseResponse: 响应结果，包含操作状态和消息
     """
     request_id = str(uuid.uuid4())
-    
+
     try:
         # 停止任务
         result = await task_service.stop_task(task_id)
-        
+
         if not result["success"]:
             return BaseResponse(
                 requestId=request_id,
@@ -191,7 +287,7 @@ async def stop_task(
                 code=404 if "不存在" in result["message"] else 500,
                 data=None
             )
-            
+
         return BaseResponse(
             requestId=request_id,
             path=f"/api/v1/tasks/stop/{task_id}",
@@ -200,7 +296,7 @@ async def stop_task(
             code=200,
             data={"task_id": task_id}
         )
-        
+
     except Exception as e:
         logger.error(f"停止任务失败: {str(e)}")
         return BaseResponse(
@@ -212,26 +308,33 @@ async def stop_task(
             data=None
         )
 
-@router.get("/status/{task_id}", response_model=BaseResponse)
+@router.get("/status/{task_id}", response_model=BaseResponse, summary="获取任务状态")
 async def get_task_status(
     task_id: str = Path(..., description="任务ID"),
     task_service: TaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     获取任务状态
-    
+
+    返回指定任务ID的详细状态信息，包括：
+    - 任务状态（等待中、处理中、已完成、失败等）
+    - 开始时间
+    - 结束时间
+    - 运行时长
+    - 错误信息（如果有）
+
     Args:
         task_id: 任务ID
-        
+
     Returns:
-        BaseResponse: 响应结果
+        BaseResponse: 响应结果，包含任务状态详情
     """
     request_id = str(uuid.uuid4())
-    
+
     try:
         # 获取任务状态
         result = await task_service.get_task_status(task_id)
-        
+
         if not result["success"]:
             return BaseResponse(
                 requestId=request_id,
@@ -241,7 +344,7 @@ async def get_task_status(
                 code=404 if "不存在" in result["message"] else 500,
                 data=None
             )
-            
+
         # 构建任务信息
         task_info = result["task_info"]
         status_map = {
@@ -252,7 +355,7 @@ async def get_task_status(
             TaskStatus.STOPPING: "停止中",
             TaskStatus.STOPPED: "已停止"
         }
-        
+
         return BaseResponse(
             requestId=request_id,
             path=f"/api/v1/tasks/status/{task_id}",
@@ -269,7 +372,7 @@ async def get_task_status(
                 "error_message": task_info["error_message"]
             }
         )
-        
+
     except Exception as e:
         logger.error(f"获取任务状态失败: {str(e)}")
         return BaseResponse(
@@ -281,31 +384,86 @@ async def get_task_status(
             data=None
         )
 
-@router.get("/list", response_model=BaseResponse)
+@router.get("/list", response_model=BaseResponse, summary="获取任务列表")
 async def list_tasks(
-    status: Optional[int] = Query(None, description="任务状态过滤"),
-    limit: int = Query(100, description="返回数量限制"),
+    status: Optional[int] = Query(None, description="任务状态过滤：0-等待中, 1-处理中, 2-已完成, -1-失败, -4-停止中, -5-已停止"),
+    limit: int = Query(100, description="返回数量限制，默认100"),
     task_service: TaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     获取任务列表
-    
+
+    返回系统中的任务列表，支持按状态过滤和限制返回数量。
+
+    每个任务包含以下信息：
+    - 任务ID
+    - 任务名称
+    - 模型代码
+    - 流URL
+    - 任务状态
+    - 开始时间
+    - 结束时间
+    - 运行时长
+    - 创建时间
+    - 更新时间
+    - 错误信息（如果有）
+
     Args:
-        status: 任务状态过滤
-        limit: 返回数量限制
-        
+        status: 任务状态过滤：0-等待中, 1-处理中, 2-已完成, -1-失败, -4-停止中, -5-已停止
+        limit: 返回数量限制，默认100
+
     Returns:
-        BaseResponse: 响应结果
+        BaseResponse: 响应结果，包含任务列表和总数
     """
     request_id = str(uuid.uuid4())
-    
-    # 这个API需要在TaskService中添加list_tasks方法
-    # 由于当前实现中没有该方法，这里返回未实现错误
-    return BaseResponse(
-        requestId=request_id,
-        path="/api/v1/tasks/list",
-        success=False,
-        message="该API尚未实现",
-        code=501,
-        data=None
-    )
+
+    try:
+        # 获取任务列表
+        result = await task_service.list_tasks(status, limit)
+
+        if not result["success"]:
+            return BaseResponse(
+                requestId=request_id,
+                path="/api/v1/tasks/list",
+                success=False,
+                message=result["message"],
+                code=500,
+                data=None
+            )
+
+        # 构建状态文本映射
+        status_map = {
+            TaskStatus.WAITING: "等待中",
+            TaskStatus.PROCESSING: "处理中",
+            TaskStatus.COMPLETED: "已完成",
+            TaskStatus.FAILED: "失败",
+            TaskStatus.STOPPING: "停止中",
+            TaskStatus.STOPPED: "已停止"
+        }
+
+        # 添加状态文本
+        for task in result["tasks"]:
+            task["status_text"] = status_map.get(task["status"], "未知")
+
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/list",
+            success=True,
+            message=result["message"],
+            code=200,
+            data={
+                "tasks": result["tasks"],
+                "total": result["total"]
+            }
+        )
+
+    except Exception as e:
+        logger.error(f"获取任务列表失败: {str(e)}")
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/list",
+            success=False,
+            message=f"获取任务列表失败: {str(e)}",
+            code=500,
+            data=None
+        )
