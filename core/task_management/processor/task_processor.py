@@ -654,7 +654,7 @@ class TaskProcessor:
                         mqtt_message = {
                             "message_id": message_id,
                             "message_uuid": message_uuid,
-                            "message_type": 80003, # 响应消息类型
+                            "message_type": 80002, # 响应消息类型
                             "mac_address": mac_address,
                             "data": {
                                 "task_id": task_id,
@@ -691,7 +691,7 @@ class TaskProcessor:
                          error_message = {
                             "message_id": task_data.get("message_id"),
                             "message_uuid": task_data.get("message_uuid"),
-                            "message_type": 80003, # 响应消息类型
+                            "message_type": 80002, # 响应消息类型
                             "mac_address": mac_address,
                             "data": {
                                 "task_id": task_id,
@@ -725,7 +725,7 @@ class TaskProcessor:
                          complete_message = {
                             "message_id": task_data.get("message_id"),
                             "message_uuid": task_data.get("message_uuid"),
-                            "message_type": 80003, # 响应消息类型
+                            "message_type": 80002, # 响应消息类型
                             "mac_address": mac_address,
                             "data": {
                                 "task_id": task_id,

@@ -466,7 +466,7 @@ class TaskCommandHandler:
         # 构建响应
         response = {
             "message_id": message_id,
-            "message_type": 80003,  # 响应消息类型
+            "message_type": 80002,  # 响应消息类型
             "message_uuid": message_uuid,
             "response_type": "cmd_reply",
             "mac_address": mac_address,
