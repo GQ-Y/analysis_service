@@ -550,7 +550,8 @@ class TaskService:
             "result": result_config,
             "analysis_interval": final_interval,
             "callback_interval": callback_interval,
-            "device": task.device if hasattr(task, "device") else "auto"
+            "device": task.device if hasattr(task, "device") else "auto",
+            "save_images": task.save_images  # 直接添加save_images参数到顶层配置
         }
 
         # 添加输出URL（如果有）

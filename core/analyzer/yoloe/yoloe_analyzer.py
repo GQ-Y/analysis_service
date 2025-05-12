@@ -250,6 +250,34 @@ class YOLOEDetectionAnalyzer(DetectionAnalyzer, YOLOEBaseAnalyzer):
         """
         start_time = time.time()
 
+        # 检查模型是否已加载
+        if self.model is None:
+            # 如果模型未加载，尝试重新加载
+            if self.current_model_code:
+                logger.warning(f"YOLOE模型未加载，尝试重新加载: {self.current_model_code}")
+                await self.load_model(self.current_model_code)
+            else:
+                # 如果没有模型代码，无法加载模型
+                logger.error("YOLOE模型未加载且没有模型代码，无法进行检测")
+                return {
+                    "detections": [],
+                    "pre_process_time": 0,
+                    "inference_time": 0,
+                    "post_process_time": 0,
+                    "annotated_image_bytes": None
+                }
+
+            # 再次检查模型是否加载成功
+            if self.model is None:
+                logger.error("YOLOE模型重新加载失败，无法进行检测")
+                return {
+                    "detections": [],
+                    "pre_process_time": 0,
+                    "inference_time": 0,
+                    "post_process_time": 0,
+                    "annotated_image_bytes": None
+                }
+
         try:
             if self.model is None:
                 logger.error("模型未加载")

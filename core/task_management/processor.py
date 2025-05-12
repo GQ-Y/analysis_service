@@ -183,6 +183,12 @@ class TaskProcessor:
         try:
             logger.info(f"工作进程 {task_id}: 开始初始化")
 
+            # 导入美化打印函数
+            from shared.utils.tools import pretty_print_task_config
+
+            # 使用美化打印函数打印任务配置
+            pretty_print_task_config(task_id, task_config, logger.info)
+
             # 获取分析类型
             analysis_type_str = task_config.get("subtask", {}).get("type", "detection")
 
@@ -231,15 +237,24 @@ class TaskProcessor:
                     if param in analysis_config:
                         del analysis_config[param]
 
-                # 创建分析器
-                detector = AnalyzerFactory.create_analyzer(
-                    analysis_type=analysis_type,
-                    model_code=model_code,
-                    engine_type=engine_type,
-                    yolo_version=yolo_version,
-                    device=device,
+                # 准备传递给分析器的参数
+                analyzer_params = {
+                    "analysis_type": analysis_type,
+                    "model_code": model_code,
+                    "engine_type": engine_type,
+                    "yolo_version": yolo_version,
+                    "device": device,
                     **analysis_config  # 传递分析配置
-                )
+                }
+
+                # 导入美化打印函数
+                from shared.utils.tools import pretty_print
+
+                # 使用美化打印函数打印分析器参数
+                pretty_print(f"工作进程 {task_id}: 传递给分析器的参数", analyzer_params, logger.info)
+
+                # 创建分析器
+                detector = AnalyzerFactory.create_analyzer(**analyzer_params)
 
                 logger.info(f"工作进程 {task_id}: 成功创建 {analysis_type_str} 分析器")
 
@@ -375,10 +390,14 @@ class TaskProcessor:
 
                 # 根据分析间隔决定是否处理当前帧
                 if frame_count % analysis_interval != 0:
+                    # 记录跳过帧的信息（每100帧记录一次，避免日志过多）
+                    if frame_count % 100 == 0:
+                        logger.debug(f"工作进程 {task_id}: 跳过第 {frame_count} 帧 (分析间隔: {analysis_interval})")
                     continue
 
                 # 记录抽帧分析信息
                 analysis_logger.info(f"任务 {task_id}: 分析第 {frame_count} 帧 (抽帧比例 1:{analysis_interval})")
+                logger.info(f"工作进程 {task_id}: 开始分析第 {frame_count} 帧 (分析间隔: {analysis_interval})")
 
                 # 处理帧
                 try:
@@ -396,6 +415,17 @@ class TaskProcessor:
 
                     # 执行检测
                     start_time = time.time()
+
+                    # 添加保存图片和任务名称参数
+                    save_images = task_config.get("save_images", False)
+                    task_name = task_config.get("task_name", task_id)
+
+                    analysis_config["save_images"] = save_images
+                    analysis_config["task_name"] = task_name
+
+                    logger.info(f"任务 {task_id}: 保存图片设置: save_images={save_images}, task_name={task_name}")
+                    logger.info(f"任务 {task_id}: 任务配置: {task_config}")
+
                     results = await detector.detect(frame, **analysis_config)
                     detect_time = time.time() - start_time
 
@@ -417,6 +447,14 @@ class TaskProcessor:
                                 more_info = f" 等共 {detection_count} 个目标"
 
                             analysis_logger.info(f"任务 {task_id}: 第 {frame_count} 帧检测到: {', '.join(detection_info)}{more_info}, 耗时: {detect_time:.3f}秒")
+
+                            # 导入美化打印函数
+                            from shared.utils.tools import pretty_print_detection_results
+
+                            # 使用美化打印函数打印检测结果
+                            pretty_print_detection_results(task_id, frame_count, processed_results, detect_time, logger.info)
+                        else:
+                            logger.info(f"工作进程 {task_id}: 第 {frame_count} 帧未检测到目标, 耗时: {detect_time:.3f}秒")
 
                     # 放入结果队列
                     result_queue.put({

@@ -262,6 +262,26 @@ class YOLODetector:
                     logger.warning("标注图像编码失败")
                 else:
                     annotated_image_bytes = buffer.tobytes()
+
+                    # 检查是否需要保存图片
+                    save_images = kwargs.get("save_images", False)
+                    logger.info(f"保存图片设置: save_images={save_images}, 检测到目标数: {len(detections)}")
+
+                    # 只在检测到目标时才保存图片
+                    if save_images and len(detections) > 0:
+                        # 获取任务名称
+                        task_name = kwargs.get("task_name", None)
+                        logger.info(f"准备保存图片，任务名称: {task_name}, 检测到 {len(detections)} 个目标")
+
+                        # 保存图片
+                        image_path = await self._save_result_image(annotated_image, detections, task_name)
+                        if image_path:
+                            logger.info(f"检测结果图片已保存: {image_path}")
+                        else:
+                            logger.error("保存图片失败，返回路径为空")
+                    elif save_images and len(detections) == 0:
+                        logger.info("未检测到目标，不保存图片")
+
             except Exception as plot_err:
                     logger.error(f"绘制或编码标注图像时出错: {plot_err}")
             # --- 结束图像处理 ---
@@ -328,7 +348,16 @@ class YOLODetector:
             pixel_roi = {}
             normalized = roi.get("normalized", True)
 
-            if roi_type == 1:  # 矩形ROI
+            if roi_type == 0:  # 无ROI类型
+                # 对于无ROI类型，我们仍然需要初始化pixel_roi，但它不会被使用
+                pixel_roi = {
+                    "x1": 0,
+                    "y1": 0,
+                    "x2": img_width,
+                    "y2": img_height
+                }
+
+            elif roi_type == 1:  # 矩形ROI
                 # 从coordinates获取坐标点
                 if "coordinates" in roi:
                     points = roi["coordinates"]
@@ -406,7 +435,10 @@ class YOLODetector:
                 det_area = (pixel_bbox["x2"] - pixel_bbox["x1"]) * (pixel_bbox["y2"] - pixel_bbox["y1"])
 
                 # 根据ROI类型进行过滤
-                if roi_type == 1:  # 矩形ROI
+                if roi_type == 0:  # 无ROI类型，直接保留所有目标
+                    filtered_detections.append(detection)
+
+                elif roi_type == 1:  # 矩形ROI
                     # 计算与ROI的重叠区域
                     overlap_x1 = max(pixel_roi["x1"], pixel_bbox["x1"])
                     overlap_y1 = max(pixel_roi["y1"], pixel_bbox["y1"])
@@ -455,7 +487,14 @@ class YOLODetector:
 
             if original_count > 0:
                 filter_ratio = filtered_count / original_count * 100
-                analysis_logger.info(f"ROI过滤结果: 原始目标数 {original_count}，过滤后目标数 {filtered_count}，保留比例 {filter_ratio:.1f}%")
+
+                # 根据ROI类型记录不同的日志
+                if roi_type == 0:
+                    # 对于无ROI类型，所有目标都应该被保留
+                    analysis_logger.info(f"无ROI过滤: 检测到 {original_count} 个目标，全部保留")
+                else:
+                    # 对于其他ROI类型，记录过滤结果
+                    analysis_logger.info(f"ROI过滤结果: 原始目标数 {original_count}，过滤后目标数 {filtered_count}，保留比例 {filter_ratio:.1f}%")
 
                 # 记录过滤后的目标详情
                 if filtered_count > 0:
@@ -468,7 +507,7 @@ class YOLODetector:
                             class_counts[class_name] = 1
 
                     class_info = ", ".join([f"{cls}: {count}" for cls, count in class_counts.items()])
-                    analysis_logger.info(f"ROI内目标类别统计: {class_info}")
+                    analysis_logger.info(f"目标类别统计: {class_info}")
 
             return filtered_detections
 
@@ -553,34 +592,129 @@ class YOLODetector:
         try:
             # 生成带检测结果的图片
             logger.info("开始生成检测结果图片...")
-            result_image = await self._encode_result_image(image)
-            if result_image is None:
-                logger.error("生成检测结果图片失败")
+
+            # 检查图像是否为空
+            if image is None:
+                logger.error("图像为空，无法保存")
                 return None
 
-            # 生成文件名
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            task_prefix = f"{task_name}_" if task_name else ""
-            filename = f"{task_prefix}{timestamp}.jpg"
+            # 检查图像类型和形状
+            logger.info(f"图像类型: {type(image)}, 形状: {image.shape}")
+
+            # 直接使用传入的图像（已经包含了检测结果的标注）
+            result_image = image
+
+            # 获取当前工作目录
+            current_dir = os.getcwd()
+            logger.info(f"当前工作目录: {current_dir}")
+
+            # 确保results目录存在
+            results_dir = os.path.join(current_dir, "results")
+            os.makedirs(results_dir, exist_ok=True)
+            logger.info(f"结果目录: {results_dir}, 是否存在: {os.path.exists(results_dir)}")
 
             # 确保每天的结果保存在单独的目录中
-            date_dir = self.results_dir / datetime.now().strftime("%Y%m%d")
+            date_str = datetime.now().strftime("%Y%m%d")
+            date_dir = os.path.join(results_dir, date_str)
             os.makedirs(date_dir, exist_ok=True)
+            logger.info(f"日期目录: {date_dir}, 是否存在: {os.path.exists(date_dir)}")
+
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒
+            task_prefix = f"{task_name}_" if task_name else ""
+
+            # 添加检测到的目标类别信息到文件名
+            classes_info = ""
+            if detections and len(detections) > 0:
+                # 获取所有检测到的类别
+                classes = [det.get("class_name", "unknown") for det in detections]
+                # 统计每个类别的数量
+                class_counts = {}
+                for cls in classes:
+                    if cls in class_counts:
+                        class_counts[cls] += 1
+                    else:
+                        class_counts[cls] = 1
+                # 生成类别信息字符串，例如：person_2_car_1
+                classes_info = "_".join([f"{cls}_{count}" for cls, count in class_counts.items()])
+                classes_info = f"{classes_info}_"
+
+            filename = f"{task_prefix}{classes_info}{timestamp}.jpg"
+            logger.info(f"生成的文件名: {filename}")
+
+            # 完整的文件路径
+            file_path = os.path.join(date_dir, filename)
+            logger.info(f"完整的文件路径: {file_path}")
 
             # 保存图片
-            file_path = date_dir / filename
-            success = cv2.imwrite(str(file_path), result_image)
-            if not success:
-                logger.error("保存图片失败")
+            try:
+                # 检查图像是否为空
+                if result_image is None or result_image.size == 0:
+                    logger.error("图像为空或大小为0，无法保存")
+                    return None
+
+                # 检查图像类型
+                logger.info(f"图像类型: {type(result_image)}, 形状: {result_image.shape}, 数据类型: {result_image.dtype}")
+
+                # 检查文件路径
+                logger.info(f"文件路径: {file_path}")
+                logger.info(f"目录是否存在: {os.path.exists(os.path.dirname(file_path))}")
+
+                # 尝试使用cv2保存
+                success = cv2.imwrite(file_path, result_image)
+                logger.info(f"cv2.imwrite结果: {success}")
+
+                if not success:
+                    logger.error(f"保存图片失败: {file_path}")
+
+                    # 尝试使用PIL保存
+                    logger.info("尝试使用PIL保存图片...")
+                    try:
+                        from PIL import Image
+                        pil_image = Image.fromarray(cv2.cvtColor(result_image, cv2.COLOR_BGR2RGB))
+                        pil_image.save(file_path)
+                        logger.info("使用PIL保存图片成功")
+                    except Exception as pil_err:
+                        logger.error(f"使用PIL保存图片失败: {str(pil_err)}")
+
+                        # 尝试直接写入文件
+                        logger.info("尝试直接写入文件...")
+                        try:
+                            _, buffer = cv2.imencode(".jpg", result_image)
+                            with open(file_path, "wb") as f:
+                                f.write(buffer)
+                            logger.info("直接写入文件成功")
+                        except Exception as write_err:
+                            logger.error(f"直接写入文件失败: {str(write_err)}")
+                            return None
+
+                # 检查文件是否存在
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    logger.info(f"文件已创建: {file_path}, 大小: {file_size} 字节")
+
+                    # 检查文件大小是否正常
+                    if file_size == 0:
+                        logger.error("文件大小为0，保存失败")
+                        return None
+                else:
+                    logger.error(f"文件未创建: {file_path}")
+                    return None
+            except Exception as save_err:
+                logger.error(f"保存图片时发生错误: {str(save_err)}")
+                import traceback
+                logger.error(traceback.format_exc())
                 return None
 
-            # 返回相对于项目根目录的路径
-            relative_path = file_path.relative_to(self.project_root)
+            # 返回相对路径
+            relative_path = os.path.join("results", date_str, filename)
             logger.info(f"图片已保存: {relative_path}")
-            return str(relative_path)
+            return relative_path
 
         except Exception as e:
             logger.error(f"保存结果图片失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     async def draw_detections(self, image: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:

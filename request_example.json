@@ -1,0 +1,83 @@
+{
+  "model_code": "yoloe",
+  "task_name": "流分析-1",
+  "stream_url": "rtsp://223.85.203.115:554/rtp/34020000001110000038_34020000001320000003",
+  "output_url": "string",
+  "save_result": false,
+  "save_images": false,
+  "analysis_type": "detection",
+  "frame_rate": 10,
+  "device": 0,
+  "enable_callback": false,
+  "callback_url": "",
+  "enable_alarm_recording": false,
+  "alarm_recording_before": 5,
+  "alarm_recording_after": 5,
+  "config": {
+    "confidence": 0.5,
+    "iou_threshold": 0.45,
+    "classes": [],
+    "roi_type": 0,
+    "roi": {
+      "x1": 0.1,
+      "x2": 0.9,
+      "y1": 0.1,
+      "y2": 0.9
+    },
+    "image_size": {
+      "height": 640,
+      "width": 640
+    },
+    "nested_detection": false,
+    "engine": 0,
+    "yolo_version": 2,
+    "custom_weights_path": "",
+    "prompt_type": 3,
+    "text_prompt": [
+      "安全帽",
+      "工人",
+      "反光背心",
+      "车辆"
+    ],
+    "visual_prompt": {
+      "line_width": 3,
+      "points": [
+        {
+          "x": 0.2,
+          "y": 0.3
+        },
+        {
+          "x": 0.8,
+          "y": 0.3
+        },
+        {
+          "x": 0.7,
+          "y": 0.7
+        },
+        {
+          "x": 0.3,
+          "y": 0.7
+        }
+      ],
+      "type": 2,
+      "use_as_mask": true
+    },
+    "segmentation": false,
+    "nms_type": 0,
+    "max_detections": 100,
+    "device": 0,
+    "half_precision": false,
+    "tracking_type": 0,
+    "max_tracks": 50,
+    "max_lost_time": 30,
+    "feature_type": 0,
+    "related_cameras": [],
+    "counting_enabled": false,
+    "time_threshold": 0.5,
+    "speed_estimation": false,
+    "object_filter": {
+      "max_size": 0.5,
+      "min_size": 0.02
+    }
+  }
+}
