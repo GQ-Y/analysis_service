@@ -1,6 +1,6 @@
 """
-日志中间件
-记录请求和响应信息
+请求日志中间件
+提供请求日志记录功能
 """
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -13,18 +13,20 @@ from shared.utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
-    """请求日志中间件"""
-    
+    """
+    请求日志中间件
+    记录请求的开始、结束和处理时间
+    """
     async def dispatch(self, request: Request, call_next):
         """
         处理请求
         
         Args:
             request: 请求对象
-            call_next: 下一个中间件
+            call_next: 下一个中间件或路由处理函数
             
         Returns:
-            响应对象
+            Response: 响应对象
         """
         start_time = time.time()
         request_id = str(uuid.uuid4())

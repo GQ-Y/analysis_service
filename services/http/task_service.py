@@ -83,6 +83,74 @@ class TaskService:
                 "task_id": None
             }
 
+    async def start_task(self, model_code: str, stream_url: str, task_name: Optional[str] = None,
+                     callback_urls: Optional[str] = None, output_url: Optional[str] = None,
+                     analysis_type: Optional[str] = None, config: Optional[Dict[str, Any]] = None,
+                     enable_callback: bool = False, save_result: bool = False, save_images: bool = False,
+                     frame_rate: Optional[int] = None, device: Optional[int] = None,
+                     enable_alarm_recording: bool = False, alarm_recording_before: Optional[int] = None,
+                     alarm_recording_after: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+        """
+        启动单个任务
+
+        Args:
+            model_code: 模型代码
+            stream_url: 流地址
+            task_name: 任务名称
+            callback_urls: 回调地址
+            output_url: 输出地址
+            analysis_type: 分析类型
+            config: 配置参数
+            enable_callback: 是否启用回调
+            save_result: 是否保存结果
+            save_images: 是否保存图像
+            frame_rate: 帧率设置
+            device: 设备类型
+            enable_alarm_recording: 是否启用报警录像
+            alarm_recording_before: 报警前录像时长
+            alarm_recording_after: 报警后录像时长
+            **kwargs: 其他参数
+
+        Returns:
+            Dict[str, Any]: 启动结果
+        """
+        try:
+            # 创建StreamTask对象
+            task = StreamTask(
+                model_code=model_code,
+                stream_url=stream_url,
+                task_name=task_name,
+                output_url=output_url,
+                analysis_type=analysis_type or "detection",
+                enable_callback=enable_callback,
+                callback_url=callback_urls,
+                save_result=save_result,
+                save_images=save_images,
+                frame_rate=frame_rate,
+                device=device,
+                enable_alarm_recording=enable_alarm_recording,
+                alarm_recording_before=alarm_recording_before,
+                alarm_recording_after=alarm_recording_after
+            )
+
+            # 设置配置
+            if config:
+                from models.requests import DetectionConfig
+                task.config = DetectionConfig(**config)
+
+            # 创建任务
+            return await self.create_task(task)
+
+        except Exception as e:
+            logger.error(f"启动任务异常: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "success": False,
+                "message": f"启动任务异常: {str(e)}",
+                "task_id": None
+            }
+
     async def create_batch_tasks(self, batch_task: BatchStreamTask) -> Dict[str, Any]:
         """
         批量创建任务
@@ -218,6 +286,48 @@ class TaskService:
                 "success": False,
                 "message": f"获取任务异常: {str(e)}",
                 "task": None
+            }
+
+    async def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """
+        获取任务状态
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            Dict[str, Any]: 任务状态
+        """
+        try:
+            # 获取任务
+            task = self.task_manager.get_task(task_id)
+            if not task:
+                return {
+                    "success": False,
+                    "message": f"任务不存在: {task_id}"
+                }
+
+            # 构建任务状态信息
+            task_info = {
+                "id": task_id,
+                "status": task.get("status", 0),
+                "start_time": task.get("start_time"),
+                "stop_time": task.get("stop_time"),
+                "duration": task.get("duration"),
+                "error_message": task.get("error_message")
+            }
+
+            return {
+                "success": True,
+                "message": "获取任务状态成功",
+                "task_info": task_info
+            }
+
+        except Exception as e:
+            logger.error(f"获取任务状态异常: {str(e)}")
+            return {
+                "success": False,
+                "message": f"获取任务状态异常: {str(e)}"
             }
 
     async def list_tasks(self, status: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:

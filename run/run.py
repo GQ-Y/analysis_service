@@ -18,6 +18,7 @@ sys.path.append(str(ROOT_DIR))
 
 from core.config import settings
 from shared.utils.logger import setup_logger
+from run.middlewares import setup_exception_handlers, RequestLoggingMiddleware
 
 logger = setup_logger(__name__)
 
@@ -32,6 +33,62 @@ def show_service_banner(service_name: str):
 ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝
     """
     print(banner)
+
+def create_app() -> FastAPI:
+    """
+    创建FastAPI应用
+
+    Returns:
+        FastAPI: FastAPI应用实例
+    """
+    # 创建应用
+    app = FastAPI(
+        title=settings.PROJECT_NAME,
+        description="""
+        分析服务模块
+
+        提供以下功能:
+        - 视觉对象检测和分析
+        - 实例分割
+        - 目标跟踪
+        - 跨摄像头目标跟踪
+        - 分析结果存储和查询
+        """,
+        version=settings.VERSION,
+        docs_url="/api/v1/docs",
+        redoc_url="/api/v1/redoc",
+        openapi_url="/api/v1/openapi.json",
+        debug=settings.DEBUG_ENABLED,
+        lifespan=lifespan
+    )
+
+    # 添加Gzip压缩
+    from fastapi.middleware.gzip import GZipMiddleware
+    app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+    # 只在调试模式下添加请求日志中间件
+    if settings.DEBUG_ENABLED:
+        app.add_middleware(RequestLoggingMiddleware)
+
+    # 添加CORS中间件
+    from fastapi.middleware.cors import CORSMiddleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # 设置全局异常处理器
+    setup_exception_handlers(app)
+
+    # 注册路由
+    from routers import task_router, health_router
+    app.include_router(task_router)
+    app.include_router(health_router)
+
+    return app
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -94,8 +151,38 @@ async def lifespan(app: FastAPI):
 
     logger.info("Analysis Service stopped.")
 
-def start_app(host=None, port=None, reload=None, workers=None, debug=None):
-    """启动FastAPI应用"""
+def parse_args():
+    """解析命令行参数"""
+    import argparse
+    parser = argparse.ArgumentParser(description="分析服务启动脚本")
+    parser.add_argument("--host", type=str, default=settings.SERVICES_HOST, help="服务主机地址")
+    parser.add_argument("--port", type=int, default=settings.SERVICES_PORT, help="服务端口")
+    parser.add_argument("--reload", action="store_true", help="是否启用热重载")
+    parser.add_argument("--debug", action="store_true", help="是否启用调试模式")
+    parser.add_argument("--workers", type=int, default=1, help="工作进程数量")
+    return parser.parse_args()
+
+def start_app(host=None, port=None, reload=None, workers=None, debug=None, parse_command_line=False):
+    """
+    启动FastAPI应用
+
+    Args:
+        host: 主机地址，默认使用settings.SERVICES_HOST
+        port: 端口号，默认使用settings.SERVICES_PORT
+        reload: 是否启用热重载，默认使用settings.DEBUG_ENABLED
+        workers: 工作进程数量，默认为1
+        debug: 是否启用调试模式，默认为False
+        parse_command_line: 是否解析命令行参数，默认为False
+    """
+    # 如果需要解析命令行参数
+    if parse_command_line:
+        args = parse_args()
+        host = args.host
+        port = args.port
+        reload = args.reload
+        workers = args.workers
+        debug = args.debug
+
     # 设置环境变量
     if debug is not None and debug:
         os.environ["DEBUG_ENABLED"] = "1"
@@ -112,12 +199,36 @@ def start_app(host=None, port=None, reload=None, workers=None, debug=None):
     logger.info(f"调试模式: {settings.DEBUG_ENABLED}, 热重载: {reload}")
     logger.info(f"工作进程数: {workers}")
 
-    # 启动服务
-    uvicorn.run(
-        "app:app",
-        host=host,
-        port=port,
-        reload=reload,
-        workers=workers,
-        log_level="debug" if settings.DEBUG_ENABLED else "info"
-    )
+    # 创建应用实例
+    app = create_app()
+
+    # 如果是直接运行，使用uvicorn启动
+    if reload:
+        # 热重载模式下，使用uvicorn.run启动
+        uvicorn.run(
+            "run.run:create_app",
+            host=host,
+            port=port,
+            reload=reload,
+            factory=True,
+            workers=1,  # 热重载模式下只能使用1个工作进程
+            log_level="debug" if settings.DEBUG_ENABLED else "info"
+        )
+    else:
+        # 非热重载模式下，使用Config和Server启动
+        config = uvicorn.Config(
+            app,
+            host=host,
+            port=port,
+            workers=workers,
+            log_level="debug" if settings.DEBUG_ENABLED else "info"
+        )
+        server = uvicorn.Server(config)
+        server.run()
+
+def main():
+    """
+    主函数，作为app.py的入口点
+    """
+    # 启动应用，并解析命令行参数
+    start_app(parse_command_line=True)

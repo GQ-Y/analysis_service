@@ -1,13 +1,12 @@
 """
-错误处理中间件
-处理API异常
+异常处理中间件
+提供全局异常处理功能
 """
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 import uuid
 import time
 
-from core.config import settings
 from core.exceptions import AnalysisException
 from core.models import StandardResponse
 from shared.utils.logger import setup_logger
@@ -16,10 +15,10 @@ logger = setup_logger(__name__)
 
 def setup_exception_handlers(app: FastAPI):
     """
-    设置异常处理器
+    设置全局异常处理器
     
     Args:
-        app: FastAPI应用
+        app: FastAPI应用实例
     """
     @app.exception_handler(AnalysisException)
     async def analysis_exception_handler(request: Request, exc: AnalysisException):
@@ -44,7 +43,7 @@ def setup_exception_handlers(app: FastAPI):
                 data=exc.data
             ).model_dump()
         )
-        
+
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """
@@ -58,6 +57,8 @@ def setup_exception_handlers(app: FastAPI):
             JSONResponse: JSON响应
         """
         error_msg = f"请求处理失败: {str(exc)}"
+        from core.config import settings
+        
         if settings.DEBUG_ENABLED:
             logger.exception(error_msg)
         else:
