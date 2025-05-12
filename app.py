@@ -7,18 +7,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
-from contextlib import asynccontextmanager
 from core.config import settings
 from core.exceptions import AnalysisException
 from core.models import StandardResponse
 from shared.utils.logger import setup_logger
-from routers import task_router
+from routers import task_router, health_router
 import time
 import uuid
 import logging
+import argparse
 import uvicorn
-import psutil
-import GPUtil
 
 # 设置日志
 logger = setup_logger(__name__)
@@ -66,91 +64,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             )
             raise
 
-# 创建FastAPI应用
-def show_service_banner(service_name: str):
-    """显示服务启动标识"""
-    banner = f"""
-███╗   ███╗███████╗███████╗██╗  ██╗██╗   ██╗ ██████╗ ██╗      ██████╗     @{service_name}
-████╗ ████║██╔════╝██╔════╝██║ ██╔╝╚██╗ ██╔╝██╔═══██╗██║     ██╔═══██╗
-██╔████╔██║█████╗  █████╗  █████╔╝  ╚████╔╝ ██║   ██║██║     ██║   ██║
-██║╚██╔╝██║██╔══╝  ██╔══╝  ██╔═██╗   ╚██╔╝  ██║   ██║██║     ██║   ██║
-██║ ╚═╝ ██║███████╗███████╗██║  ██╗   ██║   ╚██████╔╝███████╗╚██████╔╝
-╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝
-    """
-    print(banner)
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    # 启动时执行
-    show_service_banner("analysis_service")
-    logger.info("Starting Analysis Service...")
-
-    if settings.DEBUG_ENABLED:
-        logger.info("分析服务启动...")
-        logger.info(f"环境: {settings.ENVIRONMENT}")
-        logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
-        logger.info(f"版本: {settings.VERSION}")
-        logger.info(f"注册的路由: {[route.path for route in app.routes]}")
-
-    # 初始化HTTP通信模式
-    logger.info("使用HTTP通信模式，正在初始化服务...")
-    try:
-        # 初始化Redis连接
-        from services.task_store import TaskStore
-        from services.task_worker import TaskWorker
-
-        # 构建Redis URL
-        redis_url = f"redis://{':' + settings.REDIS_PASSWORD + '@' if settings.REDIS_PASSWORD else ''}{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
-        logger.info(f"连接到Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-
-        # 创建任务存储实例
-        task_store = TaskStore(redis_url)
-        await task_store.connect()
-
-        # 创建任务工作器实例
-        task_worker = TaskWorker(task_store)
-        await task_worker.start()
-
-        # 保存实例到应用状态
-        app.state.task_store = task_store
-        app.state.task_worker = task_worker
-
-        logger.info("任务存储服务和任务工作器初始化成功")
-
-    except Exception as e:
-        logger.error(f"HTTP服务初始化失败: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-    yield  # 这里是应用运行期间
-
-    # 关闭时执行
-    logger.info("Shutting down Analysis Service...")
-
-    # 关闭任务工作器
-    if hasattr(app.state, "task_worker") and app.state.task_worker:
-        try:
-            logger.info("正在停止任务工作器...")
-            await app.state.task_worker.stop()
-            logger.info("任务工作器已停止")
-        except Exception as e:
-             logger.error(f"停止任务工作器时出错: {e}")
-    else:
-        logger.info("没有活动的任务工作器需要关闭")
-
-    # 关闭任务存储连接
-    if hasattr(app.state, "task_store") and app.state.task_store:
-        try:
-            logger.info("正在关闭任务存储连接...")
-            await app.state.task_store.disconnect()
-            logger.info("任务存储连接已关闭")
-        except Exception as e:
-             logger.error(f"关闭任务存储连接时出错: {e}")
-    else:
-        logger.info("没有活动的任务存储连接需要关闭")
-
-    logger.info("Analysis Service stopped.")
+# 从run模块导入应用生命周期管理函数
+from run.run import lifespan
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -190,6 +105,7 @@ app.add_middleware(
 
 # 注册路由
 app.include_router(task_router)
+app.include_router(health_router)
 
 # 全局异常处理
 @app.exception_handler(AnalysisException)
@@ -219,54 +135,36 @@ async def global_exception_handler(request: Request, exc: Exception):
     return JSONResponse(
         status_code=500,
         content={
-            "requestId": request.state.request_id,
+            "requestId": getattr(request.state, "request_id", str(uuid.uuid4())),
             "path": request.url.path,
             "success": False,
             "message": error_msg,
             "code": 500,
             "data": None,
-            "timestamp": request.state.start_time
+            "timestamp": getattr(request.state, "start_time", int(time.time() * 1000))
         }
     )
 
-# 健康检查
-@app.get("/health")
-async def health_check():
-    """健康检查接口"""
-    # 获取CPU使用率
-    cpu_percent = psutil.cpu_percent(interval=1)
-
-    # 获取内存使用情况
-    memory = psutil.virtual_memory()
-    memory_percent = memory.percent
-
-    # 获取GPU使用情况
-    try:
-        gpus = GPUtil.getGPUs()
-        gpu_usage = f"{gpus[0].load * 100:.1f}%" if gpus else "N/A"
-    except:
-        gpu_usage = "N/A"
-
-    return StandardResponse(
-        requestId=str(uuid.uuid4()),
-        path="/health",
-        success=True,
-        code=200,
-        message="服务正常运行",
-        data={
-            "status": "healthy",
-            "name": "analysis",
-            "version": settings.VERSION,
-            "cpu": f"{cpu_percent:.1f}%",
-            "gpu": gpu_usage,
-            "memory": f"{memory_percent:.1f}%"
-        }
-    )
+def parse_args():
+    """解析命令行参数"""
+    parser = argparse.ArgumentParser(description="分析服务启动脚本")
+    parser.add_argument("--host", type=str, default=settings.SERVICES_HOST, help="服务主机地址")
+    parser.add_argument("--port", type=int, default=settings.SERVICES_PORT, help="服务端口")
+    parser.add_argument("--reload", action="store_true", help="是否启用热重载")
+    parser.add_argument("--debug", action="store_true", help="是否启用调试模式")
+    parser.add_argument("--workers", type=int, default=1, help="工作进程数量")
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "app:app",
-        host=settings.SERVICES_HOST,
-        port=settings.SERVICES_PORT,
-        reload=settings.DEBUG_ENABLED
+    # 解析命令行参数
+    args = parse_args()
+
+    # 使用run模块启动应用
+    from run.run import start_app
+    start_app(
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        workers=args.workers,
+        debug=args.debug
     )

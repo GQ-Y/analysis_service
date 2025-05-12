@@ -20,7 +20,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from core.config import settings
-from core.detection.yolo_detector import YOLODetector
+from core.analyzer.detection.yolo_detector import YOLODetector
 from shared.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -30,29 +30,29 @@ class BaseAnalyzerService(ABC):
     基础分析器服务接口
     所有分析器服务必须继承此类并实现相应方法
     """
-    
+
     def __init__(self):
         """初始化基础分析器服务"""
         logger.info("初始化基础分析服务")
-        
+
         # 加载的检测器
         self.detectors = {}
-        
+
         # 确保输出目录存在
         os.makedirs(settings.OUTPUT.save_dir, exist_ok=True)
-        
+
         # 初始化任务处理器
         self.task_handlers = {}
-        
+
         logger.info("基础分析服务初始化完成")
-    
+
     def get_detector(self, model_code: str) -> YOLODetector:
         """
         获取检测器实例，如果不存在则创建
-        
+
         Args:
             model_code: 模型代码
-            
+
         Returns:
             YOLODetector: 检测器实例
         """
@@ -64,13 +64,13 @@ class BaseAnalyzerService(ABC):
             except Exception as e:
                 logger.error(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
                 raise ValueError(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
-        
+
         return self.detectors[model_code]
-    
+
     def _get_available_models(self) -> List[str]:
         """
         获取可用的模型列表
-        
+
         Returns:
             List[str]: 可用模型代码列表
         """
@@ -79,65 +79,65 @@ class BaseAnalyzerService(ABC):
         if not os.path.exists(model_dir):
             logger.warning(f"模型目录不存在: {model_dir}")
             return ["yolov8n"]  # 返回默认模型
-        
+
         # 获取模型目录中的所有.pt或.onnx文件
         model_files = []
         for file in os.listdir(model_dir):
             if file.endswith(".pt") or file.endswith(".onnx"):
                 model_name = os.path.splitext(file)[0]
                 model_files.append(model_name)
-        
+
         if not model_files:
             logger.warning(f"模型目录中未找到模型文件: {model_dir}")
             return ["yolov8n"]  # 返回默认模型
-        
+
         logger.debug(f"找到可用模型: {model_files}")
         return model_files
-    
+
     def analyze_image(self, *args, **kwargs) -> Dict[str, Any]:
         """
         分析图像的基础方法
-        
+
         在子类中实现具体逻辑
         """
         raise NotImplementedError("子类必须实现此方法")
-    
+
     def start_video_analysis(self, *args, **kwargs) -> Dict[str, Any]:
         """
         启动视频分析的基础方法
-        
+
         在子类中实现具体逻辑
         """
         raise NotImplementedError("子类必须实现此方法")
-    
+
     def start_stream_analysis(self, *args, **kwargs) -> Dict[str, Any]:
         """
         启动流分析的基础方法
-        
+
         在子类中实现具体逻辑
         """
         raise NotImplementedError("子类必须实现此方法")
-    
+
     def stop_task(self, task_id: str) -> Dict[str, Any]:
         """
         停止任务的基础方法
-        
+
         在子类中实现具体逻辑
         """
         raise NotImplementedError("子类必须实现此方法")
-    
+
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """
         获取任务状态的基础方法
-        
+
         在子类中实现具体逻辑
         """
         raise NotImplementedError("子类必须实现此方法")
-    
+
     def get_all_tasks(self) -> Dict[str, Any]:
         """
         获取所有任务的基础方法
-        
+
         在子类中实现具体逻辑
         """
         raise NotImplementedError("子类必须实现此方法")
@@ -154,11 +154,11 @@ class BaseAnalyzerService(ABC):
         except Exception as e:
             logger.warning(f"获取本地IP失败: {str(e)}")
             return "127.0.0.1"
-            
+
     def _get_mac_address(self) -> str:
         """
         获取MAC地址
-        
+
         Returns:
             str: MAC地址
         """
@@ -173,14 +173,14 @@ class BaseAnalyzerService(ABC):
             mac = [random.randint(0x00, 0xff) for _ in range(6)]
             mac_str = ':'.join(['{:02x}'.format(x) for x in mac])
             return mac_str
-            
+
     def _log_all_network_interfaces(self):
         """记录所有网络接口信息"""
         try:
             import psutil
             import socket
             addresses = psutil.net_if_addrs()
-            
+
             for interface_name, interface_addresses in addresses.items():
                 for address in interface_addresses:
                     if address.family == socket.AF_INET:  # IPv4
@@ -189,16 +189,16 @@ class BaseAnalyzerService(ABC):
                         logger.info(f"接口: {interface_name}, MAC: {address.address}")
         except Exception as e:
             logger.error(f"记录网络接口信息失败: {str(e)}")
-            
+
     def draw_detections(self, image: np.ndarray, detections: List[Dict]) -> np.ndarray:
         """绘制检测结果"""
         result = image.copy()
-        
+
         for det in detections:
             bbox = det["bbox"]
             conf = det["confidence"]
             label = f"{det['class_name']} {conf:.2f}"
-            
+
             # 绘制边界框
             cv2.rectangle(
                 result,
@@ -207,7 +207,7 @@ class BaseAnalyzerService(ABC):
                 (0, 255, 0),
                 2
             )
-            
+
             # 绘制标签
             cv2.putText(
                 result,
@@ -218,99 +218,99 @@ class BaseAnalyzerService(ABC):
                 (0, 255, 0),
                 2
             )
-            
+
         return result
-        
+
     def stop(self):
         """停止分析服务"""
         logger.info("停止基础分析服务")
         logger.info("基础分析服务已停止")
-        
+
     # 添加一个辅助方法来同步处理检测器的模型加载
     def sync_load_model(self, detector, model_code: str):
         """
         同步方式加载模型的辅助方法，解决在非异步环境中调用异步方法的问题
-        
+
         Args:
             detector: 检测器实例
             model_code: 模型代码
-            
+
         Returns:
             bool: 加载是否成功
         """
         import asyncio
-        
+
         try:
             # 创建新的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+
             # 同步执行异步方法
             result = loop.run_until_complete(detector.load_model(model_code))
-            
+
             # 关闭事件循环
             loop.close()
-            
+
             return True
         except Exception as e:
             logger.error(f"同步加载模型失败: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return False
-            
+
     # 同步处理检测
     def sync_detect(self, detector, image, config: Optional[Dict] = None):
         """
         同步方式执行检测的辅助方法
-        
+
         Args:
             detector: 检测器实例
             image: 输入图像
             config: 检测配置
-            
+
         Returns:
             List[Dict]: 检测结果
         """
         import asyncio
-        
+
         try:
             # 创建新的事件循环
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            
+
             # 同步执行异步方法
             detections = loop.run_until_complete(detector.detect(image, config=config))
-            
+
             # 关闭事件循环
             loop.close()
-            
+
             return detections
         except Exception as e:
             logger.error(f"同步执行检测失败: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
-            return [] 
+            return []
 
     def register_task_handler(self, task_type: str, handler: callable):
         """
         注册任务处理器
-        
+
         Args:
             task_type: 任务类型
             handler: 处理函数
         """
         self.task_handlers[task_type] = handler
         logger.info(f"注册任务处理器: {task_type}")
-        
+
     async def process_task(self, task_type: str, task_id: str, task_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理任务
-        
+
         Args:
             task_type: 任务类型
             task_id: 任务ID
             task_data: 任务数据
-            
+
         Returns:
             Dict[str, Any]: 处理结果
         """
@@ -319,40 +319,40 @@ class BaseAnalyzerService(ABC):
             handler = self.task_handlers.get(task_type)
             if not handler:
                 raise ValueError(f"未找到任务处理器: {task_type}")
-                
+
             # 执行任务处理
             logger.info(f"开始处理任务: {task_id}, 类型: {task_type}")
             result = await handler(task_id, task_data)
             logger.info(f"任务处理完成: {task_id}")
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"处理任务失败: {task_id}, 错误: {str(e)}")
             raise
-            
+
     async def connect(self) -> bool:
         """
         连接到服务
-        
+
         Returns:
             bool: 是否连接成功
         """
         return True
-        
+
     async def disconnect(self) -> bool:
         """
         断开服务连接
-        
+
         Returns:
             bool: 是否断开成功
         """
         return True
-        
+
     def get_service_info(self) -> Dict[str, Any]:
         """
         获取服务信息
-        
+
         Returns:
             Dict[str, Any]: 服务信息
         """
@@ -366,55 +366,55 @@ class BaseAnalyzerService(ABC):
     async def start(self):
         """启动服务"""
         pass
-        
+
     @abstractmethod
     async def process_image(self, image_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理图像
-        
+
         Args:
             image_path: 图像路径
             params: 处理参数
-            
+
         Returns:
             Dict[str, Any]: 处理结果
         """
         pass
-        
+
     @abstractmethod
     async def process_video(self, video_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理视频
-        
+
         Args:
             video_path: 视频路径
             params: 处理参数
-            
+
         Returns:
             Dict[str, Any]: 处理结果
         """
         pass
-        
+
     @abstractmethod
     async def process_stream(self, stream_url: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """
         处理视频流
-        
+
         Args:
             stream_url: 视频流URL
             params: 处理参数
-            
+
         Returns:
             Dict[str, Any]: 处理结果
         """
         pass
-        
+
     @abstractmethod
     async def get_status(self) -> Dict[str, Any]:
         """
         获取服务状态
-        
+
         Returns:
             Dict[str, Any]: 服务状态
         """
-        pass 
+        pass

@@ -16,8 +16,8 @@ if parent_dir not in sys.path:
 from core.config import settings
 from shared.utils.logger import setup_logger
 from services.base_analyzer import BaseAnalyzerService
-from core.detection.yolo_detector import YOLODetector
-from core.segmentation.yolo_segmentor import YOLOSegmentor
+from core.analyzer.detection.yolo_detector import YOLODetector
+from core.analyzer.segmentation.yolo_segmentor import YOLOSegmentor
 from core.task_manager import TaskManager
 from core.task_processor import TaskProcessor
 from core.task_queue import TaskQueue
@@ -27,12 +27,12 @@ logger = setup_logger(__name__)
 def create_analyzer_service() -> BaseAnalyzerService:
     """
     创建分析服务实例
-    
+
     Returns:
         BaseAnalyzerService: 分析服务实例
     """
     logger.info("创建HTTP模式分析服务")
-    
+
     # 创建HTTP模式分析服务
     from services.http.http_analyzer import HTTPAnalyzerService
     return HTTPAnalyzerService()
@@ -41,7 +41,7 @@ def create_analyzer_service() -> BaseAnalyzerService:
 def get_service_mode() -> str:
     """
     获取当前服务模式
-    
+
     Returns:
         str: 服务模式，'http'
     """
@@ -72,20 +72,20 @@ class Analyzer:
         try:
             # 初始化任务队列
             self.task_queue = TaskQueue()
-            
+
             # 初始化任务管理器
             self.task_manager = TaskManager()
-            
+
             # 初始化任务处理器
             self.task_processor = TaskProcessor(self.task_manager)
-            
+
             # 初始化检测器和分割器
             self.detector = YOLODetector()
             self.segmentor = YOLOSegmentor()
-            
+
             logger.info("分析服务初始化完成，使用HTTP通信模式")
             return True
-            
+
         except Exception as e:
             logger.error(f"初始化分析服务失败: {str(e)}")
             import traceback

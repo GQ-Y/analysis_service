@@ -2,18 +2,15 @@
 任务管理路由
 提供任务的创建、查询、停止等API
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Request
 from typing import List, Dict, Any, Optional
 import uuid
 from datetime import datetime
 
 from models.requests import StreamTask, BatchStreamTask
-from models.responses import BaseResponse, TaskInfo, SubTaskInfo
-from models.task import TaskBase
-from services.http.task_service import TaskService
-from services.task_store import TaskStore
-from crud.task import TaskCRUD
-from core.task_management import TaskStatus
+from models.responses import BaseResponse
+from services.task_service import TaskService
+from core.task_management.manager import TaskStatus
 from core.config import settings
 from shared.utils.logger import setup_logger
 
@@ -27,14 +24,11 @@ router = APIRouter(
 )
 
 # 依赖注入
-async def get_task_service() -> TaskService:
+async def get_task_service(request: Request) -> TaskService:
     """获取任务服务实例"""
-    # 构建Redis URL
-    redis_url = f"redis://{':' + settings.REDIS_PASSWORD + '@' if settings.REDIS_PASSWORD else ''}{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
-    task_store = TaskStore(redis_url)
-    await task_store.connect()
-    task_crud = TaskCRUD(task_store)
-    return TaskService(task_crud)
+    if not hasattr(request.app.state, "task_service"):
+        raise HTTPException(status_code=500, detail="任务服务未初始化")
+    return request.app.state.task_service
 
 @router.post("/start", response_model=BaseResponse, summary="启动单个流分析任务")
 async def start_task(
