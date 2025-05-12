@@ -121,7 +121,7 @@ async def lifespan(app: FastAPI):
         app.state.task_manager = task_manager
 
         # 创建服务实例
-        from services.task_service import TaskService
+        from services.http.task_service import TaskService
         from services.analysis_service import AnalysisService
 
         app.state.task_service = TaskService(task_manager)

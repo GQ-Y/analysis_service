@@ -177,9 +177,15 @@ class TaskProcessor:
 
             # 获取引擎类型
             engine_type = task_config.get("engine", 0)  # 默认使用PyTorch
+            # 如果分析配置中有engine参数，优先使用它
+            if "analysis" in task_config and "engine" in task_config["analysis"]:
+                engine_type = task_config["analysis"]["engine"]
 
             # 获取YOLO版本
             yolo_version = task_config.get("yolo_version", 0)  # 默认使用YOLOv8n
+            # 如果分析配置中有yolo_version参数，优先使用它
+            if "analysis" in task_config and "yolo_version" in task_config["analysis"]:
+                yolo_version = task_config["analysis"]["yolo_version"]
 
             # 获取设备
             device = task_config.get("device", "auto")
@@ -202,6 +208,14 @@ class TaskProcessor:
                 }
                 analysis_type = analysis_type_map.get(analysis_type_str.lower(), 1)  # 默认使用检测
 
+                # 获取分析配置
+                analysis_config = task_config.get("analysis", {}).copy()
+
+                # 确保分析配置中不包含已经显式传递的参数，避免重复传递
+                for param in ["device", "yolo_version", "engine_type"]:
+                    if param in analysis_config:
+                        del analysis_config[param]
+
                 # 创建分析器
                 detector = AnalyzerFactory.create_analyzer(
                     analysis_type=analysis_type,
@@ -209,7 +223,7 @@ class TaskProcessor:
                     engine_type=engine_type,
                     yolo_version=yolo_version,
                     device=device,
-                    **task_config.get("analysis", {})  # 传递分析配置
+                    **analysis_config  # 传递分析配置
                 )
 
                 logger.info(f"工作进程 {task_id}: 成功创建 {analysis_type_str} 分析器")
