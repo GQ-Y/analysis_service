@@ -384,34 +384,17 @@ class TaskProcessor:
                 # 增加帧计数
                 frame_count += 1
 
-                # 记录抽帧信息
+                # 记录抽帧信息（每100帧记录一次）
                 if frame_count % 100 == 0:
-                    analysis_logger.info(f"任务 {task_id}: 已处理 {frame_count} 帧")
+                    logger.info(f"工作进程 {task_id}: 已处理 {frame_count} 帧")
 
                 # 根据分析间隔决定是否处理当前帧
                 if frame_count % analysis_interval != 0:
-                    # 记录跳过帧的信息（每100帧记录一次，避免日志过多）
-                    if frame_count % 100 == 0:
-                        logger.debug(f"工作进程 {task_id}: 跳过第 {frame_count} 帧 (分析间隔: {analysis_interval})")
                     continue
-
-                # 记录抽帧分析信息
-                analysis_logger.info(f"任务 {task_id}: 分析第 {frame_count} 帧 (抽帧比例 1:{analysis_interval})")
-                logger.info(f"工作进程 {task_id}: 开始分析第 {frame_count} 帧 (分析间隔: {analysis_interval})")
 
                 # 处理帧
                 try:
-                    # 记录ROI信息
-                    if "roi" in analysis_config:
-                        roi_info = analysis_config["roi"]
-                        roi_type = analysis_config.get("roi_type", 0)
-                        roi_type_name = {
-                            0: "无ROI",
-                            1: "矩形",
-                            2: "多边形",
-                            3: "线段"
-                        }.get(roi_type, "未知")
-                        analysis_logger.info(f"任务 {task_id}: 使用 {roi_type_name} 类型ROI: {roi_info}")
+                    # 简化ROI处理，不打印日志
 
                     # 执行检测
                     start_time = time.time()
@@ -423,38 +406,21 @@ class TaskProcessor:
                     analysis_config["save_images"] = save_images
                     analysis_config["task_name"] = task_name
 
-                    logger.info(f"任务 {task_id}: 保存图片设置: save_images={save_images}, task_name={task_name}")
-                    logger.info(f"任务 {task_id}: 任务配置: {task_config}")
-
                     results = await detector.detect(frame, **analysis_config)
                     detect_time = time.time() - start_time
 
                     # 处理结果
                     processed_results = self._process_detection_results(results, frame, task_id, frame_count)
 
-                    # 记录检测结果
+                    # 简化日志，只记录是否检测到目标
                     detection_count = 0
                     if "detections" in processed_results:
                         detection_count = len(processed_results["detections"])
                         if detection_count > 0:
-                            # 记录检测到的目标详情
-                            detection_info = []
-                            for det in processed_results["detections"][:5]:  # 只记录前5个目标，避免日志过长
-                                detection_info.append(f"{det['class_name']}({det['confidence']:.2f})")
-
-                            more_info = ""
-                            if detection_count > 5:
-                                more_info = f" 等共 {detection_count} 个目标"
-
-                            analysis_logger.info(f"任务 {task_id}: 第 {frame_count} 帧检测到: {', '.join(detection_info)}{more_info}, 耗时: {detect_time:.3f}秒")
-
-                            # 导入美化打印函数
-                            from shared.utils.tools import pretty_print_detection_results
-
-                            # 使用美化打印函数打印检测结果
-                            pretty_print_detection_results(task_id, frame_count, processed_results, detect_time, logger.info)
+                            # 只记录检测到目标的帧号和耗时，不打印详细信息
+                            logger.debug(f"工作进程 {task_id}: 第 {frame_count} 帧检测到 {detection_count} 个目标, 耗时: {detect_time:.3f}秒")
                         else:
-                            logger.info(f"工作进程 {task_id}: 第 {frame_count} 帧未检测到目标, 耗时: {detect_time:.3f}秒")
+                            logger.debug(f"工作进程 {task_id}: 第 {frame_count} 帧未检测到目标, 耗时: {detect_time:.3f}秒")
 
                     # 放入结果队列
                     result_queue.put({
