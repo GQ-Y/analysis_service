@@ -66,6 +66,25 @@ class StorageSettings(BaseSettingsModel):
     temp_dir: str = "temp"
     max_size: int = 10 * 1024 * 1024 * 1024  # 10GB
 
+# 模型服务配置
+class ModelServiceSettings(BaseSettingsModel):
+    """模型服务配置"""
+    url: str = "http://localhost:8003"
+    api_prefix: str = "/api/v1"
+
+# 分析设置
+class AnalysisSettings(BaseSettingsModel):
+    """分析设置"""
+    confidence: float = 0.2
+    iou: float = 0.45
+    max_det: int = 300
+    device: str = "auto"
+    analyze_interval: int = 1
+    alarm_interval: int = 60
+    random_interval_min: int = 0
+    random_interval_max: int = 0
+    push_interval: int = 1
+
 # 应用配置
 class Settings(BaseSettings):
     """应用配置类"""
@@ -77,7 +96,7 @@ class Settings(BaseSettings):
         extra='ignore',  # 忽略额外的配置项
         case_sensitive=False
     )
-    
+
     # 基础配置
     PROJECT_NAME: str = "Analysis Service"
     DESCRIPTION: str = "Meek YOLO Analysis Service"
@@ -85,11 +104,11 @@ class Settings(BaseSettings):
     DEBUG_ENABLED: bool = False
     API_PREFIX: str = "/api/v1"
     ENVIRONMENT: str = "development"
-    
+
     # 服务配置
     SERVICES_HOST: str = "0.0.0.0"
     SERVICES_PORT: int = 8002
-    
+
     # Redis配置
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
@@ -99,7 +118,7 @@ class Settings(BaseSettings):
     REDIS_MAX_CONNECTIONS: int = 50
     REDIS_SOCKET_TIMEOUT: int = 5
     REDIS_RETRY_ON_TIMEOUT: bool = True
-    
+
     # 任务队列配置
     TASK_QUEUE_MAX_SIZE: int = 1000
     TASK_QUEUE_MAX_CONCURRENT: int = 10
@@ -107,35 +126,67 @@ class Settings(BaseSettings):
     TASK_QUEUE_CLEANUP_INTERVAL: int = 300  # 清理间隔（秒）
     TASK_QUEUE_MAX_RETRIES: int = 3
     TASK_QUEUE_RETRY_DELAY: int = 5
-    
+
     # 缓存配置
     CACHE: CacheSettings = CacheSettings()
-    
+
     # 日志配置
     LOGGING: LoggingSettings = LoggingSettings()
-    
+
     # 输出配置
     OUTPUT: OutputSettings = OutputSettings()
-    
+
     # 流媒体配置
     STREAMING: StreamingSettings = StreamingSettings()
-    
+
     # 存储配置
     STORAGE: StorageSettings = StorageSettings()
-    
+
+    # 模型服务配置
+    MODEL_SERVICE: ModelServiceSettings = ModelServiceSettings()
+
+    # 分析配置
+    ANALYSIS: AnalysisSettings = AnalysisSettings()
+
     # 默认目标检测配置
     DEFAULT_DETECTION_MODEL: str = "yolov8n.pt"
     DEFAULT_SEGMENTATION_MODEL: str = "yolov8n-seg.pt"
     DEFAULT_CLASSIFICATION_MODEL: str = "yolov8n-cls.pt"
-    
+
     # 设置日志级别
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    
+
     # 通信模式，只支持http模式
     COMMUNICATION_MODE: str = "http"
 
 # 创建设置实例
 settings = Settings()
+
+# 从环境变量加载模型服务配置
+if os.getenv("MODEL_SERVICE_URL"):
+    settings.MODEL_SERVICE.url = os.getenv("MODEL_SERVICE_URL")
+if os.getenv("MODEL_SERVICE_API_PREFIX"):
+    settings.MODEL_SERVICE.api_prefix = os.getenv("MODEL_SERVICE_API_PREFIX")
+
+# 从环境变量加载分析配置
+if os.getenv("ANALYSIS_CONFIDENCE"):
+    settings.ANALYSIS.confidence = float(os.getenv("ANALYSIS_CONFIDENCE"))
+if os.getenv("ANALYSIS_IOU"):
+    settings.ANALYSIS.iou = float(os.getenv("ANALYSIS_IOU"))
+if os.getenv("ANALYSIS_MAX_DET"):
+    settings.ANALYSIS.max_det = int(os.getenv("ANALYSIS_MAX_DET"))
+if os.getenv("ANALYSIS_DEVICE"):
+    settings.ANALYSIS.device = os.getenv("ANALYSIS_DEVICE")
+if os.getenv("ANALYSIS_ANALYZE_INTERVAL"):
+    settings.ANALYSIS.analyze_interval = int(os.getenv("ANALYSIS_ANALYZE_INTERVAL"))
+if os.getenv("ANALYSIS_ALARM_INTERVAL"):
+    settings.ANALYSIS.alarm_interval = int(os.getenv("ANALYSIS_ALARM_INTERVAL"))
+if os.getenv("ANALYSIS_RANDOM_INTERVAL_MIN"):
+    settings.ANALYSIS.random_interval_min = int(os.getenv("ANALYSIS_RANDOM_INTERVAL_MIN"))
+if os.getenv("ANALYSIS_RANDOM_INTERVAL_MAX"):
+    settings.ANALYSIS.random_interval_max = int(os.getenv("ANALYSIS_RANDOM_INTERVAL_MAX"))
+if os.getenv("ANALYSIS_PUSH_INTERVAL"):
+    settings.ANALYSIS.push_interval = int(os.getenv("ANALYSIS_PUSH_INTERVAL"))
 
 # 设置日志级别
 log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)

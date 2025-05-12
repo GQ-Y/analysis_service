@@ -17,6 +17,12 @@ class TaskBase(BaseModel):
     config: Optional[Dict[str, Any]] = Field(None, description="分析配置")
     enable_callback: bool = Field(False, description="是否启用回调")
     save_result: bool = Field(False, description="是否保存结果")
+    save_images: bool = Field(False, description="是否保存图像")
+    frame_rate: Optional[int] = Field(None, description="帧率设置(fps)")
+    device: Optional[int] = Field(None, description="推理设备类型：0=CPU, 1=GPU, 2=AUTO")
+    enable_alarm_recording: bool = Field(False, description="是否启用报警录像")
+    alarm_recording_before: Optional[int] = Field(None, description="报警前录像时长(秒)")
+    alarm_recording_after: Optional[int] = Field(None, description="报警后录像时长(秒)")
     status: int = Field(0, description="任务状态: 0-等待中, 1-运行中, 2-已完成, -1-失败")
     error_message: Optional[str] = Field(None, description="错误信息")
     start_time: Optional[datetime] = Field(None, description="开始时间")
@@ -24,7 +30,7 @@ class TaskBase(BaseModel):
     duration: Optional[float] = Field(None, description="运行时长(分钟)")
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
     updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
-    
+
     model_config = {"protected_namespaces": ()}
 
 class QueueTask(BaseModel):
@@ -68,4 +74,4 @@ class QueueTask(BaseModel):
             data["completed_at"] = datetime.fromisoformat(data["completed_at"])
         if "updated_at" in data and isinstance(data["updated_at"], str):
             data["updated_at"] = datetime.fromisoformat(data["updated_at"])
-        return cls(**data) 
+        return cls(**data)

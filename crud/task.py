@@ -53,7 +53,13 @@ class TaskCRUD:
         analysis_type: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None,
         enable_callback: bool = False,
-        save_result: bool = False
+        save_result: bool = False,
+        save_images: bool = False,
+        frame_rate: Optional[int] = None,
+        device: Optional[int] = None,
+        enable_alarm_recording: bool = False,
+        alarm_recording_before: Optional[int] = None,
+        alarm_recording_after: Optional[int] = None
     ) -> Optional[TaskBase]:
         """创建任务
 
@@ -68,6 +74,12 @@ class TaskCRUD:
             config: 分析配置
             enable_callback: 是否启用回调
             save_result: 是否保存结果
+            save_images: 是否保存图像
+            frame_rate: 帧率设置(fps)
+            device: 推理设备类型：0=CPU, 1=GPU, 2=AUTO
+            enable_alarm_recording: 是否启用报警录像
+            alarm_recording_before: 报警前录像时长(秒)
+            alarm_recording_after: 报警后录像时长(秒)
 
         Returns:
             Optional[TaskBase]: 创建的任务对象
@@ -88,7 +100,13 @@ class TaskCRUD:
                 analysis_type=analysis_type,
                 config=config,
                 enable_callback=enable_callback,
-                save_result=save_result
+                save_result=save_result,
+                save_images=save_images,
+                frame_rate=frame_rate,
+                device=device,
+                enable_alarm_recording=enable_alarm_recording,
+                alarm_recording_before=alarm_recording_before,
+                alarm_recording_after=alarm_recording_after
             )
 
             # 保存任务

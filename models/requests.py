@@ -10,17 +10,17 @@ class DetectionConfig(BaseModel):
         lt=1,
         example=0.5
     )
-    iou: Optional[float] = Field(
+    iou_threshold: Optional[float] = Field(
         None,
         description="IoU阈值",
         gt=0,
         lt=1,
         example=0.45
     )
-    classes: Optional[List[int]] = Field(
+    classes: Optional[List[str]] = Field(
         None,
-        description="需要检测的类别ID列表",
-        example=[0, 2]
+        description="需要检测的类别列表",
+        example=["person", "car", "truck"]
     )
     roi_type: Optional[int] = Field(
         0,
@@ -37,16 +37,143 @@ class DetectionConfig(BaseModel):
                     "线段(type=3): {points: [[x1,y1], [x2,y2]]}, 值为0-1的归一化坐标",
         example={"x1": 0.1, "y1": 0.1, "x2": 0.9, "y2": 0.9}
     )
-    imgsz: Optional[int] = Field(
+    image_size: Optional[Dict[str, int]] = Field(
         None,
-        description="输入图片大小",
-        ge=32,
-        le=4096,
-        example=640
+        description="输入图像尺寸",
+        example={"width": 640, "height": 640}
     )
     nested_detection: Optional[bool] = Field(
         False,
         description="是否进行嵌套检测（检查目标A是否在目标B内）"
+    )
+    engine: Optional[int] = Field(
+        1,
+        description="推理引擎：0=PyTorch, 1=ONNX, 2=TensorRT, 3=OpenVINO, 4=Pytron",
+        ge=0,
+        le=4,
+        example=1
+    )
+    yolo_version: Optional[int] = Field(
+        2,
+        description="YOLO版本：0=v8n, 1=v8s, 2=v8l, 3=v8x, 4=11s, 5=11m, 6=11l",
+        ge=0,
+        le=6,
+        example=2
+    )
+    custom_weights_path: Optional[str] = Field(
+        None,
+        description="模型权重路径，支持HTTP/HTTPS URL、对象存储URL和本地路径",
+        example="https://models.example.com/weights/yoloe-v8l-seg.pt"
+    )
+    prompt_type: Optional[int] = Field(
+        1,
+        description="提示类型：1=文本提示, 2=视觉提示, 3=无提示",
+        ge=1,
+        le=3,
+        example=1
+    )
+    text_prompt: Optional[List[str]] = Field(
+        None,
+        description="文本提示(关键词列表)",
+        example=["安全帽", "工人", "反光背心", "车辆"]
+    )
+    visual_prompt: Optional[Dict[str, Any]] = Field(
+        None,
+        description="视觉提示信息",
+        example={
+            "type": 2,
+            "points": [
+                {"x": 0.2, "y": 0.3},
+                {"x": 0.8, "y": 0.3},
+                {"x": 0.7, "y": 0.7},
+                {"x": 0.3, "y": 0.7}
+            ],
+            "line_width": 3,
+            "use_as_mask": True
+        }
+    )
+    segmentation: Optional[bool] = Field(
+        False,
+        description="是否启用分割"
+    )
+    nms_type: Optional[int] = Field(
+        0,
+        description="NMS类型：0=默认, 1=软性, 2=加权, 3=DIoU NMS",
+        ge=0,
+        le=3,
+        example=0
+    )
+    max_detections: Optional[int] = Field(
+        100,
+        description="最大检测目标数量",
+        ge=1,
+        le=1000,
+        example=100
+    )
+    device: Optional[int] = Field(
+        1,
+        description="推理设备：0=CPU, 1=GPU, 2=AUTO",
+        ge=0,
+        le=2,
+        example=1
+    )
+    half_precision: Optional[bool] = Field(
+        False,
+        description="是否使用半精度(FP16)"
+    )
+    tracking_type: Optional[int] = Field(
+        0,
+        description="跟踪算法类型：0=DeepSORT, 1=ByteTrack, 2=StrongSORT, 3=BoTSORT",
+        ge=0,
+        le=3,
+        example=0
+    )
+    max_tracks: Optional[int] = Field(
+        50,
+        description="最大跟踪目标数",
+        ge=1,
+        le=1000,
+        example=50
+    )
+    max_lost_time: Optional[int] = Field(
+        30,
+        description="最大丢失时间(帧/秒)",
+        ge=1,
+        le=300,
+        example=30
+    )
+    feature_type: Optional[int] = Field(
+        0,
+        description="特征类型：0=基础特征, 1=ReID特征, 2=深度特征",
+        ge=0,
+        le=2,
+        example=0
+    )
+    related_cameras: Optional[List[int]] = Field(
+        None,
+        description="跨摄像头关联ID",
+        example=[]
+    )
+    counting_enabled: Optional[bool] = Field(
+        False,
+        description="是否启用计数功能"
+    )
+    time_threshold: Optional[float] = Field(
+        None,
+        description="时间阈值(秒)",
+        example=0.5
+    )
+    speed_estimation: Optional[bool] = Field(
+        False,
+        description="是否启用速度估计"
+    )
+    object_filter: Optional[Dict[str, float]] = Field(
+        None,
+        description="目标过滤器",
+        example={
+            "min_size": 0.02,
+            "max_size": 0.5
+        }
     )
 
 class TrackingConfig(BaseModel):
@@ -187,7 +314,7 @@ class StreamTask(BaseModel):
     model_code: str = Field(
         ...,
         description="模型代码",
-        example="model-gcc"
+        example="yoloe"
     )
     task_name: Optional[str] = Field(
         None,
@@ -206,6 +333,56 @@ class StreamTask(BaseModel):
     save_result: bool = Field(
         False,
         description="是否保存分析结果到本地。若为true，则在响应中返回保存的文件路径"
+    )
+    save_images: bool = Field(
+        False,
+        description="是否保存图像"
+    )
+    analysis_type: Optional[str] = Field(
+        "detection",
+        description="分析类型：detection, tracking, segmentation, cross_camera, line_crossing",
+        example="detection"
+    )
+    frame_rate: Optional[int] = Field(
+        10,
+        description="帧率设置(fps)",
+        ge=1,
+        le=30,
+        example=10
+    )
+    device: Optional[int] = Field(
+        1,
+        description="推理设备类型：0=CPU, 1=GPU, 2=AUTO",
+        ge=0,
+        le=2,
+        example=1
+    )
+    enable_callback: bool = Field(
+        False,
+        description="是否启用回调"
+    )
+    callback_url: Optional[str] = Field(
+        None,
+        description="回调URL",
+        example="http://example.com/api/callback"
+    )
+    enable_alarm_recording: bool = Field(
+        False,
+        description="是否启用报警录像"
+    )
+    alarm_recording_before: Optional[int] = Field(
+        5,
+        description="报警前录像时长(秒)",
+        ge=0,
+        le=60,
+        example=5
+    )
+    alarm_recording_after: Optional[int] = Field(
+        5,
+        description="报警后录像时长(秒)",
+        ge=0,
+        le=60,
+        example=5
     )
     config: Optional[DetectionConfig] = Field(
         None,

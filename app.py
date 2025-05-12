@@ -98,19 +98,25 @@ async def lifespan(app: FastAPI):
     try:
         # 初始化Redis连接
         from services.task_store import TaskStore
+        from services.task_worker import TaskWorker
 
         # 构建Redis URL
         redis_url = f"redis://{':' + settings.REDIS_PASSWORD + '@' if settings.REDIS_PASSWORD else ''}{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
         logger.info(f"连接到Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}")
-        
+
         # 创建任务存储实例
         task_store = TaskStore(redis_url)
         await task_store.connect()
 
-        # 保存任务存储实例到应用状态
-        app.state.task_store = task_store
+        # 创建任务工作器实例
+        task_worker = TaskWorker(task_store)
+        await task_worker.start()
 
-        logger.info("任务存储服务初始化成功")
+        # 保存实例到应用状态
+        app.state.task_store = task_store
+        app.state.task_worker = task_worker
+
+        logger.info("任务存储服务和任务工作器初始化成功")
 
     except Exception as e:
         logger.error(f"HTTP服务初始化失败: {str(e)}")
@@ -121,6 +127,17 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     logger.info("Shutting down Analysis Service...")
+
+    # 关闭任务工作器
+    if hasattr(app.state, "task_worker") and app.state.task_worker:
+        try:
+            logger.info("正在停止任务工作器...")
+            await app.state.task_worker.stop()
+            logger.info("任务工作器已停止")
+        except Exception as e:
+             logger.error(f"停止任务工作器时出错: {e}")
+    else:
+        logger.info("没有活动的任务工作器需要关闭")
 
     # 关闭任务存储连接
     if hasattr(app.state, "task_store") and app.state.task_store:

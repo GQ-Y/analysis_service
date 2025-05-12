@@ -84,24 +84,104 @@ async def start_task(
                 config["confidence"] = task.config.confidence
 
             # 处理IoU阈值
-            if hasattr(task.config, "iou") and task.config.iou is not None:
-                config["iou_threshold"] = task.config.iou
+            if hasattr(task.config, "iou_threshold") and task.config.iou_threshold is not None:
+                config["iou_threshold"] = task.config.iou_threshold
 
             # 处理嵌套检测
             if hasattr(task.config, "nested_detection"):
                 config["nested_detection"] = task.config.nested_detection
+
+            # 处理图像尺寸
+            if hasattr(task.config, "image_size") and task.config.image_size:
+                config["image_size"] = task.config.image_size
+
+            # 处理推理引擎
+            if hasattr(task.config, "engine") and task.config.engine is not None:
+                config["engine"] = task.config.engine
+
+            # 处理YOLO版本
+            if hasattr(task.config, "yolo_version") and task.config.yolo_version is not None:
+                config["yolo_version"] = task.config.yolo_version
+
+            # 处理自定义权重路径
+            if hasattr(task.config, "custom_weights_path") and task.config.custom_weights_path:
+                config["custom_weights_path"] = task.config.custom_weights_path
+
+            # 处理提示类型和提示内容
+            if hasattr(task.config, "prompt_type") and task.config.prompt_type is not None:
+                config["prompt_type"] = task.config.prompt_type
+
+                if task.config.prompt_type == 1 and hasattr(task.config, "text_prompt") and task.config.text_prompt:
+                    config["text_prompt"] = task.config.text_prompt
+                elif task.config.prompt_type == 2 and hasattr(task.config, "visual_prompt") and task.config.visual_prompt:
+                    config["visual_prompt"] = task.config.visual_prompt
+
+            # 处理分割
+            if hasattr(task.config, "segmentation"):
+                config["segmentation"] = task.config.segmentation
+
+            # 处理NMS类型
+            if hasattr(task.config, "nms_type") and task.config.nms_type is not None:
+                config["nms_type"] = task.config.nms_type
+
+            # 处理最大检测目标数量
+            if hasattr(task.config, "max_detections") and task.config.max_detections is not None:
+                config["max_detections"] = task.config.max_detections
+
+            # 处理设备类型
+            if hasattr(task.config, "device") and task.config.device is not None:
+                config["device"] = task.config.device
+
+            # 处理半精度
+            if hasattr(task.config, "half_precision"):
+                config["half_precision"] = task.config.half_precision
+
+            # 处理跟踪相关参数
+            if hasattr(task.config, "tracking_type") and task.config.tracking_type is not None:
+                config["tracking_type"] = task.config.tracking_type
+
+            if hasattr(task.config, "max_tracks") and task.config.max_tracks is not None:
+                config["max_tracks"] = task.config.max_tracks
+
+            if hasattr(task.config, "max_lost_time") and task.config.max_lost_time is not None:
+                config["max_lost_time"] = task.config.max_lost_time
+
+            if hasattr(task.config, "feature_type") and task.config.feature_type is not None:
+                config["feature_type"] = task.config.feature_type
+
+            if hasattr(task.config, "related_cameras") and task.config.related_cameras:
+                config["related_cameras"] = task.config.related_cameras
+
+            # 处理计数和速度估计
+            if hasattr(task.config, "counting_enabled"):
+                config["counting_enabled"] = task.config.counting_enabled
+
+            if hasattr(task.config, "time_threshold") and task.config.time_threshold is not None:
+                config["time_threshold"] = task.config.time_threshold
+
+            if hasattr(task.config, "speed_estimation"):
+                config["speed_estimation"] = task.config.speed_estimation
+
+            if hasattr(task.config, "object_filter") and task.config.object_filter:
+                config["object_filter"] = task.config.object_filter
 
         # 启动任务
         result = await task_service.start_task(
             model_code=task.model_code,
             stream_url=task.stream_url,
             task_name=task.task_name,
-            callback_urls=None,  # 单任务模式不支持回调
+            callback_urls=task.callback_url,  # 使用任务中的回调URL
             output_url=task.output_url,
-            analysis_type="detection",  # 默认为检测任务
+            analysis_type=task.analysis_type,
             config=config,
-            enable_callback=False,
-            save_result=task.save_result
+            enable_callback=task.enable_callback,
+            save_result=task.save_result,
+            save_images=task.save_images,
+            frame_rate=task.frame_rate,
+            device=task.device,
+            enable_alarm_recording=task.enable_alarm_recording,
+            alarm_recording_before=task.alarm_recording_before,
+            alarm_recording_after=task.alarm_recording_after
         )
 
         if not result["success"]:
@@ -190,12 +270,86 @@ async def start_batch_tasks(
                     config["confidence"] = task.config.confidence
 
                 # 处理IoU阈值
-                if hasattr(task.config, "iou") and task.config.iou is not None:
-                    config["iou_threshold"] = task.config.iou
+                if hasattr(task.config, "iou_threshold") and task.config.iou_threshold is not None:
+                    config["iou_threshold"] = task.config.iou_threshold
 
                 # 处理嵌套检测
                 if hasattr(task.config, "nested_detection"):
                     config["nested_detection"] = task.config.nested_detection
+
+                # 处理图像尺寸
+                if hasattr(task.config, "image_size") and task.config.image_size:
+                    config["image_size"] = task.config.image_size
+
+                # 处理推理引擎
+                if hasattr(task.config, "engine") and task.config.engine is not None:
+                    config["engine"] = task.config.engine
+
+                # 处理YOLO版本
+                if hasattr(task.config, "yolo_version") and task.config.yolo_version is not None:
+                    config["yolo_version"] = task.config.yolo_version
+
+                # 处理自定义权重路径
+                if hasattr(task.config, "custom_weights_path") and task.config.custom_weights_path:
+                    config["custom_weights_path"] = task.config.custom_weights_path
+
+                # 处理提示类型和提示内容
+                if hasattr(task.config, "prompt_type") and task.config.prompt_type is not None:
+                    config["prompt_type"] = task.config.prompt_type
+
+                    if task.config.prompt_type == 1 and hasattr(task.config, "text_prompt") and task.config.text_prompt:
+                        config["text_prompt"] = task.config.text_prompt
+                    elif task.config.prompt_type == 2 and hasattr(task.config, "visual_prompt") and task.config.visual_prompt:
+                        config["visual_prompt"] = task.config.visual_prompt
+
+                # 处理分割
+                if hasattr(task.config, "segmentation"):
+                    config["segmentation"] = task.config.segmentation
+
+                # 处理NMS类型
+                if hasattr(task.config, "nms_type") and task.config.nms_type is not None:
+                    config["nms_type"] = task.config.nms_type
+
+                # 处理最大检测目标数量
+                if hasattr(task.config, "max_detections") and task.config.max_detections is not None:
+                    config["max_detections"] = task.config.max_detections
+
+                # 处理设备类型
+                if hasattr(task.config, "device") and task.config.device is not None:
+                    config["device"] = task.config.device
+
+                # 处理半精度
+                if hasattr(task.config, "half_precision"):
+                    config["half_precision"] = task.config.half_precision
+
+                # 处理跟踪相关参数
+                if hasattr(task.config, "tracking_type") and task.config.tracking_type is not None:
+                    config["tracking_type"] = task.config.tracking_type
+
+                if hasattr(task.config, "max_tracks") and task.config.max_tracks is not None:
+                    config["max_tracks"] = task.config.max_tracks
+
+                if hasattr(task.config, "max_lost_time") and task.config.max_lost_time is not None:
+                    config["max_lost_time"] = task.config.max_lost_time
+
+                if hasattr(task.config, "feature_type") and task.config.feature_type is not None:
+                    config["feature_type"] = task.config.feature_type
+
+                if hasattr(task.config, "related_cameras") and task.config.related_cameras:
+                    config["related_cameras"] = task.config.related_cameras
+
+                # 处理计数和速度估计
+                if hasattr(task.config, "counting_enabled"):
+                    config["counting_enabled"] = task.config.counting_enabled
+
+                if hasattr(task.config, "time_threshold") and task.config.time_threshold is not None:
+                    config["time_threshold"] = task.config.time_threshold
+
+                if hasattr(task.config, "speed_estimation"):
+                    config["speed_estimation"] = task.config.speed_estimation
+
+                if hasattr(task.config, "object_filter") and task.config.object_filter:
+                    config["object_filter"] = task.config.object_filter
 
             # 如果批量任务中有全局配置，合并到每个任务的配置中
             if hasattr(batch_task, "analyze_interval") and batch_task.analyze_interval:
@@ -216,10 +370,16 @@ async def start_batch_tasks(
                 task_name=task.task_name,
                 callback_urls=batch_task.callback_urls,
                 output_url=task.output_url,
-                analysis_type="detection",  # 默认为检测任务
+                analysis_type=task.analysis_type,
                 config=config,
-                enable_callback=bool(batch_task.callback_urls),
-                save_result=task.save_result
+                enable_callback=task.enable_callback or bool(batch_task.callback_urls),
+                save_result=task.save_result,
+                save_images=task.save_images,
+                frame_rate=task.frame_rate,
+                device=task.device,
+                enable_alarm_recording=task.enable_alarm_recording,
+                alarm_recording_before=task.alarm_recording_before,
+                alarm_recording_after=task.alarm_recording_after
             )
 
             if result["success"]:
