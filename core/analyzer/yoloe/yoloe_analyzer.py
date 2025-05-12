@@ -32,7 +32,8 @@ def log_detections_if_found(result, boxes):
             conf = float(boxes.conf[i].cpu().numpy())
             cls_id = int(boxes.cls[i].cpu().numpy())
             cls_name = result.names.get(cls_id, f"class_{cls_id}")
-            detection_info.append(f"{cls_name}: {conf:.2f}")
+            box = boxes.xyxy[i].cpu().numpy()
+            detection_info.append(f"{cls_name}: {conf:.2f} 位置: [{int(box[0])},{int(box[1])},{int(box[2])},{int(box[3])}]")
 
         # 输出检测结果日志
         logger.info(f"检测到 {len(boxes)} 个目标: {', '.join(detection_info)}")

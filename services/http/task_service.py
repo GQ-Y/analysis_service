@@ -89,7 +89,8 @@ class TaskService:
                      enable_callback: bool = False, save_result: bool = False, save_images: bool = False,
                      frame_rate: Optional[int] = None, device: Optional[int] = None,
                      enable_alarm_recording: bool = False, alarm_recording_before: Optional[int] = None,
-                     alarm_recording_after: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+                     alarm_recording_after: Optional[int] = None, analysis_interval: Optional[int] = None,
+                     callback_interval: Optional[int] = None, **kwargs) -> Dict[str, Any]:
         """
         启动单个任务
 
@@ -109,12 +110,40 @@ class TaskService:
             enable_alarm_recording: 是否启用报警录像
             alarm_recording_before: 报警前录像时长
             alarm_recording_after: 报警后录像时长
+            analysis_interval: 分析间隔(帧)，每隔多少帧分析一次
             **kwargs: 其他参数
 
         Returns:
             Dict[str, Any]: 启动结果
         """
         try:
+            # 确保analysis_interval是有效的整数
+            logger.info(f"接收到的分析间隔值: {analysis_interval}, 类型: {type(analysis_interval)}")
+            if analysis_interval is not None:
+                try:
+                    analysis_interval = int(analysis_interval)
+                    if analysis_interval < 1:
+                        analysis_interval = 1
+                        logger.warning(f"无效的分析间隔值: {analysis_interval}，使用默认值1")
+                    else:
+                        logger.info(f"使用分析间隔值: {analysis_interval}")
+                except (ValueError, TypeError):
+                    analysis_interval = 1
+                    logger.warning(f"无效的分析间隔值: {analysis_interval}，使用默认值1")
+
+            # 处理回调间隔值
+            if callback_interval is not None:
+                try:
+                    callback_interval = int(callback_interval)
+                    if callback_interval < 0:
+                        callback_interval = 0
+                        logger.warning(f"无效的回调间隔值: {callback_interval}，使用默认值0")
+                    else:
+                        logger.info(f"使用回调间隔值: {callback_interval}秒")
+                except (ValueError, TypeError):
+                    callback_interval = 0
+                    logger.warning(f"无效的回调间隔值: {callback_interval}，使用默认值0")
+
             # 创建StreamTask对象
             task = StreamTask(
                 model_code=model_code,
@@ -130,7 +159,9 @@ class TaskService:
                 device=device,
                 enable_alarm_recording=enable_alarm_recording,
                 alarm_recording_before=alarm_recording_before,
-                alarm_recording_after=alarm_recording_after
+                alarm_recording_after=alarm_recording_after,
+                analysis_interval=analysis_interval,
+                callback_interval=callback_interval
             )
 
             # 设置配置
@@ -177,7 +208,7 @@ class TaskService:
 
                 # 设置全局分析间隔
                 if hasattr(batch_task, "analyze_interval") and batch_task.analyze_interval > 0:
-                    task.analyze_interval = batch_task.analyze_interval
+                    task.analysis_interval = batch_task.analyze_interval
 
                 # 创建任务
                 result = await self.create_task(task)
@@ -495,6 +526,21 @@ class TaskService:
                 "after_seconds": task.alarm_recording_after if hasattr(task, "alarm_recording_after") else 5
             }
 
+        # 记录分析间隔值
+        has_interval = hasattr(task, "analysis_interval")
+        interval_value = task.analysis_interval if has_interval else None
+        logger.info(f"构建任务配置 - 是否有analysis_interval属性: {has_interval}, 值: {interval_value}, 类型: {type(interval_value) if interval_value is not None else 'None'}")
+
+        # 确定最终使用的分析间隔值
+        final_interval = task.analysis_interval if hasattr(task, "analysis_interval") and task.analysis_interval is not None and task.analysis_interval > 0 else 1
+        logger.info(f"最终使用的分析间隔值: {final_interval}")
+
+        # 获取回调间隔值
+        callback_interval = None
+        if hasattr(task, "callback_interval") and task.callback_interval is not None:
+            callback_interval = task.callback_interval
+            logger.info(f"使用回调间隔值: {callback_interval}秒")
+
         # 构建完整配置
         task_config = {
             "model": model_config,
@@ -502,7 +548,8 @@ class TaskService:
             "analysis": analysis_config,
             "stream_url": task.stream_url,
             "result": result_config,
-            "analysis_interval": task.analyze_interval if hasattr(task, "analyze_interval") else 1,
+            "analysis_interval": final_interval,
+            "callback_interval": callback_interval,
             "device": task.device if hasattr(task, "device") else "auto"
         }
 

@@ -11,7 +11,7 @@ import aiohttp
 import torch
 from ultralytics import YOLO
 from typing import List, Dict, Any, Optional, Union, Tuple
-from shared.utils.logger import setup_logger
+from shared.utils.logger import setup_logger, setup_analysis_logger
 from core.config import settings
 import time
 import asyncio
@@ -28,6 +28,7 @@ import functools
 import io
 
 logger = setup_logger(__name__)
+analysis_logger = setup_analysis_logger()
 
 class YOLODetector:
     """YOLO检测器实现"""
@@ -309,6 +310,16 @@ class YOLODetector:
             if not roi:
                 return detections
 
+            # 记录ROI过滤开始
+            roi_type_name = {
+                0: "无ROI",
+                1: "矩形",
+                2: "多边形",
+                3: "线段"
+            }.get(roi_type, "未知")
+
+            analysis_logger.info(f"开始使用 {roi_type_name} 类型ROI过滤，图像尺寸: {img_width}x{img_height}，检测目标数: {len(detections)}")
+
             # 准备原始图像尺寸
             image_size = (img_width, img_height)
             filtered_detections = []
@@ -438,12 +449,34 @@ class YOLODetector:
                                 filtered_detections.append(detection)
                                 break
 
+            # 记录ROI过滤结果
+            filtered_count = len(filtered_detections)
+            original_count = len(detections)
+
+            if original_count > 0:
+                filter_ratio = filtered_count / original_count * 100
+                analysis_logger.info(f"ROI过滤结果: 原始目标数 {original_count}，过滤后目标数 {filtered_count}，保留比例 {filter_ratio:.1f}%")
+
+                # 记录过滤后的目标详情
+                if filtered_count > 0:
+                    class_counts = {}
+                    for det in filtered_detections:
+                        class_name = det.get("class_name", "未知")
+                        if class_name in class_counts:
+                            class_counts[class_name] += 1
+                        else:
+                            class_counts[class_name] = 1
+
+                    class_info = ", ".join([f"{cls}: {count}" for cls, count in class_counts.items()])
+                    analysis_logger.info(f"ROI内目标类别统计: {class_info}")
+
             return filtered_detections
 
         except Exception as e:
             logger.error(f"根据ROI过滤检测结果失败: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            analysis_logger.error(f"ROI过滤失败: {str(e)}")
             # 如果过滤失败，返回原始检测结果
             return detections
 

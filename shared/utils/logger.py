@@ -69,3 +69,42 @@ def setup_stream_error_logger():
     )
 
     return stream_error_logger
+
+def setup_analysis_logger():
+    """设置分析过程日志处理器
+
+    记录分析过程中的详细信息，包括抽帧次数、分析结果、ROI信息等
+
+    Returns:
+        配置好的日志记录器
+    """
+    # 确保日志目录存在
+    os.makedirs("logs", exist_ok=True)
+
+    # 创建专门用于分析过程的日志处理器
+    analysis_logger = logger.bind(name="analysis")
+
+    # 移除默认处理器
+    analysis_logger.remove()
+
+    # 添加文件处理器，记录到专门的分析日志文件
+    analysis_logger.add(
+        "logs/analysis.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+        level="INFO",  # 记录INFO级别及以上的信息
+        rotation="1 day",
+        retention="7 days",
+        backtrace=False,
+        diagnose=False,
+        enqueue=True  # 使用队列，避免多进程写入冲突
+    )
+
+    # 添加控制台处理器，便于调试
+    analysis_logger.add(
+        sys.stderr,
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>分析</cyan> - <level>{message}</level>",
+        level="INFO",
+        filter=lambda record: record["name"] == "analysis"
+    )
+
+    return analysis_logger

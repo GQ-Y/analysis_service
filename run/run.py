@@ -123,9 +123,11 @@ async def lifespan(app: FastAPI):
         # 创建服务实例
         from services.http.task_service import TaskService
         from services.analysis_service import AnalysisService
+        from services.http.callback_service import CallbackService
 
         app.state.task_service = TaskService(task_manager)
         app.state.analysis_service = AnalysisService()
+        app.state.callback_service = CallbackService()
 
         logger.info("任务管理器和服务初始化成功")
 

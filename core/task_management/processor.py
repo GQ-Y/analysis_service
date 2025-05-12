@@ -19,11 +19,12 @@ import io
 import contextlib
 
 from core.config import settings
-from shared.utils.logger import setup_logger, setup_stream_error_logger
+from shared.utils.logger import setup_logger, setup_stream_error_logger, setup_analysis_logger
 from core.task_management.utils.status import TaskStatus
 
 logger = setup_logger(__name__)
 stream_error_logger = setup_stream_error_logger()
+analysis_logger = setup_analysis_logger()
 
 class TaskProcessor:
     """任务处理器"""
@@ -324,7 +325,15 @@ class TaskProcessor:
             analysis_config = task_config.get("analysis", {})
 
             # 获取分析间隔
+            logger.info(f"工作进程 {task_id}: 任务配置中的分析间隔值: {task_config.get('analysis_interval')}, 类型: {type(task_config.get('analysis_interval'))}")
             analysis_interval = task_config.get("analysis_interval", 1)
+            # 确保analysis_interval是一个有效的整数值
+            if analysis_interval is None or not isinstance(analysis_interval, int) or analysis_interval < 1:
+                logger.warning(f"工作进程 {task_id}: 无效的分析间隔值: {analysis_interval}，使用默认值1")
+                analysis_interval = 1
+            else:
+                logger.info(f"工作进程 {task_id}: 使用分析间隔值: {analysis_interval}")
+
             frame_count = 0
 
             # 主循环
@@ -360,17 +369,54 @@ class TaskProcessor:
                 # 增加帧计数
                 frame_count += 1
 
+                # 记录抽帧信息
+                if frame_count % 100 == 0:
+                    analysis_logger.info(f"任务 {task_id}: 已处理 {frame_count} 帧")
+
                 # 根据分析间隔决定是否处理当前帧
                 if frame_count % analysis_interval != 0:
                     continue
 
+                # 记录抽帧分析信息
+                analysis_logger.info(f"任务 {task_id}: 分析第 {frame_count} 帧 (抽帧比例 1:{analysis_interval})")
+
                 # 处理帧
                 try:
+                    # 记录ROI信息
+                    if "roi" in analysis_config:
+                        roi_info = analysis_config["roi"]
+                        roi_type = analysis_config.get("roi_type", 0)
+                        roi_type_name = {
+                            0: "无ROI",
+                            1: "矩形",
+                            2: "多边形",
+                            3: "线段"
+                        }.get(roi_type, "未知")
+                        analysis_logger.info(f"任务 {task_id}: 使用 {roi_type_name} 类型ROI: {roi_info}")
+
                     # 执行检测
+                    start_time = time.time()
                     results = await detector.detect(frame, **analysis_config)
+                    detect_time = time.time() - start_time
 
                     # 处理结果
                     processed_results = self._process_detection_results(results, frame, task_id, frame_count)
+
+                    # 记录检测结果
+                    detection_count = 0
+                    if "detections" in processed_results:
+                        detection_count = len(processed_results["detections"])
+                        if detection_count > 0:
+                            # 记录检测到的目标详情
+                            detection_info = []
+                            for det in processed_results["detections"][:5]:  # 只记录前5个目标，避免日志过长
+                                detection_info.append(f"{det['class_name']}({det['confidence']:.2f})")
+
+                            more_info = ""
+                            if detection_count > 5:
+                                more_info = f" 等共 {detection_count} 个目标"
+
+                            analysis_logger.info(f"任务 {task_id}: 第 {frame_count} 帧检测到: {', '.join(detection_info)}{more_info}, 耗时: {detect_time:.3f}秒")
 
                     # 放入结果队列
                     result_queue.put({
@@ -380,6 +426,7 @@ class TaskProcessor:
 
                 except Exception as e:
                     logger.error(f"工作进程 {task_id}: 处理帧时发生错误: {str(e)}")
+                    analysis_logger.error(f"任务 {task_id}: 处理第 {frame_count} 帧时发生错误: {str(e)}")
 
             # 释放资源
             cap.release()
@@ -464,6 +511,60 @@ class TaskProcessor:
         """
         logger.info(f"启动结果处理器: {task_id}")
 
+        # 获取任务配置
+        task_config = self.running_tasks.get(task_id, {}).get("config", {})
+
+        # 获取回调配置
+        callback_enabled = task_config.get("subtask", {}).get("callback", {}).get("enabled", False)
+        callback_url = task_config.get("subtask", {}).get("callback", {}).get("url")
+
+        # 获取回调间隔
+        callback_interval = task_config.get("callback_interval", 0)
+
+        # 获取回调服务
+        callback_service = None
+        try:
+            # 尝试从应用状态获取回调服务
+            from fastapi import FastAPI
+            import inspect
+
+            # 获取当前应用实例
+            app = None
+            for frame_info in inspect.stack():
+                if 'app' in frame_info.frame.f_locals and isinstance(frame_info.frame.f_locals['app'], FastAPI):
+                    app = frame_info.frame.f_locals['app']
+                    break
+
+            if app and hasattr(app.state, "callback_service"):
+                callback_service = app.state.callback_service
+
+                # 注册任务回调
+                if callback_enabled and callback_url:
+                    callback_service.register_task(
+                        task_id=task_id,
+                        callback_url=callback_url,
+                        enable_callback=callback_enabled,
+                        callback_interval=callback_interval
+                    )
+                    logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
+            else:
+                # 如果无法从应用状态获取，创建新的回调服务实例
+                from services.http.callback_service import CallbackService
+                callback_service = CallbackService()
+
+                # 注册任务回调
+                if callback_enabled and callback_url:
+                    callback_service.register_task(
+                        task_id=task_id,
+                        callback_url=callback_url,
+                        enable_callback=callback_enabled,
+                        callback_interval=callback_interval
+                    )
+                    logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
+        except Exception as e:
+            logger.warning(f"回调服务初始化失败，任务 {task_id} 将不会发送回调: {str(e)}")
+            callback_service = None
+
         try:
             while True:
                 # 检查任务是否已停止
@@ -493,6 +594,14 @@ class TaskProcessor:
                     # 发送错误通知
                     logger.info(f"任务 {task_id} 发送错误通知: {error_message}")
 
+                    # 发送错误回调
+                    if callback_service and callback_enabled and callback_url:
+                        error_data = {
+                            "success": False,
+                            "error": error_message
+                        }
+                        await callback_service.send_callback(task_id, error_data)
+
                 elif result_type == "result":
                     # 处理分析结果
                     result_data = result.get("data", {})
@@ -500,11 +609,38 @@ class TaskProcessor:
                     # 更新任务状态
                     self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING, result=result_data)
 
+                    # 发送结果回调
+                    if callback_service and callback_enabled and callback_url:
+                        # 检查是否有检测结果
+                        if "detections" in result_data and result_data["detections"]:
+                            # 发送回调
+                            await callback_service.send_callback(task_id, result_data)
+
+                        # 检查是否有跟踪结果
+                        elif "tracked_objects" in result_data and result_data["tracked_objects"]:
+                            # 对每个跟踪对象单独处理回调间隔
+                            for tracked_obj in result_data["tracked_objects"]:
+                                object_id = tracked_obj.get("track_id")
+                                if object_id:
+                                    # 发送对象级回调
+                                    await callback_service.send_callback(
+                                        task_id,
+                                        result_data,
+                                        object_id=str(object_id)
+                                    )
+
+                        # 其他类型的结果直接发送
+                        elif any(key in result_data for key in ["segmentations", "cross_camera_objects", "crossing_events"]):
+                            await callback_service.send_callback(task_id, result_data)
+
                 # 标记队列项为已处理
                 result_queue.task_done()
 
         except asyncio.CancelledError:
             logger.info(f"结果处理器被取消: {task_id}")
+            # 取消注册任务回调
+            if callback_service:
+                callback_service.unregister_task(task_id)
 
         except Exception as e:
             logger.error(f"结果处理器发生错误: {str(e)}")

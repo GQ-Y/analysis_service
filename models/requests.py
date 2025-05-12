@@ -388,6 +388,18 @@ class StreamTask(BaseModel):
         None,
         description="检测配置参数"
     )
+    analysis_interval: int = Field(
+        1,
+        description="分析间隔(帧)，每隔多少帧分析一次",
+        ge=1,
+        example=5
+    )
+    callback_interval: Optional[int] = Field(
+        None,
+        description="回调间隔(秒)，同一目标每隔多少秒回调一次，0表示不限制",
+        ge=0,
+        example=5
+    )
 
     model_config = {"protected_namespaces": ()}
 
@@ -519,6 +531,12 @@ class BatchStreamTask(BaseModel):
         5,
         description="推送间隔(秒)",
         ge=1,
+        example=5
+    )
+    callback_interval: Optional[int] = Field(
+        None,
+        description="回调间隔(秒)，同一目标每隔多少秒回调一次，0表示不限制",
+        ge=0,
         example=5
     )
 

@@ -175,7 +175,9 @@ async def start_task(
             device=task.device,
             enable_alarm_recording=task.enable_alarm_recording,
             alarm_recording_before=task.alarm_recording_before,
-            alarm_recording_after=task.alarm_recording_after
+            alarm_recording_after=task.alarm_recording_after,
+            analysis_interval=task.analysis_interval,  # 添加分析间隔参数
+            callback_interval=task.callback_interval  # 添加回调间隔参数
         )
 
         if not result["success"]:
@@ -347,7 +349,7 @@ async def start_batch_tasks(
 
             # 如果批量任务中有全局配置，合并到每个任务的配置中
             if hasattr(batch_task, "analyze_interval") and batch_task.analyze_interval:
-                config["analyze_interval"] = batch_task.analyze_interval
+                config["analysis_interval"] = batch_task.analyze_interval  # 使用正确的参数名称
 
             if hasattr(batch_task, "alarm_interval") and batch_task.alarm_interval:
                 config["alarm_interval"] = batch_task.alarm_interval
@@ -357,6 +359,20 @@ async def start_batch_tasks(
 
             if hasattr(batch_task, "random_interval") and batch_task.random_interval:
                 config["random_interval"] = batch_task.random_interval
+
+            # 获取分析间隔
+            analysis_interval = None
+            if "analysis_interval" in config:
+                analysis_interval = config.pop("analysis_interval")  # 从配置中移除，避免重复传递
+            elif hasattr(task, "analysis_interval") and task.analysis_interval:
+                analysis_interval = task.analysis_interval
+
+            # 获取回调间隔
+            callback_interval = None
+            if hasattr(task, "callback_interval") and task.callback_interval is not None:
+                callback_interval = task.callback_interval
+            elif hasattr(batch_task, "callback_interval") and batch_task.callback_interval is not None:
+                callback_interval = batch_task.callback_interval
 
             result = await task_service.start_task(
                 model_code=task.model_code,
@@ -373,7 +389,9 @@ async def start_batch_tasks(
                 device=task.device,
                 enable_alarm_recording=task.enable_alarm_recording,
                 alarm_recording_before=task.alarm_recording_before,
-                alarm_recording_after=task.alarm_recording_after
+                alarm_recording_after=task.alarm_recording_after,
+                analysis_interval=analysis_interval,  # 添加分析间隔参数
+                callback_interval=callback_interval  # 添加回调间隔参数
             )
 
             if result["success"]:
