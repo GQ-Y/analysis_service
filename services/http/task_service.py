@@ -9,7 +9,7 @@ from datetime import datetime
 import json
 import aiohttp
 
-from core.task_management import TaskStatus
+from core.task_management.utils.status import TaskStatus
 from core.task_management.manager import TaskManager
 from models.requests import StreamTask, BatchStreamTask
 from shared.utils.logger import setup_logger
@@ -330,7 +330,7 @@ class TaskService:
                 "message": f"获取任务状态异常: {str(e)}"
             }
 
-    async def list_tasks(self, status: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+    async def list_tasks(self, status: Optional[int] = None, limit: int = 100) -> Dict[str, Any]:
         """
         获取任务列表
 
@@ -349,15 +349,59 @@ class TaskService:
             if limit > 0 and len(tasks) > limit:
                 tasks = tasks[:limit]
 
+            # 处理任务数据，确保可序列化
+            serializable_tasks = []
+            for task in tasks:
+                # 创建一个新的可序列化字典
+                serializable_task = {
+                    "id": task.get("id"),
+                    "status": task.get("status"),
+                    "created_at": task.get("created_at"),
+                    "updated_at": task.get("updated_at"),
+                    "error": task.get("error")
+                }
+
+                # 添加任务数据
+                if "data" in task:
+                    task_data = task["data"]
+                    # 提取基本信息
+                    serializable_task["task_name"] = task_data.get("task_name", "")
+
+                    # 提取参数
+                    if "params" in task_data:
+                        params = task_data["params"]
+                        # 从模型配置中获取正确的模型代码
+                        serializable_task["model_code"] = params.get("model", {}).get("code", task_data.get("type", ""))
+                        serializable_task["stream_url"] = params.get("stream_url", "")
+                        serializable_task["output_url"] = params.get("output_url", "")
+                        serializable_task["analysis_type"] = params.get("subtask", {}).get("type", "")
+
+                        # 提取回调信息
+                        callback = params.get("subtask", {}).get("callback", {})
+                        serializable_task["enable_callback"] = callback.get("enabled", False)
+                        serializable_task["callback_urls"] = callback.get("url", "")
+
+                # 添加时间信息
+                serializable_task["start_time"] = task.get("start_time", None)
+                serializable_task["stop_time"] = task.get("stop_time", None)
+                serializable_task["duration"] = task.get("duration", None)
+
+                # 添加错误信息
+                serializable_task["error_message"] = task.get("error", None)
+
+                serializable_tasks.append(serializable_task)
+
             return {
                 "success": True,
                 "message": "获取任务列表成功",
-                "total": len(tasks),
-                "tasks": tasks
+                "total": len(serializable_tasks),
+                "tasks": serializable_tasks
             }
 
         except Exception as e:
             logger.error(f"获取任务列表异常: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
             return {
                 "success": False,
                 "message": f"获取任务列表异常: {str(e)}",

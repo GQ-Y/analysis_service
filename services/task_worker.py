@@ -30,7 +30,7 @@ class TaskWorker:
         self.processor = TaskProcessor(self.task_manager)
         self.running = False
         self.poll_interval = 1.0  # 轮询间隔（秒）
-        self.max_concurrent = 5  # 最大并发任务数
+        self.max_concurrent = 50  # 最大并发任务数
         self.running_tasks = {}  # 运行中的任务
 
     async def start(self):

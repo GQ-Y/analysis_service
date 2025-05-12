@@ -7,16 +7,16 @@ import os
 
 def setup_logger(name: str):
     """设置日志配置
-    
+
     Args:
         name: 日志记录器名称
     """
     # 移除所有默认处理器
     logger.remove()
-    
+
     # 从环境变量获取调试设置
     debug_enabled = os.getenv("DEBUG_ENABLED", "False").lower() in ["true", "1", "yes"]
-    
+
     # 只在调试模式启用时添加日志处理器
     if debug_enabled:
         # 添加控制台处理器
@@ -27,7 +27,7 @@ def setup_logger(name: str):
             backtrace=True,
             diagnose=True
         )
-        
+
         # 添加文件处理器
         logger.add(
             os.getenv("DEBUG_LOG_FILE", "logs/debug.log"),
@@ -38,5 +38,34 @@ def setup_logger(name: str):
             backtrace=True,
             diagnose=True
         )
-    
-    return logger.bind(name=name) 
+
+    return logger.bind(name=name)
+
+def setup_stream_error_logger():
+    """设置视频流错误日志处理器
+
+    Returns:
+        配置好的日志记录器
+    """
+    # 确保日志目录存在
+    os.makedirs("logs", exist_ok=True)
+
+    # 创建专门用于视频流错误的日志处理器
+    stream_error_logger = logger.bind(name="stream_error")
+
+    # 移除默认处理器，确保错误不会输出到控制台
+    stream_error_logger.remove()
+
+    # 添加文件处理器，只记录到文件，不输出到控制台
+    stream_error_logger.add(
+        "logs/stream_errors.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
+        level="ERROR",  # 只记录错误级别及以上的信息
+        rotation="1 day",
+        retention="7 days",
+        backtrace=False,
+        diagnose=False,
+        enqueue=True  # 使用队列，避免多进程写入冲突
+    )
+
+    return stream_error_logger

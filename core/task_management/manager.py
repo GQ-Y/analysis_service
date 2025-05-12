@@ -15,13 +15,7 @@ from core.config import settings
 from shared.utils.logger import setup_logger
 from .processor import TaskProcessor
 
-class TaskStatus(str, Enum):
-    """任务状态枚举"""
-    WAITING = "waiting"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    STOPPED = "stopped"
+from .utils.status import TaskStatus
 
 logger = setup_logger(__name__)
 
@@ -325,6 +319,18 @@ class TaskManager:
         else:
             logger.error(f"创建任务失败: {task_id}, 类型: {task_type}")
             return None
+
+    def has_task(self, task_id: str) -> bool:
+        """
+        检查任务是否存在
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            bool: 任务是否存在
+        """
+        return task_id in self.tasks
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """

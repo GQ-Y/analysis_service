@@ -13,11 +13,17 @@ from datetime import datetime
 import uuid
 import logging
 import traceback
+import os
+import sys
+import io
+import contextlib
 
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import setup_logger, setup_stream_error_logger
+from core.task_management.utils.status import TaskStatus
 
 logger = setup_logger(__name__)
+stream_error_logger = setup_stream_error_logger()
 
 class TaskProcessor:
     """任务处理器"""
@@ -37,6 +43,14 @@ class TaskProcessor:
 
     async def initialize(self):
         """初始化任务处理器"""
+        # 确保日志目录存在
+        os.makedirs("logs", exist_ok=True)
+
+        # 设置 FFmpeg 日志级别环境变量，只显示错误信息
+        os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"  # 禁用颜色输出
+        # 不设置为 quiet，而是设置为 error，这样可以捕获错误信息
+        os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "error"
+
         logger.info("任务处理器初始化完成")
         return True
 
@@ -86,7 +100,7 @@ class TaskProcessor:
                 "thread": thread,
                 "config": task_config,
                 "start_time": time.time(),
-                "status": "running"
+                "status": TaskStatus.PROCESSING
             }
             self.task_threads[task_id] = thread
 
@@ -135,7 +149,7 @@ class TaskProcessor:
 
             # 更新任务状态
             if task_id in self.running_tasks:
-                self.running_tasks[task_id]["status"] = "stopped"
+                self.running_tasks[task_id]["status"] = TaskStatus.STOPPED
                 self.running_tasks[task_id]["end_time"] = time.time()
 
             # 清理资源
@@ -254,14 +268,50 @@ class TaskProcessor:
 
             # 打开视频流
             logger.info(f"工作进程 {task_id}: 尝试打开视频流: {stream_url}")
-            cap = cv2.VideoCapture(stream_url)
-            if not cap.isOpened():
-                logger.error(f"工作进程 {task_id}: 无法打开视频流: {stream_url}")
-                result_queue.put({
-                    "type": "error",
-                    "message": f"无法打开视频流: {stream_url}"
-                })
-                return
+
+            # 重定向标准错误输出，捕获FFmpeg错误信息
+            original_stderr = sys.stderr
+            error_buffer = io.StringIO()
+            sys.stderr = error_buffer
+
+            try:
+                cap = cv2.VideoCapture(stream_url)
+                if not cap.isOpened():
+                    # 获取捕获的错误信息
+                    ffmpeg_errors = ""
+                    try:
+                        # 确保error_buffer是StringIO对象
+                        if hasattr(error_buffer, 'getvalue'):
+                            ffmpeg_errors = error_buffer.getvalue()
+                    except Exception as buffer_err:
+                        logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
+
+                    if ffmpeg_errors:
+                        # 将FFmpeg错误记录到专门的日志文件
+                        stream_error_logger.error(f"视频流打开失败 (任务ID: {task_id}):\n{ffmpeg_errors}")
+
+                    logger.error(f"工作进程 {task_id}: 无法打开视频流: {stream_url}")
+                    result_queue.put({
+                        "type": "error",
+                        "message": f"无法打开视频流: {stream_url}"
+                    })
+                    return
+            finally:
+                # 恢复标准错误输出
+                captured_errors = ""
+                try:
+                    # 确保error_buffer是StringIO对象
+                    if hasattr(error_buffer, 'getvalue'):
+                        captured_errors = error_buffer.getvalue()
+                except Exception as buffer_err:
+                    logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
+
+                sys.stderr = original_stderr
+
+                # 如果有捕获到错误，记录到专门的日志文件
+                if captured_errors:
+                    # 记录所有捕获的错误
+                    stream_error_logger.error(f"视频流初始化信息 (任务ID: {task_id}):\n{captured_errors}")
 
             # 获取视频信息
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -279,11 +329,33 @@ class TaskProcessor:
 
             # 主循环
             while not stop_event.is_set():
-                # 读取帧
-                ret, frame = cap.read()
-                if not ret:
-                    logger.warning(f"工作进程 {task_id}: 视频流结束或读取失败")
-                    break
+                # 读取帧 - 重定向标准错误以捕获FFmpeg错误
+                original_stderr = sys.stderr
+                error_buffer = io.StringIO()
+                sys.stderr = error_buffer
+
+                try:
+                    ret, frame = cap.read()
+                    if not ret:
+                        logger.warning(f"工作进程 {task_id}: 视频流结束或读取失败")
+                        break
+                finally:
+                    # 检查是否有FFmpeg错误
+                    captured_errors = ""
+                    try:
+                        # 确保error_buffer是StringIO对象
+                        if hasattr(error_buffer, 'getvalue'):
+                            captured_errors = error_buffer.getvalue()
+                    except Exception as buffer_err:
+                        logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
+
+                    # 恢复标准错误输出
+                    sys.stderr = original_stderr
+
+                    # 如果有错误，记录到专门的日志文件而不是控制台
+                    if captured_errors:
+                        # 记录所有捕获的错误，不仅仅是 h264 相关的
+                        stream_error_logger.error(f"视频帧解码错误 (任务ID: {task_id}, 帧: {frame_count}):\n{captured_errors}")
 
                 # 增加帧计数
                 frame_count += 1
@@ -416,7 +488,7 @@ class TaskProcessor:
                     logger.error(f"任务 {task_id} 发生错误: {error_message}")
 
                     # 更新任务状态
-                    self.task_manager.update_task_status(task_id, "failed", error=error_message)
+                    self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_message)
 
                     # 发送错误通知
                     logger.info(f"任务 {task_id} 发送错误通知: {error_message}")
@@ -426,7 +498,7 @@ class TaskProcessor:
                     result_data = result.get("data", {})
 
                     # 更新任务状态
-                    self.task_manager.update_task_status(task_id, "running", result=result_data)
+                    self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING, result=result_data)
 
                 # 标记队列项为已处理
                 result_queue.task_done()

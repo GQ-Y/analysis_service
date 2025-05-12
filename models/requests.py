@@ -66,11 +66,11 @@ class DetectionConfig(BaseModel):
         example="https://models.example.com/weights/yoloe-v8l-seg.pt"
     )
     prompt_type: Optional[int] = Field(
-        1,
+        3,
         description="提示类型：1=文本提示, 2=视觉提示, 3=无提示",
         ge=1,
         le=3,
-        example=1
+        example=3
     )
     text_prompt: Optional[List[str]] = Field(
         None,

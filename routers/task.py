@@ -10,7 +10,7 @@ from datetime import datetime
 from models.requests import StreamTask, BatchStreamTask
 from models.responses import BaseResponse
 from services.http.task_service import TaskService
-from core.task_management.manager import TaskStatus
+from core.task_management.utils.status import TaskStatus
 from core.config import settings
 from shared.utils.logger import setup_logger
 
