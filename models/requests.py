@@ -65,6 +65,10 @@ class DetectionConfig(BaseModel):
         description="模型权重路径，支持HTTP/HTTPS URL、对象存储URL和本地路径",
         example="https://models.example.com/weights/yoloe-v8l-seg.pt"
     )
+    use_yoloe_analyzer: Optional[bool] = Field(
+        False,
+        description="是否使用YOLOE分析器，当设置为True时，将使用YOLOE专用分析器处理任务"
+    )
     prompt_type: Optional[int] = Field(
         3,
         description="提示类型：1=文本提示, 2=视觉提示, 3=无提示",
@@ -542,6 +546,8 @@ class BatchStreamTask(BaseModel):
 
     model_config = {"protected_namespaces": ()}
 
+
+
 class TaskStatusRequest(BaseModel):
     """任务状态请求"""
     task_id: str = Field(
@@ -549,3 +555,48 @@ class TaskStatusRequest(BaseModel):
         description="任务ID",
         example="vid_20240402_123456_abcd1234"
     )
+
+
+
+class VideoEncodingRequest(BaseModel):
+    """视频编码请求"""
+    task_id: str = Field(
+        ...,
+        description="任务ID",
+        example="vid_20240402_123456_abcd1234"
+    )
+    enable_encoding: bool = Field(
+        True,
+        description="是否开启实时分析视频编码"
+    )
+    format: str = Field(
+        "mp4",
+        description="视频格式，支持'mp4'或'flv'",
+        example="mp4"
+    )
+    quality: Optional[int] = Field(
+        80,
+        description="视频质量(1-100)",
+        ge=1,
+        le=100,
+        example=80
+    )
+    width: Optional[int] = Field(
+        None,
+        description="视频宽度，为空则使用原始宽度",
+        example=640
+    )
+    height: Optional[int] = Field(
+        None,
+        description="视频高度，为空则使用原始高度",
+        example=480
+    )
+    fps: Optional[int] = Field(
+        15,
+        description="视频帧率",
+        ge=1,
+        le=30,
+        example=15
+    )
+
+    model_config = {"protected_namespaces": ()}

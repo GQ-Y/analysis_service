@@ -490,6 +490,11 @@ class TaskService:
                 # 添加到分析配置
                 analysis_config[attr_name] = attr_value
 
+            # 检查是否明确指定了使用YOLOE分析器
+            if hasattr(task.config, "use_yoloe_analyzer") and task.config.use_yoloe_analyzer:
+                logger.info(f"任务明确指定使用YOLOE分析器")
+                analysis_config["use_yoloe_analyzer"] = True
+
             # 跟踪配置
             if hasattr(task.config, "tracking_type") and task.config.tracking_type > 0:
                 track_config = {

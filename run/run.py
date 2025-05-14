@@ -85,8 +85,19 @@ def create_app() -> FastAPI:
 
     # 注册路由
     from routers import task_router, health_router
+    from routers.task_video import router as video_router
     app.include_router(task_router)
     app.include_router(health_router)
+    app.include_router(video_router)
+
+    # 添加静态文件支持
+    from fastapi.staticfiles import StaticFiles
+    static_dir = Path(ROOT_DIR) / "static"
+    if not static_dir.exists():
+        static_dir.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    # 静态文件已挂载
 
     return app
 
@@ -124,10 +135,12 @@ async def lifespan(app: FastAPI):
         from services.http.task_service import TaskService
         from services.analysis_service import AnalysisService
         from services.http.callback_service import CallbackService
+        from services.http.video_encoder_service import VideoEncoderService
 
         app.state.task_service = TaskService(task_manager)
         app.state.analysis_service = AnalysisService()
         app.state.callback_service = CallbackService()
+        app.state.video_encoder_service = VideoEncoderService()
 
         logger.info("任务管理器和服务初始化成功")
 

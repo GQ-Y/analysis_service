@@ -3,28 +3,20 @@ YOLO检测器模块
 实现基于YOLOv8、YOLOv7、YOLOv5、YOLOX、YOLOE的目标检测功能
 """
 import os
-import base64
 from pathlib import Path
 import cv2
 import numpy as np
-import aiohttp
 import torch
 from ultralytics import YOLO
-from typing import List, Dict, Any, Optional, Union, Tuple
+from typing import List, Dict, Any, Optional, Tuple
 from shared.utils.logger import setup_logger, setup_analysis_logger
 from core.config import settings
 import time
 import asyncio
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import colorsys
 from datetime import datetime
-from core.exceptions import (
-    InvalidInputException,
-    ModelLoadException,
-    ProcessingException,
-    ResourceNotFoundException
-)
-import functools
+from core.exceptions import ModelLoadException
 import io
 
 logger = setup_logger(__name__)
@@ -74,74 +66,125 @@ class YOLODetector:
             str: 本地模型文件路径
 
         Raises:
-            Exception: 当模型下载或保存失败时抛出异常
+            Exception: 当找不到模型时抛出异常
         """
         try:
             # 检查本地缓存
             cache_dir = os.path.join("data", "models", model_code)
-            model_path = os.path.join(cache_dir, "best.pt")
 
-            if os.path.exists(model_path):
-                logger.info(f"找到本地缓存模型: {model_path}")
-                return model_path
+            # 检查多个可能的模型文件名
+            possible_filenames = ["best.pt", "base.pt", "model.pt", "weights.pt", f"{model_code}.pt"]
 
-            # 本地不存在,从模型服务下载
-            logger.info(f"本地未找到模型 {model_code},准备从模型服务下载...")
+            for filename in possible_filenames:
+                model_path = os.path.join(cache_dir, filename)
+                if os.path.exists(model_path):
+                    logger.info(f"找到本地缓存模型: {model_path}")
+                    return model_path
 
-            # 构建API URL
-            model_service_url = settings.MODEL_SERVICE.url
-            api_prefix = settings.MODEL_SERVICE.api_prefix
-            api_url = f"{model_service_url}{api_prefix}/models/download?code={model_code}"
+            # 如果目录存在但没有找到特定文件，尝试查找任何.pt文件
+            if os.path.exists(cache_dir):
+                pt_files = [f for f in os.listdir(cache_dir) if f.endswith('.pt')]
+                if pt_files:
+                    model_path = os.path.join(cache_dir, pt_files[0])
+                    logger.info(f"找到本地缓存模型: {model_path}")
+                    return model_path
 
-            logger.info(f"开始从模型服务下载: {api_url}")
-
-            # 创建缓存目录
-            os.makedirs(cache_dir, exist_ok=True)
-
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(api_url) as response:
-                        if response.status == 200:
-                            # 保存模型文件
-                            with open(model_path, "wb") as f:
-                                f.write(await response.read())
-                            logger.info(f"模型下载成功并保存到: {model_path}")
-                            return model_path
-                        else:
-                            error_msg = await response.text()
-                            raise Exception(f"模型下载失败: HTTP {response.status} - {error_msg}")
-
-            except aiohttp.ClientError as e:
-                raise Exception(f"请求模型服务失败: {str(e)}")
+            # 本地不存在，尝试查找默认模型
+            logger.info(f"本地未找到模型 {model_code}，尝试查找默认模型...")
+            return await self._find_default_model(model_code)
 
         except Exception as e:
             logger.error(f"获取模型路径时出错: {str(e)}")
-            raise Exception(f"获取模型失败: {str(e)}")
+            # 尝试查找默认模型
+            return await self._find_default_model(model_code)
 
-    async def load_model(self, model_code: str):
-        """加载模型"""
-        try:
-            # 获取模型路径
-            model_path = await self.get_model_path(model_code)
-            logger.info(f"正在加载模型: {model_path}")
+    async def _find_default_model(self, model_code: str) -> str:
+        """
+        查找默认模型
 
-            # 加载模型
-            self.model = YOLO(model_path)
-            self.model.to(self.device)
+        Args:
+            model_code: 模型代码
 
-            # 设置模型参数
-            self.model.conf = self.default_confidence
-            self.model.iou = self.default_iou
-            self.model.max_det = self.default_max_det
+        Returns:
+            str: 默认模型路径
 
-            # 更新当前模型代码
-            self.current_model_code = model_code
+        Raises:
+            Exception: 当找不到默认模型时
+        """
+        logger.info(f"尝试查找默认模型替代 {model_code}...")
 
-            logger.info(f"模型加载成功: {model_code}")
+        # 检查通用模型目录
+        models_dir = os.path.join("data", "models")
 
-        except Exception as e:
-            logger.error(f"模型加载失败: {str(e)}")
-            raise ModelLoadException(f"模型加载失败: {str(e)}")
+        # 尝试使用通用YOLOv8模型
+        yolo_dirs = ["yolov8n", "yolov8s", "yolov8m", "yolov8l", "yolov8x"]
+        for yolo_dir in yolo_dirs:
+            yolo_path = os.path.join(models_dir, yolo_dir)
+            if os.path.exists(yolo_path):
+                pt_files = [f for f in os.listdir(yolo_path) if f.endswith('.pt')]
+                if pt_files:
+                    model_path = os.path.join(yolo_path, pt_files[0])
+                    logger.warning(f"未找到{model_code}模型，使用替代模型: {model_path}")
+                    return model_path
+
+        # 如果找不到任何模型，抛出异常
+        raise Exception(f"无法找到任何可用的模型，请确保至少有一个模型文件在data/models目录下")
+
+    async def load_model(self, model_code: str, max_retries: int = 3):
+        """
+        加载模型
+
+        Args:
+            model_code: 模型代码
+            max_retries: 最大重试次数
+
+        Raises:
+            ModelLoadException: 当模型加载失败时
+        """
+        retry_count = 0
+        last_error = None
+
+        while retry_count < max_retries:
+            try:
+                # 获取模型路径
+                model_path = await self.get_model_path(model_code)
+                logger.info(f"正在加载模型: {model_path}")
+
+                # 加载模型
+                self.model = YOLO(model_path)
+                self.model.to(self.device)
+
+                # 设置模型参数
+                self.model.conf = self.default_confidence
+                self.model.iou = self.default_iou
+                self.model.max_det = self.default_max_det
+
+                # 更新当前模型代码
+                self.current_model_code = model_code
+
+                logger.info(f"模型加载成功: {model_code}")
+                return  # 成功加载，退出函数
+
+            except Exception as e:
+                last_error = e
+                retry_count += 1
+                logger.warning(f"模型加载失败 (尝试 {retry_count}/{max_retries}): {str(e)}")
+
+                if retry_count < max_retries:
+                    # 等待一段时间后重试
+                    await asyncio.sleep(1.0)
+                    logger.info(f"正在重试加载模型: {model_code}")
+                else:
+                    # 达到最大重试次数，记录错误并抛出异常
+                    logger.error(f"模型加载失败，已达到最大重试次数: {str(last_error)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
+                    # 确保模型为None
+                    self.model = None
+                    self.current_model_code = None
+
+                    raise ModelLoadException(f"模型加载失败: {str(last_error)}")
 
     def _get_color_by_id(self, obj_id: int) -> Tuple[int, int, int]:
         """根据对象ID生成固定的颜色
@@ -228,6 +271,17 @@ class YOLODetector:
         annotated_image_bytes = None
 
         try:
+            # 检查模型是否已加载
+            if self.model is None:
+                logger.error("模型未加载，无法执行检测")
+                return {
+                    "detections": [],
+                    "pre_process_time": 0,
+                    "inference_time": 0,
+                    "post_process_time": 0,
+                    "annotated_image_bytes": None
+                }
+
             # 设置模型参数
             if confidence is not None:
                 self.model.conf = confidence
@@ -278,8 +332,9 @@ class YOLODetector:
                     logger.error(f"绘制或编码标注图像时出错: {plot_err}")
             # --- 结束图像处理 ---
 
-            total_time = (time.time() - start_time) * 1000
-            # logger.debug(f"检测总耗时: {total_time:.2f}ms...")
+            # 计算总耗时（但不使用，仅用于调试）
+            _ = (time.time() - start_time) * 1000
+            # logger.debug(f"检测总耗时: {_:.2f}ms...")
 
             # 构建返回字典 (始终包含 annotated_image_bytes，即使为 None)
             return_data = {
@@ -322,16 +377,7 @@ class YOLODetector:
             if not roi:
                 return detections
 
-            # 简化ROI类型处理，不打印日志
-            roi_type_name = {
-                0: "无ROI",
-                1: "矩形",
-                2: "多边形",
-                3: "线段"
-            }.get(roi_type, "未知")
-
-            # 准备原始图像尺寸
-            image_size = (img_width, img_height)
+            # 初始化过滤后的检测结果列表
             filtered_detections = []
 
             # 将ROI坐标转换为像素坐标
@@ -471,10 +517,7 @@ class YOLODetector:
                                 filtered_detections.append(detection)
                                 break
 
-            # 简化ROI过滤结果处理，不打印日志
-            filtered_count = len(filtered_detections)
-            original_count = len(detections)
-
+            # 返回过滤后的检测结果
             return filtered_detections
 
         except Exception as e:

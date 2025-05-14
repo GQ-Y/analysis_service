@@ -60,6 +60,7 @@ class AnalyzerFactory:
             engine_type: 推理引擎类型 (0=PyTorch, 1=ONNX, 2=TensorRT, 3=OpenVINO, 4=Pytron)
             yolo_version: YOLO版本 (0=v8n, 1=v8s, 2=v8l, 3=v8x, 4=11s, 5=11m, 6=11l)
             **kwargs: 其他参数
+                - use_yoloe_analyzer: 是否使用YOLOE分析器，默认为False
 
         Returns:
             BaseAnalyzer: 分析器实例
@@ -78,12 +79,17 @@ class AnalyzerFactory:
         if analyzer_class is None:
             raise ValueError(f"不支持的分析类型: {analysis_type}")
 
-        # 检查是否需要特殊处理YOLOE模型
-        if model_code and "yoloe" in model_code.lower():
+        # 检查是否明确指定了使用YOLOE分析器
+        use_yoloe_analyzer = kwargs.get("use_yoloe_analyzer", False)
+
+        # 如果明确指定了使用YOLOE分析器，或者根据模型代码判断需要使用YOLOE分析器（向后兼容）
+        if use_yoloe_analyzer or (model_code and "yoloe" in model_code.lower() and use_yoloe_analyzer is not False):
+            logger.info(f"使用YOLOE分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
+                       f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
             return cls._create_yoloe_analyzer(analysis_type, model_code, engine_type, yolo_version, **kwargs)
 
-        # 创建分析器实例
-        logger.info(f"创建分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
+        # 创建标准分析器实例
+        logger.info(f"创建标准分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
                    f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
 
         return analyzer_class(model_code, engine_type, yolo_version, **kwargs)

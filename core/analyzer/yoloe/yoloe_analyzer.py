@@ -17,35 +17,66 @@ from core.analyzer.model_loader import ModelLoader
 logger = setup_logger(__name__)
 
 
-def log_detections_if_found(result, boxes):
+def log_detections_if_found(result, boxes, prompt_free_class_names=None, internal_prompt_type=None, result_names_override=None):
     """
-    只在检测到目标时记录检测结果日志
+    记录检测结果日志，无论是否检测到目标
 
     Args:
         result: YOLO检测结果
         boxes: 检测到的边界框
+        prompt_free_class_names: 无提示模式下的类别名称列表
+        internal_prompt_type: 内部提示类型
+        result_names_override: 备用类别名称字典，用于回退机制
     """
+    if boxes is None:
+        logger.warning("边界框对象为None，无法记录检测结果")
+        return
+
     if len(boxes) > 0:
         # 构建检测结果日志
         detection_info = []
         for i in range(len(boxes)):
             conf = float(boxes.conf[i].cpu().numpy())
             cls_id = int(boxes.cls[i].cpu().numpy())
-            cls_name = result.names.get(cls_id, f"class_{cls_id}")
-            box = boxes.xyxy[i].cpu().numpy()
-            detection_info.append(f"{cls_name}: {conf:.2f} 位置: [{int(box[0])},{int(box[1])},{int(box[2])},{int(box[3])}]")
+            
+            # 在无提示模式下，按优先级顺序尝试获取类别名称
+            if internal_prompt_type == 0:
+                # 1. 首先从model.names获取
+                if hasattr(result, "model") and hasattr(result.model, "names") and isinstance(result.model.names, dict) and cls_id in result.model.names:
+                    cls_name = result.model.names[cls_id]
+                # 2. 如果model.names中没有，但有result_names_override，则从result_names_override获取
+                elif result_names_override and cls_id in result_names_override:
+                    cls_name = result_names_override[cls_id]
+                # 3. 如果result_names_override中没有，但有prompt_free_class_names，则从prompt_free_class_names获取
+                elif prompt_free_class_names and 0 <= cls_id < len(prompt_free_class_names):
+                    cls_name = prompt_free_class_names[cls_id]
+                # 4. 最后从result.names获取或使用默认名称
+                else:
+                    cls_name = result.names.get(cls_id, f"class_{cls_id}")
+            # 对于文本提示模式，使用提供的文本提示类别名称
+            elif internal_prompt_type == 1 and hasattr(result, "text_prompt") and result.text_prompt and 0 <= cls_id < len(result.text_prompt):
+                cls_name = result.text_prompt[cls_id]
+            # 否则使用result.names
+            else:
+                cls_name = result.names.get(cls_id, f"class_{cls_id}")
+
+            detection_info.append(f"{cls_name}: {conf:.2f}")
 
         # 输出检测结果日志
         logger.info(f"检测到 {len(boxes)} 个目标: {', '.join(detection_info)}")
+    else:
+        logger.info("未检测到任何目标")
 
 
-def log_detections(result, boxes):
+def log_detections(result, boxes, prompt_free_class_names=None, internal_prompt_type=None):
     """
     记录检测结果日志
 
     Args:
         result: YOLO检测结果
         boxes: 检测到的边界框
+        prompt_free_class_names: 无提示模式下的类别名称列表
+        internal_prompt_type: 内部提示类型
     """
     if len(boxes) > 0:
         # 构建检测结果日志
@@ -53,11 +84,127 @@ def log_detections(result, boxes):
         for i in range(len(boxes)):
             conf = float(boxes.conf[i].cpu().numpy())
             cls_id = int(boxes.cls[i].cpu().numpy())
-            cls_name = result.names.get(cls_id, f"class_{cls_id}")
+            
+            # 获取类别名称，优先使用model.names
+            if hasattr(result, "model") and hasattr(result.model, "names") and cls_id in result.model.names:
+                cls_name = result.model.names[cls_id]
+            # 如果是无提示模式，使用prompt_free_class_names
+            elif internal_prompt_type == 0 and prompt_free_class_names and 0 <= cls_id < len(prompt_free_class_names):
+                cls_name = prompt_free_class_names[cls_id]
+            # 否则使用result.names
+            else:
+                cls_name = result.names.get(cls_id, f"class_{cls_id}")
+
             detection_info.append(f"{cls_name}: {conf:.2f}")
 
         # 输出检测结果日志
         logger.info(f"检测到 {len(boxes)} 个目标: {', '.join(detection_info)}")
+
+
+def custom_plot_detections(image, result, boxes, prompt_free_class_names=None, internal_prompt_type=None, result_names_override=None):
+    """
+    自定义绘制检测结果，确保在无提示模式下使用正确的类别名称
+
+    Args:
+        image: 原始图像
+        result: YOLO检测结果
+        boxes: 检测到的边界框
+        prompt_free_class_names: 无提示模式下的类别名称列表
+        internal_prompt_type: 内部提示类型
+        result_names_override: 备用类别名称字典，用于回退机制
+
+    Returns:
+        np.ndarray: 绘制了检测结果的图像
+    """
+    try:
+        # 创建图像副本
+        result_image = image.copy()
+
+        # 绘制每个检测结果
+        for i in range(len(boxes)):
+            # 获取边界框坐标
+            box = boxes.xyxy[i].cpu().numpy()
+            x1, y1, x2, y2 = int(box[0]), int(box[1]), int(box[2]), int(box[3])
+
+            # 获取置信度
+            conf = float(boxes.conf[i].cpu().numpy())
+
+            # 获取类别ID
+            cls_id = int(boxes.cls[i].cpu().numpy())
+            
+            # 在无提示模式下，按优先级顺序尝试获取类别名称
+            if internal_prompt_type == 0:
+                # 1. 首先从model.names获取
+                if hasattr(result, "model") and hasattr(result.model, "names") and isinstance(result.model.names, dict) and cls_id in result.model.names:
+                    cls_name = result.model.names[cls_id]
+                # 2. 如果model.names中没有，但有result_names_override，则从result_names_override获取
+                elif result_names_override and cls_id in result_names_override:
+                    cls_name = result_names_override[cls_id]
+                # 3. 如果result_names_override中没有，但有prompt_free_class_names，则从prompt_free_class_names获取
+                elif prompt_free_class_names and 0 <= cls_id < len(prompt_free_class_names):
+                    cls_name = prompt_free_class_names[cls_id]
+                # 4. 最后从result.names获取或使用默认名称
+                else:
+                    cls_name = result.names.get(cls_id, f"class_{cls_id}")
+            # 对于文本提示模式，使用提供的文本提示类别名称
+            elif internal_prompt_type == 1 and hasattr(result, "text_prompt") and result.text_prompt and 0 <= cls_id < len(result.text_prompt):
+                cls_name = result.text_prompt[cls_id]
+            # 否则使用result.names
+            else:
+                cls_name = result.names.get(cls_id, f"class_{cls_id}")
+
+            # 获取类别颜色 (使用类别ID的哈希值生成颜色)
+            color_h = (cls_id * 50) % 360  # 色调
+            color_s = 0.8  # 饱和度
+            color_v = 0.8  # 亮度
+
+            # 将HSV转换为BGR
+            import colorsys
+            rgb = colorsys.hsv_to_rgb(color_h / 360, color_s, color_v)
+            color = (int(rgb[2] * 255), int(rgb[1] * 255), int(rgb[0] * 255))  # BGR格式
+
+            # 绘制边界框
+            cv2.rectangle(result_image, (x1, y1), (x2, y2), color, 2)
+
+            # 绘制标签
+            label = f"{cls_name} {conf:.2f}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            text_size, _ = cv2.getTextSize(label, font, font_scale, thickness)
+
+            # 确保标签在图像内
+            text_x = x1
+            text_y = y1 - 5 if y1 - 5 > text_size[1] else y1 + text_size[1]
+
+            # 绘制文本背景
+            cv2.rectangle(
+                result_image,
+                (text_x, text_y - text_size[1]),
+                (text_x + text_size[0], text_y),
+                color,
+                -1
+            )
+
+            # 绘制文本
+            cv2.putText(
+                result_image,
+                label,
+                (text_x, text_y - 2),
+                font,
+                font_scale,
+                (255, 255, 255),  # 白色文字
+                thickness
+            )
+
+        return result_image
+
+    except Exception as e:
+        logger.error(f"自定义绘制检测结果失败: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        # 如果失败，返回原始图像
+        return image
 
 class YOLOEBaseAnalyzer:
     """YOLOE基础分析器"""
@@ -79,11 +226,24 @@ class YOLOEBaseAnalyzer:
         self.engine_type = engine_type
         self.yolo_version = yolo_version
         self.device = device
+        self.model_code = model_code  # 保存model_code
 
         # YOLOE特有参数
         self.prompt_type = kwargs.get("prompt_type", 3)  # 1=文本提示, 2=图像提示, 3=无提示
         self.text_prompt = kwargs.get("text_prompt", [])
         self.visual_prompt = kwargs.get("visual_prompt", {})
+
+        # 缓存文本嵌入，避免重复计算
+        self._text_pe_cache = None
+        self._text_prompt_cache = None
+        self._text_embedding_set = False
+
+        # 无提示模式的类别名称
+        self._prompt_free_class_names = []
+        # 回退机制使用的类别名称字典
+        self._result_names_override = None
+        
+        self._load_prompt_free_class_names()
 
         # 内部使用0表示无提示，但API使用3表示无提示
         self._internal_prompt_type = self.prompt_type
@@ -93,8 +253,72 @@ class YOLOEBaseAnalyzer:
 
         logger.info(f"初始化YOLOE分析器: 提示类型={self._get_prompt_type_name()}")
 
+    def _load_prompt_free_class_names(self):
+        """
+        加载无提示模式的类别名称
+        """
+        try:
+            # 尝试从多个位置加载tag_list.txt
+            tag_list_paths = [
+                "tag_list.txt",
+                "data/tag_list.txt",
+                "data/models/tag_list.txt",
+                "models/tag_list.txt",
+                "tools/ram_tag_list.txt",  # 官方示例路径
+                "../tag_list.txt",  # 向上一级目录查找
+                "../data/tag_list.txt"
+            ]
+            
+            # 查找第一个存在的文件
+            tag_list_path = None
+            for path in tag_list_paths:
+                if os.path.exists(path):
+                    tag_list_path = path
+                    break
+            
+            if tag_list_path:
+                # 读取类别名称文件
+                with open(tag_list_path, "r", encoding="utf-8") as f:
+                    self._prompt_free_class_names = [line.strip() for line in f.readlines()]
+                
+                # 确保没有空类别名称并去重
+                self._prompt_free_class_names = [name for name in self._prompt_free_class_names if name]
+                if len(self._prompt_free_class_names) != len(set(self._prompt_free_class_names)):
+                    # 存在重复类别，记录并去重
+                    original_count = len(self._prompt_free_class_names)
+                    self._prompt_free_class_names = list(dict.fromkeys(self._prompt_free_class_names))  # 保持顺序的去重
+                    logger.warning(f"类别列表存在重复项：原始数量 {original_count}，去重后 {len(self._prompt_free_class_names)}")
+                
+                logger.info(f"已从 {tag_list_path} 加载无提示模式类别名称: {len(self._prompt_free_class_names)}个类别")
+                
+                # 打印前几个类别名称进行确认
+                if self._prompt_free_class_names:
+                    preview = self._prompt_free_class_names[:5]
+                    logger.info(f"前几个类别名称: {preview}")
+                    
+                    # 检查是否有非法类别名称（空字符串或只有空格的字符串）
+                    invalid_names = [i for i, name in enumerate(self._prompt_free_class_names) if not name or name.isspace()]
+                    if invalid_names:
+                        logger.warning(f"发现 {len(invalid_names)} 个非法类别名称（空或仅含空格），位置: {invalid_names[:10]}...")
+                        # 移除非法类别名称
+                        self._prompt_free_class_names = [name for name in self._prompt_free_class_names if name and not name.isspace()]
+                        logger.info(f"清理后的类别数量: {len(self._prompt_free_class_names)}")
+            else:
+                logger.warning(f"无提示模式类别名称文件不存在，尝试了以下路径: {', '.join(tag_list_paths)}")
+                # 尝试创建一个简单的默认类别列表
+                self._prompt_free_class_names = ["object", "person", "animal", "vehicle", "furniture", 
+                                               "electronics", "food", "plant", "clothing", "building"]
+                logger.warning(f"使用默认类别列表: {self._prompt_free_class_names}")
+        except Exception as e:
+            logger.error(f"加载无提示模式类别名称失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # 确保有默认值
+            self._prompt_free_class_names = ["object", "person", "animal", "vehicle", "furniture"]
+            logger.warning(f"使用错误恢复类别列表: {self._prompt_free_class_names}")
+
         # 如果提供了model_code，立即加载模型
-        if model_code:
+        if self.model_code:
             # 注意：这里不能直接使用await，因为__init__不是异步方法
             # 创建一个异步任务来加载模型
             import asyncio
@@ -102,12 +326,16 @@ class YOLOEBaseAnalyzer:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
                     # 如果事件循环已经在运行，创建一个任务
-                    asyncio.create_task(self.load_model(model_code))
+                    asyncio.create_task(self.load_model(self.model_code))
                 else:
                     # 如果事件循环没有运行，直接运行直到完成
-                    loop.run_until_complete(self.load_model(model_code))
+                    loop.run_until_complete(self.load_model(self.model_code))
             except Exception as e:
                 logger.error(f"初始化时加载模型失败: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+
+
 
     def _get_prompt_type_name(self) -> str:
         """获取提示类型名称"""
@@ -117,6 +345,138 @@ class YOLOEBaseAnalyzer:
             3: "无提示"
         }
         return prompt_types.get(self.prompt_type, f"未知提示类型({self.prompt_type})")
+
+    def _setup_yoloe_prompt_free_mode(self) -> bool:
+        """
+        按照官方示例正确设置YOLOE模型的无提示模式
+        
+        参考：https://github.com/THU-MIG/yoloe
+        """
+        try:
+            import torch
+
+            # 记录模型类型信息，用于调试
+            model_type = type(self.model).__name__
+            logger.info(f"模型类型: {model_type}")
+            
+            # 检查是否有类别名称
+            if not self._prompt_free_class_names or len(self._prompt_free_class_names) == 0:
+                logger.warning("无提示模式类别名称为空，无法设置YOLOE模型词汇表")
+                return False
+            
+            # 记录类别名称数量和前几个类别
+            logger.info(f"无提示模式类别名称数量: {len(self._prompt_free_class_names)}")
+            preview_classes = self._prompt_free_class_names[:5] if len(self._prompt_free_class_names) > 5 else self._prompt_free_class_names
+            logger.info(f"前几个类别: {preview_classes}")
+            
+            # 1. 设置模型为无提示模式
+            if hasattr(self.model, "prompt_free"):
+                self.model.prompt_free = True
+                logger.info("已设置模型prompt_free属性为True")
+            
+            # 2. 模型names属性处理 - 检查是否可写
+            try:
+                # 尝试获取当前names属性
+                names_dict = {}
+                if hasattr(self.model, "names"):
+                    if isinstance(self.model.names, dict):
+                        # 获取当前names并复制
+                        names_dict = dict(self.model.names)
+                        logger.info(f"获取到现有model.names: {names_dict if len(names_dict) < 10 else '(太多不显示)'}")
+                
+                # 创建一个新的names字典
+                for i, name in enumerate(self._prompt_free_class_names):
+                    names_dict[i] = name
+                
+                # 尝试设置names属性
+                try:
+                    self.model.names = names_dict
+                    logger.info(f"通过直接赋值方式设置model.names成功，共 {len(names_dict)} 个类别")
+                except AttributeError:
+                    # 如果直接赋值失败，尝试使用__dict__方式设置
+                    try:
+                        self.model.__dict__['names'] = names_dict
+                        logger.info(f"通过__dict__方式设置model.names成功，共 {len(names_dict)} 个类别")
+                    except Exception as dict_err:
+                        # 如果也失败，尝试查找模型内部结构
+                        logger.warning(f"使用__dict__设置model.names失败: {str(dict_err)}")
+                        logger.info("尝试查找模型内部结构...")
+                        
+                        # 尝试找到names实际位置
+                        if hasattr(self.model, "model"):
+                            # 有些模型封装在model.model中
+                            inner_model = self.model.model
+                            try:
+                                inner_model.names = names_dict
+                                logger.info(f"通过model.model.names设置成功，共 {len(names_dict)} 个类别")
+                            except AttributeError:
+                                # 尝试更深层的model结构
+                                if hasattr(inner_model, "model"):
+                                    deepest_model = inner_model.model
+                                    try:
+                                        deepest_model.names = names_dict
+                                        logger.info(f"通过model.model.model.names设置成功，共 {len(names_dict)} 个类别")
+                                    except AttributeError:
+                                        # 如果还是无法设置，记录找到的属性以便调试
+                                        if hasattr(deepest_model, "__dict__"):
+                                            logger.info(f"model.model.model属性列表: {list(deepest_model.__dict__.keys())[:10]}")
+                                        logger.warning("无法在模型结构中找到可设置的names属性")
+                                else:
+                                    if hasattr(inner_model, "__dict__"):
+                                        logger.info(f"model.model属性列表: {list(inner_model.__dict__.keys())[:10]}")
+                                    logger.warning("模型结构中没有更深层的model属性")
+                        else:
+                            logger.warning("模型没有内部model属性，无法进一步设置names")
+                
+                # 验证是否成功设置names
+                if hasattr(self.model, "names"):
+                    names_set = self.model.names
+                    # 检查第一个类别是否正确设置
+                    if 0 in names_set and names_set[0] == self._prompt_free_class_names[0]:
+                        logger.info("验证names设置成功")
+                        # 输出几个示例以确认
+                        preview = {i: names_set[i] for i in range(min(10, len(names_set)))}
+                        logger.info(f"设置后的类别ID映射示例: {preview}")
+                    else:
+                        logger.warning(f"names设置可能不正确: 首个类别为 {names_set.get(0, 'None')}")
+            except Exception as names_err:
+                logger.error(f"设置names属性时出错: {str(names_err)}")
+            
+            # 3. 如果模型有head，设置head参数
+            if hasattr(self.model, "model") and hasattr(self.model.model, "model"):
+                try:
+                    head = self.model.model.model[-1]
+                    head_type = type(head).__name__
+                    logger.info(f"模型head类型: {head_type}")
+                    
+                    # 设置融合状态
+                    if hasattr(head, "is_fused"):
+                        head.is_fused = True
+                        logger.info("已设置模型head为融合状态")
+                    
+                    # 设置较低的置信度阈值
+                    if hasattr(head, "conf"):
+                        head.conf = 0.001  # 与官方保持一致
+                        logger.info("已设置模型head的置信度阈值为0.001")
+                    
+                    # 设置较高的最大检测数量
+                    if hasattr(head, "max_det"):
+                        head.max_det = 1000
+                        logger.info("已设置模型head的最大检测数量为1000")
+                except Exception as e:
+                    logger.warning(f"设置模型head参数时出错: {str(e)}")
+            
+            # 标记为已设置，避免重复操作
+            self._text_embedding_set = True
+            
+            logger.info("成功完成无提示模式设置")
+            return True
+
+        except Exception as e:
+            logger.error(f"设置YOLOE无提示模式失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
 
     def _prepare_prompt(self, image: np.ndarray) -> Dict[str, Any]:
         """
@@ -133,7 +493,19 @@ class YOLOEBaseAnalyzer:
         # 根据提示类型准备提示信息
         if self._internal_prompt_type == 1 and self.text_prompt:  # 文本提示
             prompt_data["text"] = self.text_prompt
-            logger.debug(f"使用文本提示: {self.text_prompt}")
+
+            # 只在首次或文本提示变化时输出调试日志
+            if not self._text_embedding_set or self._text_prompt_cache != self.text_prompt:
+                logger.debug(f"使用文本提示: {self.text_prompt}")
+
+                # 检查MobileCLIP模型文件是否存在
+                mobileclip_path = "mobileclip_blt.pt"
+                if not os.path.exists(mobileclip_path):
+                    mobileclip_path = "data/models/mobileclip_blt.pt"
+                    if not os.path.exists(mobileclip_path):
+                        logger.warning(f"MobileCLIP模型文件不存在: {mobileclip_path}")
+                    else:
+                        logger.info(f"找到MobileCLIP模型文件: {mobileclip_path}")
 
         elif self._internal_prompt_type == 2 and self.visual_prompt:  # 图像提示
             # 处理视觉提示
@@ -183,6 +555,103 @@ class YOLOEBaseAnalyzer:
             logger.debug(f"使用视觉提示: 类型={visual_type}, 数据={prompt_data}")
 
         return prompt_data
+
+    async def _save_result_image(self, image: np.ndarray, detections: List[Dict], task_name: Optional[str] = None) -> str:
+        """
+        保存带有检测结果的图片
+
+        Args:
+            image: 带有检测结果标注的图像
+            detections: 检测结果列表
+            task_name: 任务名称，用于文件名前缀
+
+        Returns:
+            str: 保存的图片路径，如果保存失败则返回None
+        """
+        try:
+            # 检查图像是否为空
+            if image is None or image.size == 0:
+                logger.warning("保存图片失败：图像为空")
+                return None
+
+            # 获取当前工作目录
+            current_dir = os.getcwd()
+
+            # 确保results目录存在
+            results_dir = os.path.join(current_dir, "results")
+            os.makedirs(results_dir, exist_ok=True)
+
+            # 确保每天的结果保存在单独的目录中
+            date_str = datetime.now().strftime("%Y%m%d")
+            date_dir = os.path.join(results_dir, date_str)
+            os.makedirs(date_dir, exist_ok=True)
+
+            # 生成类别信息字符串
+            classes_set = set()
+            for det in detections:
+                if "class_name" in det:
+                    classes_set.add(det["class_name"])
+
+            # 最多显示3个类别
+            classes_list = list(classes_set)[:3]
+            if len(classes_set) > 3:
+                classes_list.append("...")
+
+            classes_info = "_".join(classes_list) + "_"
+
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # 精确到毫秒
+            task_prefix = f"{task_name}_" if task_name else ""
+            filename = f"{task_prefix}{classes_info}{timestamp}.jpg"
+
+            # 完整的文件路径
+            file_path = os.path.join(date_dir, filename)
+
+            # 保存图片
+            try:
+                # 尝试使用cv2保存
+                success = cv2.imwrite(file_path, image)
+
+                if not success:
+                    # 尝试使用PIL保存
+                    try:
+                        from PIL import Image
+                        pil_image = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+                        pil_image.save(file_path)
+                    except Exception as e:
+                        # 尝试直接写入文件
+                        try:
+                            _, buffer = cv2.imencode(".jpg", image)
+                            with open(file_path, "wb") as f:
+                                f.write(buffer)
+                        except Exception as e2:
+                            logger.error(f"保存图片失败: {str(e2)}")
+                            return None
+
+                # 检查文件是否存在
+                if os.path.exists(file_path):
+                    file_size = os.path.getsize(file_path)
+                    # 检查文件大小是否正常
+                    if file_size == 0:
+                        logger.warning(f"保存的图片文件大小为0: {file_path}")
+                        return None
+                else:
+                    logger.warning(f"保存图片后文件不存在: {file_path}")
+                    return None
+            except Exception as e:
+                logger.error(f"保存图片时出错: {str(e)}")
+                return None
+
+            # 返回相对路径
+            relative_path = os.path.join("results", date_str, filename)
+            logger.info(f"检测结果图片已保存: {relative_path}")
+            return relative_path
+
+        except Exception as e:
+            logger.error(f"保存结果图片失败: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
 
 
 class YOLOEDetectionAnalyzer(DetectionAnalyzer, YOLOEBaseAnalyzer):
@@ -343,7 +812,80 @@ class YOLOEDetectionAnalyzer(DetectionAnalyzer, YOLOEBaseAnalyzer):
             # 执行检测
             # 根据提示类型选择不同的检测方法
             if self._internal_prompt_type == 0:  # 无提示
+                # 检查是否是YOLOE模型
+                if hasattr(self.model, "set_classes") and hasattr(self.model, "get_text_pe"):
+                    # 对于YOLOE模型，无提示模式需要特殊处理
+                    if not self._text_embedding_set:
+                        logger.info("检测到YOLOE模型，使用无提示全目标检测模式")
+
+                        # 尝试设置词汇表和类别名称，确保模型处于无提示模式
+                        try:
+                            # 检查是否有类别名称
+                            if self._prompt_free_class_names and len(self._prompt_free_class_names) > 0:
+                                # 使用正确的方式设置YOLOE无提示模式
+                                success = self._setup_yoloe_prompt_free_mode()
+                                if success:
+                                    logger.info(f"已设置YOLOE模型为无提示模式，使用 {len(self._prompt_free_class_names)} 个类别")
+                                    # 在无提示模式下，使用更低的置信度阈值以捕获更多目标
+                                    original_confidence = confidence
+                                    confidence = min(confidence, 0.01)  # 使用低置信度阈值
+                                    logger.info(f"在无提示模式下调整置信度阈值: {original_confidence} -> {confidence}")
+                                else:
+                                    logger.warning("使用新方法设置YOLOE无提示模式失败，尝试其他方法")
+                                    
+                                    # 使用稳定的方法创建临时names字典
+                                    names_dict = {}
+                                    
+                                    # 添加所有类别到临时字典
+                                    for i, name in enumerate(self._prompt_free_class_names):
+                                        names_dict[i] = name
+                                    
+                                    logger.info(f"回退方法: 已准备好 {len(self._prompt_free_class_names)} 个类别")
+                                    
+                                    # 为结果对象动态添加names属性
+                                    # 这样即使model.names不可设置，我们仍能在结果处理时使用这些类别名称
+                                    self._result_names_override = names_dict
+                                    
+                                    # 记录几个示例类别
+                                    preview = {i: names_dict[i] for i in range(min(5, len(names_dict)))}
+                                    logger.info(f"回退方法: 类别ID映射示例: {preview}")
+                                    
+                                    # 尝试设置model.prompt_free属性
+                                    if hasattr(self.model, "prompt_free"):
+                                        self.model.prompt_free = True
+                                        logger.info("回退方法: 已设置model.prompt_free=True")
+                                    
+                                    # 标记为已初始化
+                                    self._text_embedding_set = True
+                            else:
+                                logger.warning("无提示模式类别名称为空，无法完全设置YOLOE模型配置")
+                                # 尝试设置为无提示模式
+                                if hasattr(self.model, "prompt_free"):
+                                    self.model.prompt_free = True
+                                    logger.info("已设置YOLOE模型为无提示模式（无类别名称）")
+
+                            # 标记为已设置，避免重复操作
+                            self._text_embedding_set = True
+                        except Exception as e:
+                            logger.error(f"设置YOLOE模型无提示模式失败: {str(e)}")
+                            # 即使完全失败，我们也应该确保模型可以工作
+                            if hasattr(self.model, "names") and self._prompt_free_class_names:
+                                # 重新初始化names字典
+                                self.model.names = {}
+                                # 添加所有类别
+                                for i, name in enumerate(self._prompt_free_class_names):
+                                    self.model.names[i] = name
+                                logger.info(f"错误恢复: 已添加 {len(self._prompt_free_class_names)} 个类别到model.names")
+                            
+                            if hasattr(self.model, "prompt_free"):
+                                self.model.prompt_free = True
+                                logger.info("错误恢复: 已设置prompt_free=True")
+                            
+                            # 标记为已设置，避免重复尝试
+                            self._text_embedding_set = True
+
                 # 使用标准检测
+                logger.info(f"执行YOLOE检测: 置信度={confidence}, IoU阈值={iou_threshold}, 类别过滤={classes}, 最大检测数={max_detections}")
                 results = self.model(
                     image,
                     conf=confidence,
@@ -352,17 +894,97 @@ class YOLOEDetectionAnalyzer(DetectionAnalyzer, YOLOEBaseAnalyzer):
                     max_det=max_detections,
                     verbose=False  # 禁用自动打印
                 )
+                logger.info(f"检测完成，结果类型: {type(results)}, 结果长度: {len(results) if results else 0}")
             elif self._internal_prompt_type == 1 and self.text_prompt:  # 文本提示
                 # 使用文本提示检测
-                results = self.model(
-                    image,
-                    conf=confidence,
-                    iou=iou_threshold,
-                    classes=classes,
-                    max_det=max_detections,
-                    text_prompt=self.text_prompt,
-                    verbose=False  # 禁用自动打印
-                )
+                # 根据YOLOE官方文档，需要先设置类别和文本嵌入
+                try:
+                    # 检查是否是YOLOE模型
+                    is_yoloe_model = False
+                    if hasattr(self.model, "set_classes") and hasattr(self.model, "get_text_pe"):
+                        is_yoloe_model = True
+
+                        # 只在首次检测或文本提示变化时输出日志
+                        if not self._text_embedding_set:
+                            logger.info(f"检测到YOLOE模型，使用文本提示模式")
+
+                            # 检查MobileCLIP模型文件是否存在
+                            mobileclip_path = "mobileclip_blt.pt"
+                            if not os.path.exists(mobileclip_path):
+                                mobileclip_path = "data/models/mobileclip_blt.pt"
+                                if not os.path.exists(mobileclip_path):
+                                    logger.warning(f"MobileCLIP模型文件不存在: {mobileclip_path}，文本提示功能可能无法正常工作")
+                                else:
+                                    logger.info(f"找到MobileCLIP模型文件: {mobileclip_path}")
+
+                    if is_yoloe_model:
+                        # 检查是否需要重新设置文本嵌入
+                        need_setup = False
+
+                        # 如果文本提示发生变化或尚未设置过
+                        if not self._text_embedding_set or self._text_prompt_cache != self.text_prompt:
+                            need_setup = True
+
+                        if need_setup:
+                            # 设置类别和文本嵌入
+                            logger.info(f"使用YOLOE文本提示模式，设置类别: {self.text_prompt}")
+                            try:
+                                # 检查text_prompt是否为空
+                                if not self.text_prompt:
+                                    logger.warning("文本提示为空，无法设置YOLOE文本提示")
+                                else:
+                                    # 尝试获取文本嵌入
+                                    logger.info(f"正在获取文本嵌入: {self.text_prompt}")
+                                    text_pe = self.model.get_text_pe(self.text_prompt)
+
+                                    # 检查文本嵌入是否为None
+                                    if text_pe is None:
+                                        logger.warning("获取到的文本嵌入为None，无法设置YOLOE文本提示")
+                                    else:
+                                        # 设置类别和文本嵌入
+                                        logger.info(f"正在设置类别和文本嵌入: {len(self.text_prompt)}个类别")
+                                        self.model.set_classes(self.text_prompt, text_pe)
+                                        logger.info("成功设置YOLOE文本提示")
+
+                                        # 更新缓存
+                                        self._text_pe_cache = text_pe
+                                        self._text_prompt_cache = self.text_prompt.copy() if isinstance(self.text_prompt, list) else self.text_prompt
+                                        self._text_embedding_set = True
+                            except Exception as e:
+                                logger.error(f"设置YOLOE文本提示失败: {str(e)}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                        else:
+                            # 使用已缓存的文本嵌入，不输出日志
+                            pass
+                    else:
+                        # 只在首次检测时输出警告
+                        if not self._text_embedding_set:
+                            logger.warning("当前模型不是YOLOE模型或不支持文本提示，将使用标准检测")
+
+                    # 执行标准检测（不传递text_prompt参数）
+                    results = self.model(
+                        image,
+                        conf=confidence,
+                        iou=iou_threshold,
+                        classes=classes,
+                        max_det=max_detections,
+                        verbose=False  # 禁用自动打印
+                    )
+                except Exception as e:
+                    logger.error(f"YOLOE文本提示模式失败: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 回退到标准检测
+                    results = self.model(
+                        image,
+                        conf=confidence,
+                        iou=iou_threshold,
+                        classes=classes,
+                        max_detections=max_detections,
+                        verbose=False  # 禁用自动打印
+                    )
+
             elif self._internal_prompt_type == 2 and self.visual_prompt:  # 图像提示
                 # 使用视觉提示检测
                 if "mask" in prompt_data:
@@ -433,46 +1055,134 @@ class YOLOEDetectionAnalyzer(DetectionAnalyzer, YOLOEBaseAnalyzer):
                 # 获取第一帧结果
                 result = results[0]
 
-                # 获取边界框
-                boxes = result.boxes
+                # 记录结果信息
+                logger.info(f"检测结果信息: 类型={type(result)}, 属性={dir(result)[:10]}...")
 
-                # 只在检测到目标时记录日志
-                log_detections_if_found(result, boxes)
+                # 检查是否有boxes属性
+                if hasattr(result, "boxes"):
+                    # 获取边界框
+                    boxes = result.boxes
 
-                # 处理每个检测结果
-                for i in range(len(boxes)):
-                    # 获取边界框坐标
-                    box = boxes.xyxy[i].cpu().numpy()
+                    # 记录boxes信息
+                    logger.info(f"边界框信息: 类型={type(boxes)}, 数量={len(boxes) if boxes else 0}")
 
-                    # 如果使用了ROI，调整坐标
-                    if roi is not None:
-                        box[0] += roi[0]
-                        box[1] += roi[1]
-                        box[2] += roi[0]
-                        box[3] += roi[1]
+                    # 记录names信息
+                    if hasattr(result, "names"):
+                        logger.info(f"类别名称: {result.names}")
 
-                    # 获取置信度
-                    conf = float(boxes.conf[i].cpu().numpy())
+                    # 只在检测到目标时记录日志
+                    log_detections_if_found(result, boxes, self._prompt_free_class_names, self._internal_prompt_type, self._result_names_override)
+                else:
+                    logger.warning("检测结果中没有边界框信息")
 
-                    # 获取类别ID和名称
-                    cls_id = int(boxes.cls[i].cpu().numpy())
-                    cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                # 处理检测结果
+                if hasattr(result, "boxes") and result.boxes is not None and len(result.boxes) > 0:
+                    # 处理每个检测结果
+                    for i in range(len(boxes)):
+                        try:
+                            # 获取边界框坐标
+                            box = boxes.xyxy[i].cpu().numpy()
 
-                    # 创建检测结果
-                    detection = {
-                        "bbox": [float(box[0]), float(box[1]), float(box[2]), float(box[3])],
-                        "confidence": conf,
-                        "class_id": cls_id,
-                        "class_name": cls_name
-                    }
+                            # 如果使用了ROI，调整坐标
+                            if roi is not None:
+                                box[0] += roi[0]
+                                box[1] += roi[1]
+                                box[2] += roi[0]
+                                box[3] += roi[1]
 
-                    detections.append(detection)
+                            # 获取置信度
+                            conf = float(boxes.conf[i].cpu().numpy())
+
+                            # 获取类别ID和名称
+                            cls_id = int(boxes.cls[i].cpu().numpy())
+                            
+                            # 在无提示模式下，按优先级顺序尝试获取类别名称
+                            if self._internal_prompt_type == 0:
+                                # 1. 首先从model.names获取
+                                if hasattr(self.model, "names") and isinstance(self.model.names, dict) and cls_id in self.model.names:
+                                    cls_name = self.model.names[cls_id]
+                                    logger.debug(f"从model.names获取类别：ID={cls_id}, 名称={cls_name}")
+                                # 2. 如果model.names中没有，但有_result_names_override，则从_result_names_override获取
+                                elif self._result_names_override and cls_id in self._result_names_override:
+                                    cls_name = self._result_names_override[cls_id]
+                                    logger.debug(f"从_result_names_override获取类别：ID={cls_id}, 名称={cls_name}")
+                                # 3. 如果_result_names_override中没有，但有_prompt_free_class_names，则从_prompt_free_class_names获取
+                                elif self._prompt_free_class_names and 0 <= cls_id < len(self._prompt_free_class_names):
+                                    cls_name = self._prompt_free_class_names[cls_id]
+                                    logger.debug(f"从_prompt_free_class_names获取类别：ID={cls_id}, 名称={cls_name}")
+                                # 4. 最后从result.names获取或使用默认名称
+                                else:
+                                    cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                                    logger.debug(f"从result.names获取类别：ID={cls_id}, 名称={cls_name}")
+                            elif self._internal_prompt_type == 1 and self.text_prompt and 0 <= cls_id < len(self.text_prompt):
+                                cls_name = self.text_prompt[cls_id]
+                                logger.debug(f"文本提示类别映射: ID={cls_id}, 名称={cls_name}")
+                            # 其他情况，使用模型的默认类别名称
+                            else:
+                                cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                                logger.debug(f"使用默认类别名称：ID={cls_id}, 名称={cls_name}")
+
+                            # 创建检测结果
+                            detection = {
+                                "bbox": [float(box[0]), float(box[1]), float(box[2]), float(box[3])],
+                                "confidence": conf,
+                                "class_id": cls_id,
+                                "class_name": cls_name
+                            }
+
+                            detections.append(detection)
+
+                        except Exception as e:
+                            logger.error(f"处理检测结果时出错: {str(e)}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+                else:
+                    logger.info("没有检测到任何目标，返回空的检测结果列表")
 
             # 后处理时间
             post_process_time = time.time() - post_process_start
 
             # 总时间
             total_time = time.time() - start_time
+
+            # 检查是否需要保存图片
+            save_images = kwargs.get("save_images", False)
+            annotated_image_bytes = None
+
+            # 处理图像保存
+            if results and len(results) > 0 and len(detections) > 0:
+                try:
+                    # 使用自定义绘图方法，确保在无提示模式下使用正确的类别名称
+                    if self._internal_prompt_type == 0 and len(self._prompt_free_class_names) > 0:
+                        # 在无提示模式下使用自定义绘图方法
+                        annotated_image = custom_plot_detections(
+                            image, result, boxes,
+                            self._prompt_free_class_names,
+                            self._internal_prompt_type,
+                            self._result_names_override
+                        )
+                    else:
+                        # 其他模式下使用ultralytics自带的plot方法
+                        annotated_image = results[0].plot()
+
+                    # 编码图像
+                    is_success, buffer = cv2.imencode(".jpg", annotated_image)
+                    if not is_success:
+                        logger.warning("标注图像编码失败")
+                    else:
+                        annotated_image_bytes = buffer.tobytes()
+
+                        # 只在检测到目标时才保存图片
+                        if save_images:
+                            # 获取任务名称
+                            task_name = kwargs.get("task_name", None)
+
+                            # 保存图片
+                            await self._save_result_image(annotated_image, detections, task_name)
+                except Exception as plot_err:
+                    logger.error(f"绘制或编码标注图像时出错: {str(plot_err)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
 
             # 返回结果
             return {
@@ -481,7 +1191,7 @@ class YOLOEDetectionAnalyzer(DetectionAnalyzer, YOLOEBaseAnalyzer):
                 "inference_time": inference_time * 1000,  # 转换为毫秒
                 "post_process_time": post_process_time * 1000,  # 转换为毫秒
                 "total_time": total_time * 1000,  # 转换为毫秒
-                "annotated_image_bytes": None
+                "annotated_image_bytes": annotated_image_bytes
             }
 
         except Exception as e:
@@ -676,6 +1386,78 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
             # 执行分割
             # 根据提示类型选择不同的分割方法
             if self._internal_prompt_type == 0:  # 无提示
+                # 检查是否是YOLOE模型
+                if hasattr(self.model, "set_classes") and hasattr(self.model, "get_text_pe"):
+                    # 对于YOLOE模型，无提示模式需要特殊处理
+                    if not self._text_embedding_set:
+                        logger.info("检测到YOLOE模型，使用无提示全目标检测模式")
+
+                        # 尝试设置词汇表和类别名称，确保模型处于无提示模式
+                        try:
+                            # 检查是否有类别名称
+                            if self._prompt_free_class_names and len(self._prompt_free_class_names) > 0:
+                                # 使用正确的方式设置YOLOE无提示模式
+                                success = self._setup_yoloe_prompt_free_mode()
+                                if success:
+                                    logger.info(f"已设置YOLOE分割模型为无提示模式，使用 {len(self._prompt_free_class_names)} 个类别")
+                                    # 在无提示模式下，使用更低的置信度阈值以捕获更多目标
+                                    original_confidence = confidence
+                                    confidence = min(confidence, 0.01)  # 使用低置信度阈值
+                                    logger.info(f"在无提示模式下调整置信度阈值: {original_confidence} -> {confidence}")
+                                else:
+                                    logger.warning("使用新方法设置YOLOE分割模型无提示模式失败，尝试其他方法")
+                                    
+                                    # 使用稳定的方法创建临时names字典
+                                    names_dict = {}
+                                    
+                                    # 添加所有类别到临时字典
+                                    for i, name in enumerate(self._prompt_free_class_names):
+                                        names_dict[i] = name
+                                    
+                                    logger.info(f"回退方法: 已准备好 {len(self._prompt_free_class_names)} 个类别")
+                                    
+                                    # 为结果对象动态添加names属性
+                                    # 这样即使model.names不可设置，我们仍能在结果处理时使用这些类别名称
+                                    self._result_names_override = names_dict
+                                    
+                                    # 记录几个示例类别
+                                    preview = {i: names_dict[i] for i in range(min(5, len(names_dict)))}
+                                    logger.info(f"回退方法: 类别ID映射示例: {preview}")
+                                    
+                                    # 尝试设置model.prompt_free属性
+                                    if hasattr(self.model, "prompt_free"):
+                                        self.model.prompt_free = True
+                                        logger.info("回退方法: 已设置model.prompt_free=True")
+                                    
+                                    # 标记为已初始化
+                                    self._text_embedding_set = True
+                            else:
+                                logger.warning("无提示模式类别名称为空，无法完全设置YOLOE模型配置")
+                                # 尝试设置为无提示模式
+                                if hasattr(self.model, "prompt_free"):
+                                    self.model.prompt_free = True
+                                    logger.info("已设置YOLOE模型为无提示模式（无类别名称）")
+
+                            # 标记为已设置，避免重复操作
+                            self._text_embedding_set = True
+                        except Exception as e:
+                            logger.error(f"设置YOLOE分割模型无提示模式失败: {str(e)}")
+                            # 即使完全失败，我们也应该确保模型可以工作
+                            if hasattr(self.model, "names") and self._prompt_free_class_names:
+                                # 重新初始化names字典
+                                self.model.names = {}
+                                # 添加所有类别
+                                for i, name in enumerate(self._prompt_free_class_names):
+                                    self.model.names[i] = name
+                                logger.info(f"错误恢复: 已添加 {len(self._prompt_free_class_names)} 个类别到model.names")
+                            
+                            if hasattr(self.model, "prompt_free"):
+                                self.model.prompt_free = True
+                                logger.info("错误恢复: 已设置prompt_free=True")
+                            
+                            # 标记为已设置，避免重复尝试
+                            self._text_embedding_set = True
+
                 # 使用标准分割
                 results = self.model(
                     image,
@@ -688,16 +1470,96 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
                 )
             elif self._internal_prompt_type == 1 and self.text_prompt:  # 文本提示
                 # 使用文本提示分割
-                results = self.model(
-                    image,
-                    conf=confidence,
-                    iou=iou_threshold,
-                    classes=classes,
-                    max_det=max_detections,
-                    retina_masks=True,
-                    text_prompt=self.text_prompt,
-                    verbose=False  # 禁用自动打印
-                )
+                # 根据YOLOE官方文档，需要先设置类别和文本嵌入
+                try:
+                    # 检查是否是YOLOE模型
+                    is_yoloe_model = False
+                    if hasattr(self.model, "set_classes") and hasattr(self.model, "get_text_pe"):
+                        is_yoloe_model = True
+
+                        # 只在首次检测或文本提示变化时输出日志
+                        if not self._text_embedding_set:
+                            logger.info(f"检测到YOLOE模型，使用文本提示模式")
+
+                            # 检查MobileCLIP模型文件是否存在
+                            mobileclip_path = "mobileclip_blt.pt"
+                            if not os.path.exists(mobileclip_path):
+                                mobileclip_path = "data/models/mobileclip_blt.pt"
+                                if not os.path.exists(mobileclip_path):
+                                    logger.warning(f"MobileCLIP模型文件不存在: {mobileclip_path}，文本提示功能可能无法正常工作")
+                                else:
+                                    logger.info(f"找到MobileCLIP模型文件: {mobileclip_path}")
+
+                    if is_yoloe_model:
+                        # 检查是否需要重新设置文本嵌入
+                        need_setup = False
+
+                        # 如果文本提示发生变化或尚未设置过
+                        if not self._text_embedding_set or self._text_prompt_cache != self.text_prompt:
+                            need_setup = True
+
+                        if need_setup:
+                            # 设置类别和文本嵌入
+                            logger.info(f"使用YOLOE文本提示模式，设置类别: {self.text_prompt}")
+                            try:
+                                # 检查text_prompt是否为空
+                                if not self.text_prompt:
+                                    logger.warning("文本提示为空，无法设置YOLOE文本提示")
+                                else:
+                                    # 尝试获取文本嵌入
+                                    logger.info(f"正在获取文本嵌入: {self.text_prompt}")
+                                    text_pe = self.model.get_text_pe(self.text_prompt)
+
+                                    # 检查文本嵌入是否为None
+                                    if text_pe is None:
+                                        logger.warning("获取到的文本嵌入为None，无法设置YOLOE文本提示")
+                                    else:
+                                        # 设置类别和文本嵌入
+                                        logger.info(f"正在设置类别和文本嵌入: {len(self.text_prompt)}个类别")
+                                        self.model.set_classes(self.text_prompt, text_pe)
+                                        logger.info("成功设置YOLOE文本提示")
+
+                                        # 更新缓存
+                                        self._text_pe_cache = text_pe
+                                        self._text_prompt_cache = self.text_prompt.copy() if isinstance(self.text_prompt, list) else self.text_prompt
+                                        self._text_embedding_set = True
+                            except Exception as e:
+                                logger.error(f"设置YOLOE文本提示失败: {str(e)}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+                        else:
+                            # 使用已缓存的文本嵌入，不输出日志
+                            pass
+                    else:
+                        # 只在首次检测时输出警告
+                        if not self._text_embedding_set:
+                            logger.warning("当前模型不是YOLOE模型或不支持文本提示，将使用标准分割")
+
+                    # 执行标准分割（不传递text_prompt参数）
+                    results = self.model(
+                        image,
+                        conf=confidence,
+                        iou=iou_threshold,
+                        classes=classes,
+                        max_det=max_detections,
+                        retina_masks=True,
+                        verbose=False  # 禁用自动打印
+                    )
+                except Exception as e:
+                    logger.error(f"YOLOE文本提示模式失败: {str(e)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+                    # 回退到标准分割
+                    results = self.model(
+                        image,
+                        conf=confidence,
+                        iou=iou_threshold,
+                        classes=classes,
+                        max_det=max_detections,
+                        retina_masks=True,
+                        verbose=False  # 禁用自动打印
+                    )
+
             elif self._internal_prompt_type == 2 and self.visual_prompt:  # 图像提示
                 # 使用视觉提示分割
                 if "mask" in prompt_data:
@@ -782,7 +1644,7 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
                     boxes = result.boxes
 
                     # 只在检测到目标时记录日志
-                    log_detections_if_found(result, boxes)
+                    log_detections_if_found(result, boxes, self._prompt_free_class_names, self._internal_prompt_type, self._result_names_override)
 
                     # 处理每个分割结果
                     for i in range(len(masks)):
@@ -812,7 +1674,32 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
 
                         # 获取类别ID和名称
                         cls_id = int(boxes.cls[i].cpu().numpy())
-                        cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                        
+                        # 在无提示模式下，按优先级顺序尝试获取类别名称
+                        if self._internal_prompt_type == 0:
+                            # 1. 首先从model.names获取
+                            if hasattr(self.model, "names") and isinstance(self.model.names, dict) and cls_id in self.model.names:
+                                cls_name = self.model.names[cls_id]
+                                logger.debug(f"从model.names获取类别：ID={cls_id}, 名称={cls_name}")
+                            # 2. 如果model.names中没有，但有_result_names_override，则从_result_names_override获取
+                            elif self._result_names_override and cls_id in self._result_names_override:
+                                cls_name = self._result_names_override[cls_id]
+                                logger.debug(f"从_result_names_override获取类别：ID={cls_id}, 名称={cls_name}")
+                            # 3. 如果_result_names_override中没有，但有_prompt_free_class_names，则从_prompt_free_class_names获取
+                            elif self._prompt_free_class_names and 0 <= cls_id < len(self._prompt_free_class_names):
+                                cls_name = self._prompt_free_class_names[cls_id]
+                                logger.debug(f"从_prompt_free_class_names获取类别：ID={cls_id}, 名称={cls_name}")
+                            # 4. 最后从result.names获取或使用默认名称
+                            else:
+                                cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                                logger.debug(f"从result.names获取类别：ID={cls_id}, 名称={cls_name}")
+                        elif self._internal_prompt_type == 1 and self.text_prompt and 0 <= cls_id < len(self.text_prompt):
+                            cls_name = self.text_prompt[cls_id]
+                            logger.debug(f"文本提示类别映射: ID={cls_id}, 名称={cls_name}")
+                        # 其他情况，使用模型的默认类别名称
+                        else:
+                            cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                            logger.debug(f"使用默认类别名称：ID={cls_id}, 名称={cls_name}")
 
                         # 创建分割结果
                         segmentation = {
@@ -829,7 +1716,7 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
                     boxes = result.boxes
 
                     # 只在检测到目标时记录日志
-                    log_detections_if_found(result, boxes)
+                    log_detections_if_found(result, boxes, self._prompt_free_class_names, self._internal_prompt_type, self._result_names_override)
 
                     # 处理每个检测结果
                     for i in range(len(boxes)):
@@ -848,7 +1735,32 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
 
                         # 获取类别ID和名称
                         cls_id = int(boxes.cls[i].cpu().numpy())
-                        cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                        
+                        # 在无提示模式下，按优先级顺序尝试获取类别名称
+                        if self._internal_prompt_type == 0:
+                            # 1. 首先从model.names获取
+                            if hasattr(self.model, "names") and isinstance(self.model.names, dict) and cls_id in self.model.names:
+                                cls_name = self.model.names[cls_id]
+                                logger.debug(f"从model.names获取类别：ID={cls_id}, 名称={cls_name}")
+                            # 2. 如果model.names中没有，但有_result_names_override，则从_result_names_override获取
+                            elif self._result_names_override and cls_id in self._result_names_override:
+                                cls_name = self._result_names_override[cls_id]
+                                logger.debug(f"从_result_names_override获取类别：ID={cls_id}, 名称={cls_name}")
+                            # 3. 如果_result_names_override中没有，但有_prompt_free_class_names，则从_prompt_free_class_names获取
+                            elif self._prompt_free_class_names and 0 <= cls_id < len(self._prompt_free_class_names):
+                                cls_name = self._prompt_free_class_names[cls_id]
+                                logger.debug(f"从_prompt_free_class_names获取类别：ID={cls_id}, 名称={cls_name}")
+                            # 4. 最后从result.names获取或使用默认名称
+                            else:
+                                cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                                logger.debug(f"从result.names获取类别：ID={cls_id}, 名称={cls_name}")
+                        elif self._internal_prompt_type == 1 and self.text_prompt and 0 <= cls_id < len(self.text_prompt):
+                            cls_name = self.text_prompt[cls_id]
+                            logger.debug(f"文本提示类别映射: ID={cls_id}, 名称={cls_name}")
+                        # 其他情况，使用模型的默认类别名称
+                        else:
+                            cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                            logger.debug(f"使用默认类别名称：ID={cls_id}, 名称={cls_name}")
 
                         # 创建分割结果（无掩码）
                         segmentation = {
@@ -867,6 +1779,45 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
             # 总时间
             total_time = time.time() - start_time
 
+            # 检查是否需要保存图片
+            save_images = kwargs.get("save_images", False)
+            annotated_image_bytes = None
+
+            # 处理图像保存
+            if results and len(results) > 0 and len(segmentations) > 0:
+                try:
+                    # 使用自定义绘图方法，确保在无提示模式下使用正确的类别名称
+                    if self._internal_prompt_type == 0 and len(self._prompt_free_class_names) > 0 and hasattr(result, "boxes"):
+                        # 在无提示模式下使用自定义绘图方法
+                        annotated_image = custom_plot_detections(
+                            image, result, result.boxes,
+                            self._prompt_free_class_names,
+                            self._internal_prompt_type,
+                            self._result_names_override
+                        )
+                    else:
+                        # 其他模式下使用ultralytics自带的plot方法
+                        annotated_image = results[0].plot()
+
+                    # 编码图像
+                    is_success, buffer = cv2.imencode(".jpg", annotated_image)
+                    if not is_success:
+                        logger.warning("标注图像编码失败")
+                    else:
+                        annotated_image_bytes = buffer.tobytes()
+
+                        # 只在检测到目标时才保存图片
+                        if save_images:
+                            # 获取任务名称
+                            task_name = kwargs.get("task_name", None)
+
+                            # 保存图片
+                            await self._save_result_image(annotated_image, segmentations, task_name)
+                except Exception as plot_err:
+                    logger.error(f"绘制或编码标注图像时出错: {str(plot_err)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
             # 返回结果
             return {
                 "segmentations": segmentations,
@@ -874,7 +1825,7 @@ class YOLOESegmentationAnalyzer(SegmentationAnalyzer, YOLOEBaseAnalyzer):
                 "inference_time": inference_time * 1000,  # 转换为毫秒
                 "post_process_time": post_process_time * 1000,  # 转换为毫秒
                 "total_time": total_time * 1000,  # 转换为毫秒
-                "annotated_image_bytes": None
+                "annotated_image_bytes": annotated_image_bytes
             }
 
         except Exception as e:
@@ -1072,6 +2023,37 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
             # 执行检测
             # 根据提示类型选择不同的检测方法
             if self._internal_prompt_type == 0:  # 无提示
+                # 检查是否是YOLOE模型
+                if hasattr(self.model, "set_classes") and hasattr(self.model, "get_text_pe"):
+                    # 对于YOLOE模型，无提示模式需要特殊处理
+                    if not self._text_embedding_set:
+                        logger.info("检测到YOLOE模型，使用无提示全目标检测模式")
+
+                        # 尝试重置类别设置，确保模型处于无提示模式
+                        try:
+                            # 对于YOLOE模型，需要设置为无提示模式
+                            if hasattr(self.model, "reset_classes"):
+                                self.model.reset_classes()
+                                logger.info("已重置YOLOE模型类别设置，启用全目标检测")
+                            elif hasattr(self.model, "model") and hasattr(self.model.model, "reset_classes"):
+                                self.model.model.reset_classes()
+                                logger.info("已重置YOLOE模型类别设置（内部模型），启用全目标检测")
+                            # 如果没有reset_classes方法，尝试直接设置为无提示模式
+                            elif hasattr(self.model, "prompt_free"):
+                                self.model.prompt_free = True
+                                logger.info("已设置YOLOE模型为无提示模式")
+                            elif hasattr(self.model, "model") and hasattr(self.model.model, "prompt_free"):
+                                self.model.model.prompt_free = True
+                                logger.info("已设置YOLOE模型为无提示模式（内部模型）")
+                            # 设置较低的置信度阈值，以便检测更多目标
+                            if confidence > 0.1:
+                                logger.info(f"在无提示模式下降低置信度阈值: {confidence} -> 0.05")
+                                confidence = 0.05
+                            # 标记为已设置，避免重复操作
+                            self._text_embedding_set = True
+                        except Exception as e:
+                            logger.error(f"重置YOLOE模型类别设置失败: {str(e)}")
+
                 # 使用标准检测
                 results = self.model(
                     image,
@@ -1083,13 +2065,50 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
                 )
             elif self._internal_prompt_type == 1 and self.text_prompt:  # 文本提示
                 # 使用文本提示检测
+                # 检查是否需要设置文本嵌入
+                if hasattr(self.model, "set_classes") and hasattr(self.model, "get_text_pe"):
+                    # 检查是否需要重新设置文本嵌入
+                    need_setup = False
+
+                    # 如果文本提示发生变化或尚未设置过
+                    if not self._text_embedding_set or self._text_prompt_cache != self.text_prompt:
+                        need_setup = True
+
+                    if need_setup:
+                        try:
+                            # 检查text_prompt是否为空
+                            if not self.text_prompt:
+                                logger.warning("文本提示为空，无法设置YOLOE文本提示")
+                            else:
+                                # 尝试获取文本嵌入
+                                logger.info(f"正在获取文本嵌入: {self.text_prompt}")
+                                text_pe = self.model.get_text_pe(self.text_prompt)
+
+                                # 检查文本嵌入是否为None
+                                if text_pe is None:
+                                    logger.warning("获取到的文本嵌入为None，无法设置YOLOE文本提示")
+                                else:
+                                    # 设置类别和文本嵌入
+                                    logger.info(f"正在设置类别和文本嵌入: {len(self.text_prompt)}个类别")
+                                    self.model.set_classes(self.text_prompt, text_pe)
+                                    logger.info("成功设置YOLOE文本提示")
+
+                                    # 更新缓存
+                                    self._text_pe_cache = text_pe
+                                    self._text_prompt_cache = self.text_prompt.copy() if isinstance(self.text_prompt, list) else self.text_prompt
+                                    self._text_embedding_set = True
+                        except Exception as e:
+                            logger.error(f"设置YOLOE文本提示失败: {str(e)}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+
+                # 执行标准检测（不传递text_prompt参数）
                 results = self.model(
                     image,
                     conf=confidence,
                     iou=iou_threshold,
                     classes=classes,
                     max_det=max_detections,
-                    text_prompt=self.text_prompt,
                     verbose=False
                 )
             elif self._internal_prompt_type == 2 and self.visual_prompt:  # 图像提示
@@ -1114,7 +2133,7 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
                         classes=classes,
                         max_det=max_detections,
                         box_prompt=prompt_data["box"],
-                        verbose=False
+                        verbose=False  # 禁用自动打印
                     )
                 elif "points" in prompt_data:
                     # 使用点提示
@@ -1125,7 +2144,7 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
                         classes=classes,
                         max_det=max_detections,
                         point_prompt=prompt_data["points"],
-                        verbose=False
+                        verbose=False  # 禁用自动打印
                     )
                 else:
                     # 没有有效的视觉提示，使用标准检测
@@ -1166,7 +2185,7 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
                 boxes = result.boxes
 
                 # 只在检测到目标时记录日志
-                log_detections_if_found(result, boxes)
+                log_detections_if_found(result, boxes, self._prompt_free_class_names, self._internal_prompt_type, self._result_names_override)
 
                 # 处理每个检测结果
                 for i in range(len(boxes)):
@@ -1185,7 +2204,32 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
 
                     # 获取类别ID和名称
                     cls_id = int(boxes.cls[i].cpu().numpy())
-                    cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                    
+                    # 在无提示模式下，按优先级顺序尝试获取类别名称
+                    if self._internal_prompt_type == 0:
+                        # 1. 首先从model.names获取
+                        if hasattr(self.model, "names") and isinstance(self.model.names, dict) and cls_id in self.model.names:
+                            cls_name = self.model.names[cls_id]
+                            logger.debug(f"从model.names获取类别：ID={cls_id}, 名称={cls_name}")
+                        # 2. 如果model.names中没有，但有_result_names_override，则从_result_names_override获取
+                        elif self._result_names_override and cls_id in self._result_names_override:
+                            cls_name = self._result_names_override[cls_id]
+                            logger.debug(f"从_result_names_override获取类别：ID={cls_id}, 名称={cls_name}")
+                        # 3. 如果_result_names_override中没有，但有_prompt_free_class_names，则从_prompt_free_class_names获取
+                        elif self._prompt_free_class_names and 0 <= cls_id < len(self._prompt_free_class_names):
+                            cls_name = self._prompt_free_class_names[cls_id]
+                            logger.debug(f"从_prompt_free_class_names获取类别：ID={cls_id}, 名称={cls_name}")
+                        # 4. 最后从result.names获取或使用默认名称
+                        else:
+                            cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                            logger.debug(f"从result.names获取类别：ID={cls_id}, 名称={cls_name}")
+                    elif self._internal_prompt_type == 1 and self.text_prompt and 0 <= cls_id < len(self.text_prompt):
+                        cls_name = self.text_prompt[cls_id]
+                        logger.debug(f"文本提示类别映射: ID={cls_id}, 名称={cls_name}")
+                    # 其他情况，使用模型的默认类别名称
+                    else:
+                        cls_name = result.names.get(cls_id, f"class_{cls_id}")
+                        logger.debug(f"使用默认类别名称：ID={cls_id}, 名称={cls_name}")
 
                     # 创建检测结果
                     detection = {
@@ -1220,6 +2264,47 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
             # 总时间
             total_time = time.time() - start_time
 
+            # 检查是否需要保存图片
+            save_images = kwargs.get("save_images", False)
+            annotated_image_bytes = None
+
+            # 处理图像保存
+            if results and len(results) > 0 and (len(detections) > 0 or len(tracked_objects) > 0):
+                try:
+                    # 使用自定义绘图方法，确保在无提示模式下使用正确的类别名称
+                    if self._internal_prompt_type == 0 and len(self._prompt_free_class_names) > 0:
+                        # 在无提示模式下使用自定义绘图方法
+                        annotated_image = custom_plot_detections(
+                            image, result, boxes,
+                            self._prompt_free_class_names,
+                            self._internal_prompt_type,
+                            self._result_names_override
+                        )
+                    else:
+                        # 其他模式下使用ultralytics自带的plot方法
+                        annotated_image = results[0].plot()
+
+                    # 编码图像
+                    is_success, buffer = cv2.imencode(".jpg", annotated_image)
+                    if not is_success:
+                        logger.warning("标注图像编码失败")
+                    else:
+                        annotated_image_bytes = buffer.tobytes()
+
+                        # 只在检测到目标时才保存图片
+                        if save_images:
+                            # 获取任务名称
+                            task_name = kwargs.get("task_name", None)
+
+                            # 保存图片
+                            # 优先使用跟踪结果，如果没有则使用检测结果
+                            results_to_save = tracked_objects if tracked_objects else detections
+                            await self._save_result_image(annotated_image, results_to_save, task_name)
+                except Exception as plot_err:
+                    logger.error(f"绘制或编码标注图像时出错: {str(plot_err)}")
+                    import traceback
+                    logger.error(traceback.format_exc())
+
             # 返回结果
             return {
                 "detections": detections,
@@ -1228,7 +2313,7 @@ class YOLOETrackingAnalyzer(TrackingAnalyzer, YOLOEBaseAnalyzer):
                 "inference_time": inference_time * 1000,  # 转换为毫秒
                 "post_process_time": post_process_time * 1000,  # 转换为毫秒
                 "total_time": total_time * 1000,  # 转换为毫秒
-                "annotated_image_bytes": None
+                "annotated_image_bytes": annotated_image_bytes
             }
 
         except Exception as e:

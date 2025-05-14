@@ -42,6 +42,9 @@ class TaskProcessor:
         self.result_handlers = {}
         self.stop_events = {}
 
+        # 预览相关
+        self.preview_frames = {}  # 存储最新的分析结果帧，用于预览
+
     async def initialize(self):
         """初始化任务处理器"""
         # 确保日志目录存在
@@ -247,6 +250,12 @@ class TaskProcessor:
                     **analysis_config  # 传递分析配置
                 }
 
+                # 检查是否明确指定了使用YOLOE分析器
+                use_yoloe_analyzer = analysis_config.get("use_yoloe_analyzer", False)
+                if use_yoloe_analyzer:
+                    logger.info(f"工作进程 {task_id}: 明确指定使用YOLOE分析器")
+                    analyzer_params["use_yoloe_analyzer"] = True
+
                 # 导入美化打印函数
                 from shared.utils.tools import pretty_print
 
@@ -282,52 +291,114 @@ class TaskProcessor:
                 })
                 return
 
-            # 打开视频流
+            # 打开视频流 - 添加重试逻辑
             logger.info(f"工作进程 {task_id}: 尝试打开视频流: {stream_url}")
 
-            # 重定向标准错误输出，捕获FFmpeg错误信息
-            original_stderr = sys.stderr
-            error_buffer = io.StringIO()
-            sys.stderr = error_buffer
+            # 重试相关变量
+            initial_retry_delay = 10  # 初始重试间隔（秒）
+            max_retry_time = 24 * 60 * 60  # 最大重试时间（24小时，单位：秒）
+            retry_count = 0
+            retry_delay = initial_retry_delay
+            first_retry_time = None
+            cap = None
+            stream_connected = False
 
-            try:
-                cap = cv2.VideoCapture(stream_url)
-                if not cap.isOpened():
-                    # 获取捕获的错误信息
-                    ffmpeg_errors = ""
+            # 更新任务状态为重试中
+            self.task_manager.update_task_status(task_id, TaskStatus.RETRYING)
+
+            # 重试循环
+            while not stop_event.is_set():
+                # 重定向标准错误输出，捕获FFmpeg错误信息
+                original_stderr = sys.stderr
+                error_buffer = io.StringIO()
+                sys.stderr = error_buffer
+
+                try:
+                    # 尝试打开视频流
+                    if cap is not None:
+                        # 如果之前有打开过，先释放资源
+                        cap.release()
+
+                    cap = cv2.VideoCapture(stream_url)
+                    stream_connected = cap.isOpened()
+
+                    if not stream_connected:
+                        # 获取捕获的错误信息
+                        ffmpeg_errors = ""
+                        try:
+                            # 确保error_buffer是StringIO对象
+                            if hasattr(error_buffer, 'getvalue'):
+                                ffmpeg_errors = error_buffer.getvalue()
+                        except Exception as buffer_err:
+                            logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
+
+                        if ffmpeg_errors:
+                            # 将FFmpeg错误记录到专门的日志文件
+                            stream_error_logger.error(f"视频流打开失败 (任务ID: {task_id}):\n{ffmpeg_errors}")
+
+                        # 记录第一次重试的时间
+                        if first_retry_time is None:
+                            first_retry_time = time.time()
+                            logger.warning(f"工作进程 {task_id}: 无法打开视频流，开始重试...")
+
+                        # 检查是否超过最大重试时间
+                        current_time = time.time()
+                        if current_time - first_retry_time > max_retry_time:
+                            logger.error(f"工作进程 {task_id}: 重试超过24小时，停止任务")
+                            result_queue.put({
+                                "type": "error",
+                                "message": f"无法打开视频流，重试超过24小时: {stream_url}"
+                            })
+                            return
+
+                        # 增加重试计数并计算下一次重试延迟
+                        retry_count += 1
+                        # 指数退避策略，但最大不超过5分钟
+                        retry_delay = min(initial_retry_delay * (1.5 ** min(retry_count, 10)), 300)
+
+                        logger.warning(f"工作进程 {task_id}: 无法打开视频流，将在 {retry_delay:.1f} 秒后进行第 {retry_count} 次重试 (已重试时间: {(current_time - first_retry_time) / 60:.1f} 分钟)")
+
+                        # 等待重试间隔时间，同时检查停止事件
+                        retry_start = time.time()
+                        while time.time() - retry_start < retry_delay:
+                            if stop_event.is_set():
+                                logger.info(f"工作进程 {task_id}: 在重试等待期间收到停止信号")
+                                return
+                            await asyncio.sleep(0.5)  # 小间隔检查停止事件
+
+                        # 继续下一次重试
+                        continue
+                    else:
+                        # 连接成功，重置重试状态
+                        if retry_count > 0:
+                            logger.info(f"工作进程 {task_id}: 视频流连接成功，重试次数: {retry_count}")
+
+                        # 更新任务状态为处理中
+                        self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING)
+                        break  # 退出重试循环
+                finally:
+                    # 恢复标准错误输出
+                    captured_errors = ""
                     try:
                         # 确保error_buffer是StringIO对象
                         if hasattr(error_buffer, 'getvalue'):
-                            ffmpeg_errors = error_buffer.getvalue()
+                            captured_errors = error_buffer.getvalue()
                     except Exception as buffer_err:
                         logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
 
-                    if ffmpeg_errors:
-                        # 将FFmpeg错误记录到专门的日志文件
-                        stream_error_logger.error(f"视频流打开失败 (任务ID: {task_id}):\n{ffmpeg_errors}")
+                    sys.stderr = original_stderr
 
-                    logger.error(f"工作进程 {task_id}: 无法打开视频流: {stream_url}")
-                    result_queue.put({
-                        "type": "error",
-                        "message": f"无法打开视频流: {stream_url}"
-                    })
-                    return
-            finally:
-                # 恢复标准错误输出
-                captured_errors = ""
-                try:
-                    # 确保error_buffer是StringIO对象
-                    if hasattr(error_buffer, 'getvalue'):
-                        captured_errors = error_buffer.getvalue()
-                except Exception as buffer_err:
-                    logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
+                    # 如果有捕获到错误，记录到专门的日志文件
+                    if captured_errors:
+                        # 记录所有捕获的错误
+                        stream_error_logger.error(f"视频流初始化信息 (任务ID: {task_id}):\n{captured_errors}")
 
-                sys.stderr = original_stderr
-
-                # 如果有捕获到错误，记录到专门的日志文件
-                if captured_errors:
-                    # 记录所有捕获的错误
-                    stream_error_logger.error(f"视频流初始化信息 (任务ID: {task_id}):\n{captured_errors}")
+            # 如果收到停止信号，直接返回
+            if stop_event.is_set():
+                logger.info(f"工作进程 {task_id}: 在视频流连接过程中收到停止信号")
+                if cap is not None:
+                    cap.release()
+                return
 
             # 获取视频信息
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -351,7 +422,11 @@ class TaskProcessor:
 
             frame_count = 0
 
-            # 主循环
+            # 主循环 - 添加视频流断开重试逻辑
+            stream_retry_count = 0
+            stream_first_retry_time = None
+            stream_retry_delay = initial_retry_delay  # 使用与初始连接相同的重试间隔
+
             while not stop_event.is_set():
                 # 读取帧 - 重定向标准错误以捕获FFmpeg错误
                 original_stderr = sys.stderr
@@ -362,7 +437,65 @@ class TaskProcessor:
                     ret, frame = cap.read()
                     if not ret:
                         logger.warning(f"工作进程 {task_id}: 视频流结束或读取失败")
-                        break
+
+                        # 记录第一次重试的时间
+                        if stream_first_retry_time is None:
+                            stream_first_retry_time = time.time()
+                            # 更新任务状态为重试中
+                            self.task_manager.update_task_status(task_id, TaskStatus.RETRYING)
+                            logger.warning(f"工作进程 {task_id}: 视频流中断，开始重试...")
+
+                        # 检查是否超过最大重试时间
+                        current_time = time.time()
+                        if current_time - stream_first_retry_time > max_retry_time:
+                            logger.error(f"工作进程 {task_id}: 视频流中断重试超过24小时，停止任务")
+                            result_queue.put({
+                                "type": "error",
+                                "message": f"视频流中断，重试超过24小时: {stream_url}"
+                            })
+                            break
+
+                        # 释放当前视频捕获对象
+                        cap.release()
+
+                        # 增加重试计数并计算下一次重试延迟
+                        stream_retry_count += 1
+                        # 指数退避策略，但最大不超过5分钟
+                        stream_retry_delay = min(initial_retry_delay * (1.5 ** min(stream_retry_count, 10)), 300)
+
+                        logger.warning(f"工作进程 {task_id}: 视频流中断，将在 {stream_retry_delay:.1f} 秒后进行第 {stream_retry_count} 次重试 (已重试时间: {(current_time - stream_first_retry_time) / 60:.1f} 分钟)")
+
+                        # 等待重试间隔时间，同时检查停止事件
+                        retry_start = time.time()
+                        while time.time() - retry_start < stream_retry_delay:
+                            if stop_event.is_set():
+                                logger.info(f"工作进程 {task_id}: 在重试等待期间收到停止信号")
+                                break
+                            await asyncio.sleep(0.5)  # 小间隔检查停止事件
+
+                        # 如果收到停止信号，退出循环
+                        if stop_event.is_set():
+                            break
+
+                        # 尝试重新打开视频流
+                        logger.info(f"工作进程 {task_id}: 尝试重新打开视频流: {stream_url}")
+                        cap = cv2.VideoCapture(stream_url)
+
+                        if cap.isOpened():
+                            # 重新连接成功
+                            logger.info(f"工作进程 {task_id}: 视频流重新连接成功")
+                            # 更新任务状态为处理中
+                            self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING)
+                            # 重置重试状态
+                            stream_first_retry_time = None
+                            stream_retry_count = 0
+                            # 重置帧计数
+                            frame_count = 0
+                            continue
+                        else:
+                            # 重新连接失败，继续下一次重试
+                            logger.warning(f"工作进程 {task_id}: 视频流重新连接失败，继续重试")
+                            continue
                 finally:
                     # 检查是否有FFmpeg错误
                     captured_errors = ""
@@ -433,7 +566,8 @@ class TaskProcessor:
                     analysis_logger.error(f"任务 {task_id}: 处理第 {frame_count} 帧时发生错误: {str(e)}")
 
             # 释放资源
-            cap.release()
+            if cap is not None:
+                cap.release()
             detector.release()
 
             logger.info(f"工作进程 {task_id}: 退出")
@@ -503,7 +637,144 @@ class TaskProcessor:
         if "frame_index" in results:
             processed_results["frame_index"] = results["frame_index"]
 
+        # 存储带有分析结果的帧，用于预览
+        # 如果有可视化结果，使用可视化结果
+        if "visualized_frame" in results and results["visualized_frame"] is not None:
+            self.preview_frames[task_id] = results["visualized_frame"]
+        else:
+            # 否则，使用原始帧并绘制检测结果
+            preview_frame = frame.copy()
+
+            # 绘制检测结果
+            if "detections" in results:
+                for det in results["detections"]:
+                    try:
+                        # 获取边界框
+                        bbox = det.get("bbox", [0, 0, 0, 0])
+
+                        # 处理不同格式的边界框
+                        try:
+                            if isinstance(bbox, dict):
+                                # 如果是字典格式，尝试获取x1, y1, x2, y2
+                                if all(k in bbox for k in ['x1', 'y1', 'x2', 'y2']):
+                                    x1, y1, x2, y2 = float(bbox['x1']), float(bbox['y1']), float(bbox['x2']), float(bbox['y2'])
+                                elif all(k in bbox for k in ['xmin', 'ymin', 'xmax', 'ymax']):
+                                    x1, y1, x2, y2 = float(bbox['xmin']), float(bbox['ymin']), float(bbox['xmax']), float(bbox['ymax'])
+                                else:
+                                    logger.debug(f"未知的边界框字典格式: {bbox}")
+                                    continue
+                            elif isinstance(bbox, list) and len(bbox) == 4:
+                                # 如果是列表格式，直接使用
+                                x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+                            else:
+                                logger.debug(f"未知的边界框格式: {type(bbox)}, 值: {bbox}")
+                                continue
+
+                            # 检查坐标是否已经是像素坐标
+                            if x1 > 1.0 or y1 > 1.0 or x2 > 1.0 or y2 > 1.0:
+                                # 已经是像素坐标，直接使用
+                                x1, y1 = max(0, int(x1)), max(0, int(y1))
+                                x2, y2 = min(width, int(x2)), min(height, int(y2))
+                            else:
+                                # 是归一化坐标，转换为像素坐标
+                                x1, y1 = max(0, int(x1 * width)), max(0, int(y1 * height))
+                                x2, y2 = min(width, int(x2 * width)), min(height, int(y2 * height))
+
+                            # 确保坐标有效
+                            if x1 >= x2 or y1 >= y2 or x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+                                continue
+
+                            # 获取类别和置信度
+                            class_name = det.get("class_name", "未知")
+                            confidence = float(det.get("confidence", 0))
+
+                            # 绘制边界框
+                            cv2.rectangle(preview_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+                            # 绘制标签
+                            label = f"{class_name}: {confidence:.2f}"
+                            cv2.putText(preview_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                        except (ValueError, TypeError) as e:
+                            # 忽略无效的边界框
+                            logger.debug(f"忽略无效的检测边界框: {bbox}, 错误: {str(e)}")
+                            continue
+                    except Exception as e:
+                        # 忽略处理单个检测时的错误
+                        logger.debug(f"处理检测结果时发生错误: {str(e)}, 检测结果: {det}")
+                        continue
+
+            # 绘制跟踪结果
+            if "tracked_objects" in results:
+                for track in results["tracked_objects"]:
+                    try:
+                        # 获取边界框
+                        bbox = track.get("bbox", [0, 0, 0, 0])
+
+                        # 处理不同格式的边界框
+                        try:
+                            if isinstance(bbox, dict):
+                                # 如果是字典格式，尝试获取x1, y1, x2, y2
+                                if all(k in bbox for k in ['x1', 'y1', 'x2', 'y2']):
+                                    x1, y1, x2, y2 = float(bbox['x1']), float(bbox['y1']), float(bbox['x2']), float(bbox['y2'])
+                                elif all(k in bbox for k in ['xmin', 'ymin', 'xmax', 'ymax']):
+                                    x1, y1, x2, y2 = float(bbox['xmin']), float(bbox['ymin']), float(bbox['xmax']), float(bbox['ymax'])
+                                else:
+                                    logger.debug(f"未知的边界框字典格式: {bbox}")
+                                    continue
+                            elif isinstance(bbox, list) and len(bbox) == 4:
+                                # 如果是列表格式，直接使用
+                                x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
+                            else:
+                                logger.debug(f"未知的边界框格式: {type(bbox)}, 值: {bbox}")
+                                continue
+
+                            # 检查坐标是否已经是像素坐标
+                            if x1 > 1.0 or y1 > 1.0 or x2 > 1.0 or y2 > 1.0:
+                                # 已经是像素坐标，直接使用
+                                x1, y1 = max(0, int(x1)), max(0, int(y1))
+                                x2, y2 = min(width, int(x2)), min(height, int(y2))
+                            else:
+                                # 是归一化坐标，转换为像素坐标
+                                x1, y1 = max(0, int(x1 * width)), max(0, int(y1 * height))
+                                x2, y2 = min(width, int(x2 * width)), min(height, int(y2 * height))
+
+                            # 确保坐标有效
+                            if x1 >= x2 or y1 >= y2 or x1 < 0 or y1 < 0 or x2 > width or y2 > height:
+                                continue
+
+                            # 获取跟踪ID
+                            track_id = track.get("track_id", "未知")
+
+                            # 绘制边界框
+                            cv2.rectangle(preview_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
+
+                            # 绘制跟踪ID
+                            cv2.putText(preview_frame, f"ID: {track_id}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                        except (ValueError, TypeError) as e:
+                            # 忽略无效的边界框
+                            logger.debug(f"忽略无效的跟踪边界框: {bbox}, 错误: {str(e)}")
+                            continue
+                    except Exception as e:
+                        # 忽略处理单个跟踪对象时的错误
+                        logger.debug(f"处理跟踪结果时发生错误: {str(e)}, 跟踪结果: {track}")
+                        continue
+
+            # 存储预览帧
+            self.preview_frames[task_id] = preview_frame
+
         return processed_results
+
+    def get_preview_frame(self, task_id: str) -> Optional[np.ndarray]:
+        """
+        获取任务的预览帧
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            Optional[np.ndarray]: 预览帧，如果不存在则返回None
+        """
+        return self.preview_frames.get(task_id)
 
     async def _handle_results(self, task_id: str, result_queue: queue.Queue):
         """
@@ -610,8 +881,15 @@ class TaskProcessor:
                     # 处理分析结果
                     result_data = result.get("data", {})
 
-                    # 更新任务状态
-                    self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING, result=result_data)
+                    # 获取当前任务状态
+                    current_task = self.task_manager.get_task(task_id)
+                    current_status = current_task.get("status") if current_task else None
+
+                    # 只有当任务不是重试状态时才更新为处理中
+                    # 这样可以避免在重试过程中收到旧的结果时错误地将状态改回处理中
+                    if current_status != TaskStatus.RETRYING:
+                        # 更新任务状态
+                        self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING, result=result_data)
 
                     # 发送结果回调
                     if callback_service and callback_enabled and callback_url:

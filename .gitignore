@@ -7,3 +7,6 @@ logs/*
 venv/*
 .env
 .idea/*
+temp/*
+install_webrtc_deps.sh
+frontend/*

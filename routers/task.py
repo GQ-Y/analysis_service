@@ -2,10 +2,13 @@
 任务管理路由
 提供任务的创建、查询、停止等API
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Request, Response
 from typing import List, Dict, Any, Optional
 import uuid
+import os
+import asyncio
 from datetime import datetime
+from fastapi.responses import StreamingResponse
 
 from models.requests import StreamTask, BatchStreamTask
 from models.responses import BaseResponse
@@ -29,6 +32,8 @@ async def get_task_service(request: Request) -> TaskService:
     if not hasattr(request.app.state, "task_service"):
         raise HTTPException(status_code=500, detail="任务服务未初始化")
     return request.app.state.task_service
+
+
 
 @router.post("/start", response_model=BaseResponse, summary="启动单个流分析任务")
 async def start_task(
@@ -523,6 +528,7 @@ async def get_task_status(
             TaskStatus.WAITING: "等待中",
             TaskStatus.PROCESSING: "处理中",
             TaskStatus.COMPLETED: "已完成",
+            TaskStatus.RETRYING: "重试中",
             TaskStatus.FAILED: "失败",
             TaskStatus.STOPPING: "停止中",
             TaskStatus.STOPPED: "已停止"
@@ -558,7 +564,7 @@ async def get_task_status(
 
 @router.get("/list", response_model=BaseResponse, summary="获取任务列表")
 async def list_tasks(
-    status: Optional[int] = Query(None, description="任务状态过滤：0-等待中, 1-处理中, 2-已完成, -1-失败, -4-停止中, -5-已停止"),
+    status: Optional[int] = Query(None, description="任务状态过滤：0-等待中, 1-处理中, 2-已完成, 3-重试中, -1-失败, -4-停止中, -5-已停止"),
     limit: int = Query(100, description="返回数量限制，默认100"),
     task_service: TaskService = Depends(get_task_service)
 ) -> BaseResponse:
@@ -581,7 +587,7 @@ async def list_tasks(
     - 错误信息（如果有）
 
     Args:
-        status: 任务状态过滤：0-等待中, 1-处理中, 2-已完成, -1-失败, -4-停止中, -5-已停止
+        status: 任务状态过滤：0-等待中, 1-处理中, 2-已完成, 3-重试中, -1-失败, -4-停止中, -5-已停止
         limit: 返回数量限制，默认100
 
     Returns:
@@ -608,6 +614,7 @@ async def list_tasks(
             TaskStatus.WAITING: "等待中",
             TaskStatus.PROCESSING: "处理中",
             TaskStatus.COMPLETED: "已完成",
+            TaskStatus.RETRYING: "重试中",
             TaskStatus.FAILED: "失败",
             TaskStatus.STOPPING: "停止中",
             TaskStatus.STOPPED: "已停止"
@@ -639,3 +646,5 @@ async def list_tasks(
             code=500,
             data=None
         )
+
+
