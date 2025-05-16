@@ -28,22 +28,24 @@ class TaskService:
         """
         self.task_manager = task_manager or TaskManager()
 
-    async def create_task(self, task: StreamTask) -> Dict[str, Any]:
+    async def create_task(self, task: StreamTask, task_id: str = None) -> Dict[str, Any]:
         """
         创建单个任务
 
         Args:
             task: 任务参数
+            task_id: 可选的任务ID，如果为None则自动生成
 
         Returns:
             Dict[str, Any]: 创建结果
         """
         try:
             # 生成任务ID
-            task_id = str(uuid.uuid4())
+            if task_id is None:
+                task_id = str(uuid.uuid4())
 
             # 构建任务配置
-            task_config = self._build_task_config(task)
+            task_config = self._build_task_config(task, task_id)
 
             # 创建任务
             task_data = {
@@ -201,6 +203,9 @@ class TaskService:
 
             # 处理每个子任务
             for task in batch_task.tasks:
+                # 生成任务ID
+                task_id = str(uuid.uuid4())
+                
                 # 设置全局回调
                 if batch_task.callback_urls and not task.callback_url:
                     task.callback_url = batch_task.callback_urls
@@ -211,7 +216,7 @@ class TaskService:
                     task.analysis_interval = batch_task.analyze_interval
 
                 # 创建任务
-                result = await self.create_task(task)
+                result = await self.create_task(task, task_id)
 
                 # 添加到结果列表
                 results.append({
@@ -440,12 +445,13 @@ class TaskService:
                 "tasks": []
             }
 
-    def _build_task_config(self, task: StreamTask) -> Dict[str, Any]:
+    def _build_task_config(self, task: StreamTask, task_id: str = None) -> Dict[str, Any]:
         """
         构建任务配置
 
         Args:
             task: 任务参数
+            task_id: 任务ID（可选）
 
         Returns:
             Dict[str, Any]: 任务配置
@@ -558,6 +564,10 @@ class TaskService:
             "device": task.device if hasattr(task, "device") else "auto",
             "save_images": task.save_images  # 直接添加save_images参数到顶层配置
         }
+
+        # 添加任务ID（如果有）
+        if task_id:
+            task_config["task_id"] = task_id
 
         # 添加输出URL（如果有）
         if hasattr(task, "output_url") and task.output_url:

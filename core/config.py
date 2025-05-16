@@ -57,6 +57,19 @@ class StreamingSettings(BaseSettingsModel):
     max_consecutive_errors: int = 5
     frame_buffer_size: int = 30
     log_level: str = "INFO"
+    # ZLMediaKit配置
+    use_zlmediakit: bool = False  # 是否使用ZLMediaKit
+    zlm_server_address: str = "127.0.0.1"  # ZLMediaKit服务器地址
+    zlm_http_port: int = 80  # HTTP端口
+    zlm_rtsp_port: int = 554  # RTSP端口
+    zlm_rtmp_port: int = 1935  # RTMP端口
+    zlm_api_port: int = 8080  # API端口
+    zlm_api_secret: str = "035c73f7-bb6b-4889-a715-d9eb2d1925cc"  # API密钥
+    zlm_lib_path: str = "/usr/local/lib"  # ZLMediaKit库路径
+    zlm_thread_num: int = 4  # ZLMediaKit线程数
+    zlm_log_level: int = 4  # 日志级别（1-6，6为最详细）
+    zlm_log_path: str = "logs/zlm"  # 日志路径
+    zlm_log_days: int = 7  # 日志保留天数
 
 # 存储配置
 class StorageSettings(BaseSettingsModel):

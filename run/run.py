@@ -117,12 +117,43 @@ async def lifespan(app: FastAPI):
         logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
         logger.info(f"版本: {settings.VERSION}")
         logger.info(f"注册的路由: {[route.path for route in app.routes]}")
+    
+    # 检查并自动安装ZLMediaKit
+    from run.middlewares import init_zlm_environment
+    logger.info("正在检查ZLMediaKit环境...")
+    if init_zlm_environment():
+        logger.info("ZLMediaKit环境检查完成，库文件已就绪")
+    else:
+        logger.warning("ZLMediaKit环境检查失败，将尝试使用现有配置继续")
+        
+    # 初始化ZLMediaKit
+    logger.info("正在初始化ZLMediaKit...")
+    try:
+        # 导入ZLMediaKit管理器
+        from core.media_kit.zlm_manager import zlm_manager
+        
+        # 初始化ZLMediaKit
+        await zlm_manager.initialize()
+        
+        # 保存实例到应用状态
+        app.state.zlm_manager = zlm_manager
+        
+        logger.info("ZLMediaKit初始化成功")
+    except Exception as e:
+        logger.warning(f"ZLMediaKit初始化失败: {str(e)}")
+        logger.warning("将继续使用OpenCV进行视频处理")
 
     # 初始化任务管理器
     logger.info("正在初始化任务管理器...")
     try:
         # 导入任务管理器
         from core.task_management.manager import TaskManager
+        from core.task_management.stream import stream_manager
+
+        # 初始化流管理器
+        logger.info("正在初始化流管理器...")
+        await stream_manager.initialize()
+        logger.info("流管理器初始化完成")
 
         # 创建任务管理器实例
         task_manager = TaskManager()
@@ -130,6 +161,7 @@ async def lifespan(app: FastAPI):
         
         # 保存实例到应用状态
         app.state.task_manager = task_manager
+        app.state.stream_manager = stream_manager
         
         # 初始化流任务桥接器
         # 这里延迟导入桥接器，确保在任务管理器初始化后再导入
@@ -179,6 +211,25 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("没有活动的任务管理器需要关闭")
         
+    # 关闭流管理器
+    if hasattr(app.state, "stream_manager") and app.state.stream_manager:
+        try:
+            logger.info("正在关闭流管理器...")
+            try:
+                # 设置超时等待流管理器关闭
+                await asyncio.wait_for(app.state.stream_manager.shutdown(), timeout=10.0)
+                logger.info("流管理器已正常关闭")
+            except asyncio.TimeoutError:
+                logger.warning("等待流管理器关闭超时，继续关闭流程")
+            except Exception as inner_e:
+                logger.error(f"流管理器关闭过程中出错: {inner_e}")
+        except Exception as e:
+            logger.error(f"关闭流管理器时出错: {e}")
+        finally:
+            logger.info("流管理器关闭流程已完成")
+    else:
+        logger.info("没有活动的流管理器需要关闭")
+        
     # 关闭节点健康监控器
     try:
         from core.task_management.stream import node_health_monitor
@@ -213,6 +264,23 @@ async def lifespan(app: FastAPI):
         logger.error(f"关闭流任务桥接器时出错: {e}")
     finally:
         logger.info("流任务桥接器关闭流程已完成")
+        
+    # 关闭ZLMediaKit
+    if hasattr(app.state, "zlm_manager") and app.state.zlm_manager:
+        try:
+            logger.info("正在关闭ZLMediaKit...")
+            try:
+                # 设置超时等待ZLMediaKit关闭
+                await asyncio.wait_for(app.state.zlm_manager.shutdown(), timeout=5.0)
+                logger.info("ZLMediaKit已正常关闭")
+            except asyncio.TimeoutError:
+                logger.warning("等待ZLMediaKit关闭超时，继续关闭流程")
+            except Exception as inner_e:
+                logger.error(f"ZLMediaKit关闭过程中出错: {inner_e}")
+        except Exception as e:
+            logger.error(f"关闭ZLMediaKit时出错: {e}")
+        finally:
+            logger.info("ZLMediaKit关闭流程已完成")
 
     logger.info("Analysis Service stopped.")
 

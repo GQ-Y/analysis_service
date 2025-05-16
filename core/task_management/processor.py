@@ -284,21 +284,36 @@ class TaskProcessor:
 
             # 获取流配置
             stream_id = task_config.get("stream_id", "")
-            stream_url = task_config.get("url", "")
+            # 如果stream_id为空，使用task_id作为替代
+            if not stream_id:
+                stream_id = f"stream_{task_id}"
+                logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
+                
+            stream_url = task_config.get("stream_url", "")  # 修正字段名，使用stream_url而不是url
             stream_config = {
                 "url": stream_url,
                 "rtsp_transport": task_config.get("rtsp_transport", "tcp"),
                 "reconnect_attempts": task_config.get("reconnect_attempts", settings.STREAMING.reconnect_attempts),
                 "reconnect_delay": task_config.get("reconnect_delay", settings.STREAMING.reconnect_delay),
-                "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size)
+                "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size),
+                "task_id": task_id,  # 添加任务ID
+                "video_id": stream_id  # 使用stream_id作为视频ID
             }
 
             # 订阅视频流
             from core.task_management.stream import stream_manager
-            success, frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
-            if not success or frame_queue is None:
-                logger.error(f"订阅视频流失败: {stream_id}")
-                await self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error="订阅视频流失败")
+            try:
+                success, frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+                if not success or frame_queue is None:
+                    error_msg = f"订阅视频流失败: {stream_id}"
+                    logger.error(error_msg)
+                    self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                    return
+            except Exception as e:
+                error_msg = f"订阅视频流时发生异常: {str(e)}"
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+                self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                 return
 
             # 创建分析器
@@ -314,7 +329,13 @@ class TaskProcessor:
 
                 try:
                     # 从帧队列获取帧
+                    logger.info(f"工作进程 {task_id}: 尝试获取帧")
                     frame, timestamp = await asyncio.wait_for(frame_queue.get(), timeout=5.0)
+                    
+                    # 添加获取帧成功的日志
+                    if frame is not None:
+                        logger.info(f"工作进程 {task_id}: 成功获取帧，大小: {frame.shape}")
+                    
                     if frame is None:
                         # 没有收到帧，可能是流离线
                         logger.warning(f"任务 {task_id}: 未接收到视频帧")
@@ -329,6 +350,13 @@ class TaskProcessor:
 
                 except asyncio.TimeoutError:
                     logger.warning(f"任务 {task_id}: 获取帧超时")
+                    # 检查流状态
+                    from core.task_management.stream import stream_manager
+                    stream_info = await stream_manager.get_stream_info(stream_id)
+                    if stream_info:
+                        status = stream_info.get("status")
+                        health = stream_info.get("health_status")
+                        logger.info(f"流 {stream_id} 状态: {status}, 健康状态: {health}")
                     continue
                 except Exception as e:
                     logger.error(f"任务 {task_id} 分析异常: {str(e)}")
