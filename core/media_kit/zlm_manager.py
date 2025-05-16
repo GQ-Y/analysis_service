@@ -139,20 +139,51 @@ class ZLMediaKitManager:
             # 获取项目根目录
             project_root = os.path.abspath(os.path.join(current_dir, "../.."))
 
-            # 尝试从项目目录加载库
-            zlm_project_dir = os.path.join(project_root, "@ZLMediaKit")
+            # 根据平台选择库文件名
+            if sys.platform == 'darwin':
+                lib_name = 'libmk_api.dylib'
+                platform_dir = 'darwin'
+            elif sys.platform == 'linux':
+                lib_name = 'libmk_api.so'
+                platform_dir = 'linux'
+            elif sys.platform == 'win32':
+                lib_name = 'mk_api.dll'
+                platform_dir = 'win32'
+            else:
+                raise RuntimeError(f"不支持的操作系统: {sys.platform}")
+
+            # 首先尝试从项目中的zlmos目录加载库
+            zlmos_lib_path = os.path.join(project_root, "zlmos", platform_dir)
+            if os.path.exists(zlmos_lib_path):
+                zlmos_lib_file = os.path.join(zlmos_lib_path, lib_name)
+                if os.path.exists(zlmos_lib_file):
+                    logger.info(f"在zlmos目录中找到ZLMediaKit库: {zlmos_lib_file}")
+                    # 设置环境变量，确保库可以被正确加载
+                    os.environ['LD_LIBRARY_PATH'] = zlmos_lib_path
+                    os.environ['ZLM_LIB_PATH'] = zlmos_lib_path
+                    # 加载库
+                    self._lib = ctypes.CDLL(zlmos_lib_file)
+                    logger.info(f"成功从zlmos目录加载ZLMediaKit库: {zlmos_lib_file}")
+                    return
+
+            # 如果zlmos目录不存在，尝试从lib目录加载
+            lib_dir_path = os.path.join(project_root, "lib")
+            if os.path.exists(lib_dir_path):
+                lib_file = os.path.join(lib_dir_path, lib_name)
+                if os.path.exists(lib_file):
+                    logger.info(f"在lib目录中找到ZLMediaKit库: {lib_file}")
+                    # 设置环境变量，确保库可以被正确加载
+                    os.environ['LD_LIBRARY_PATH'] = lib_dir_path
+                    os.environ['ZLM_LIB_PATH'] = lib_dir_path
+                    # 加载库
+                    self._lib = ctypes.CDLL(lib_file)
+                    logger.info(f"成功从lib目录加载ZLMediaKit库: {lib_file}")
+                    return
+
+            # 尝试从ZLMediaKit项目目录加载库
+            zlm_project_dir = os.path.join(project_root, "ZLMediaKit")
             if os.path.exists(zlm_project_dir):
                 logger.info(f"找到ZLMediaKit项目目录: {zlm_project_dir}")
-
-                # 根据平台选择库文件名
-                if sys.platform == 'darwin':
-                    lib_name = 'libmk_api.dylib'
-                elif sys.platform == 'linux':
-                    lib_name = 'libmk_api.so'
-                elif sys.platform == 'win32':
-                    lib_name = 'mk_api.dll'
-                else:
-                    raise RuntimeError(f"不支持的操作系统: {sys.platform}")
 
                 # 尝试在项目目录中查找库
                 possible_lib_paths = [
@@ -164,57 +195,39 @@ class ZLMediaKitManager:
 
                 for lib_path in possible_lib_paths:
                     if os.path.exists(lib_path):
-                        logger.info(f"在项目目录中找到ZLMediaKit库: {lib_path}")
+                        logger.info(f"在ZLMediaKit项目目录中找到库: {lib_path}")
+                        # 设置环境变量，确保库可以被正确加载
+                        os.environ['LD_LIBRARY_PATH'] = os.path.dirname(lib_path)
+                        os.environ['ZLM_LIB_PATH'] = os.path.dirname(lib_path)
+                        # 加载库
                         self._lib = ctypes.CDLL(lib_path)
-                        logger.info(f"成功从项目目录加载ZLMediaKit库: {lib_path}")
+                        logger.info(f"成功从ZLMediaKit项目目录加载库: {lib_path}")
                         return
 
-                logger.warning(f"在项目目录中未找到ZLMediaKit库，将尝试其他路径")
+            # 如果以上都失败，尝试从环境变量或系统路径加载
+            logger.warning("在项目目录中未找到ZLMediaKit库，尝试从环境变量或系统路径加载")
 
             # 检查环境变量中是否指定了ZLMediaKit库路径
-            zlm_lib_path = self._config.zlm_lib_path
+            zlm_lib_path = os.environ.get('ZLM_LIB_PATH', '')
 
-            # 如果路径不存在则使用默认路径
-            if not os.path.exists(zlm_lib_path):
-                logger.warning(f"指定的ZLMediaKit库路径 {zlm_lib_path} 不存在，尝试使用默认路径")
-                if sys.platform == 'darwin':
-                    zlm_lib_path = '/usr/local/lib'
-                elif sys.platform == 'linux':
-                    zlm_lib_path = '/usr/lib'
-                elif sys.platform == 'win32':
-                    zlm_lib_path = os.path.expanduser('~\\.zlmediakit\\bin')
+            if zlm_lib_path and os.path.exists(zlm_lib_path):
+                lib_file = os.path.join(zlm_lib_path, lib_name)
+                if os.path.exists(lib_file):
+                    logger.info(f"从环境变量指定的路径加载ZLMediaKit库: {lib_file}")
+                    self._lib = ctypes.CDLL(lib_file)
+                    logger.info(f"成功从环境变量指定的路径加载ZLMediaKit库: {lib_file}")
+                    return
 
-            # 设置库搜索路径
-            os.environ['LD_LIBRARY_PATH'] = f"{os.environ.get('LD_LIBRARY_PATH', '')}:{zlm_lib_path}"
+            # 最后尝试直接加载库（依赖系统路径）
+            logger.warning("尝试从系统路径加载ZLMediaKit库")
+            try:
+                self._lib = ctypes.CDLL(lib_name)
+                logger.info(f"成功从系统路径加载ZLMediaKit库: {lib_name}")
+                return
+            except Exception as e:
+                logger.error(f"从系统路径加载ZLMediaKit库失败: {str(e)}")
+                raise RuntimeError(f"无法加载ZLMediaKit库: {str(e)}")
 
-            # 根据平台选择库文件名
-            if sys.platform == 'darwin':
-                lib_name = 'libmk_api.dylib'
-            elif sys.platform == 'linux':
-                lib_name = 'libmk_api.so'
-            elif sys.platform == 'win32':
-                lib_name = 'mk_api.dll'
-            else:
-                raise RuntimeError(f"不支持的操作系统: {sys.platform}")
-
-            # 尝试加载库
-            lib_path = os.path.join(zlm_lib_path, lib_name)
-            logger.info(f"尝试加载ZLMediaKit库: {lib_path}")
-
-            if not os.path.exists(lib_path):
-                logger.warning(f"未找到ZLMediaKit库 {lib_path}，尝试使用默认名称查找")
-                try:
-                    self._lib = ctypes.CDLL(lib_name)
-                except Exception as e:
-                    logger.error(f"使用默认名称加载库失败: {str(e)}")
-                    # 尝试使用绝对路径
-                    logger.info(f"尝试使用绝对路径加载库: {os.path.abspath(lib_path)}")
-                    self._lib = ctypes.CDLL(os.path.abspath(lib_path))
-            else:
-                logger.info(f"找到ZLMediaKit库: {lib_path}")
-                self._lib = ctypes.CDLL(lib_path)
-
-            logger.info(f"成功加载ZLMediaKit库 {lib_path}")
         except Exception as e:
             logger.error(f"加载ZLMediaKit库失败: {str(e)}")
             logger.error(traceback.format_exc())

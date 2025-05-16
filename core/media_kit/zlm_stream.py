@@ -985,7 +985,7 @@ class ZLMVideoStream(BaseVideoStream):
                                         pass
 
                                 # 放入新帧 - 注意这里调整为(frame, timestamp)的元组格式，以匹配任务处理器期望的格式
-                                logger.debug(f"分发帧给订阅者 {subscriber_id}, 帧大小: {frame.shape}")
+                                # 移除频繁的帧分发日志，减少日志量
                                 await queue.put((frame.copy(), timestamp))
                             except Exception as e:
                                 logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")

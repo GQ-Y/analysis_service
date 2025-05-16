@@ -328,13 +328,21 @@ class TaskProcessor:
                     continue
 
                 try:
-                    # 从帧队列获取帧
-                    logger.info(f"工作进程 {task_id}: 尝试获取帧")
+                    # 初始化帧计数器（如果不存在）
+                    if not hasattr(self, '_frame_count'):
+                        self._frame_count = {}
+                    if task_id not in self._frame_count:
+                        self._frame_count[task_id] = 0
+
+                    # 从帧队列获取帧（不打印日志，减少日志量）
                     frame, timestamp = await asyncio.wait_for(frame_queue.get(), timeout=5.0)
 
-                    # 添加获取帧成功的日志
+                    # 只在特定间隔打印帧获取信息
                     if frame is not None:
-                        logger.info(f"工作进程 {task_id}: 成功获取帧，大小: {frame.shape}")
+                        self._frame_count[task_id] += 1
+                        # 每100帧打印一次状态信息
+                        if self._frame_count[task_id] % 100 == 0:
+                            logger.info(f"任务 {task_id}: 已处理 {self._frame_count[task_id]} 帧，当前帧大小: {frame.shape}")
 
                         # 重置连续错误计数
                         if hasattr(self, '_frame_error_counts') and task_id in self._frame_error_counts:
