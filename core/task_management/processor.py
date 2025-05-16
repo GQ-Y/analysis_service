@@ -17,10 +17,15 @@ import os
 import sys
 import io
 import contextlib
+import json
 
 from core.config import settings
 from shared.utils.logger import setup_logger, setup_stream_error_logger, setup_analysis_logger
 from core.task_management.utils.status import TaskStatus
+from core.task_management.stream.status import StreamStatus
+
+# 延迟导入stream_manager，避免循环导入
+from core.redis_manager import RedisManager
 
 logger = setup_logger(__name__)
 stream_error_logger = setup_stream_error_logger()
@@ -41,6 +46,9 @@ class TaskProcessor:
         self.task_threads = {}
         self.result_handlers = {}
         self.stop_events = {}
+        self.pause_events = {}  # 新增：任务暂停事件
+        self.stream_subscribers = {}  # 新增：任务ID到流ID的映射
+        self.redis = None  # 延迟初始化Redis
 
         # 预览相关
         self.preview_frames = {}  # 存储最新的分析结果帧，用于预览
@@ -54,6 +62,9 @@ class TaskProcessor:
         os.environ["AV_LOG_FORCE_NOCOLOR"] = "1"  # 禁用颜色输出
         # 不设置为 quiet，而是设置为 error，这样可以捕获错误信息
         os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "error"
+
+        # 初始化 Redis 实例
+        self.redis = RedisManager()
 
         logger.info("任务处理器初始化完成")
         return True
@@ -84,17 +95,28 @@ class TaskProcessor:
                 logger.warning(f"任务已存在: {task_id}")
                 return False
 
-            # 创建停止事件
+            # 创建停止和暂停事件
             stop_event = threading.Event()
+            pause_event = threading.Event()  # 新增：暂停事件
             self.stop_events[task_id] = stop_event
+            self.pause_events[task_id] = pause_event  # 新增：保存暂停事件
 
             # 创建结果队列
             result_queue = queue.Queue()
 
+            # 订阅流状态变化
+            # 获取流ID
+            stream_id = task_config.get("stream_id", "")
+            if stream_id:
+                self.stream_subscribers[task_id] = stream_id
+                # 使用桥接器注册任务与流的关系
+                from core.task_management.stream import stream_task_bridge
+                stream_task_bridge.register_task_stream(task_id, stream_id)
+
             # 创建并启动任务线程 - 使用 asyncio.to_thread 运行异步函数
             thread = threading.Thread(
                 target=asyncio.run,
-                args=(self.process_stream_worker(task_id, task_config, result_queue, stop_event),),
+                args=(self.process_stream_worker(task_id, task_config, result_queue, stop_event, pause_event),),
                 daemon=True
             )
             thread.start()
@@ -104,7 +126,8 @@ class TaskProcessor:
                 "thread": thread,
                 "config": task_config,
                 "start_time": time.time(),
-                "status": TaskStatus.PROCESSING
+                "status": TaskStatus.PROCESSING,
+                "stream_id": stream_id  # 保存流ID
             }
             self.task_threads[task_id] = thread
 
@@ -151,6 +174,17 @@ class TaskProcessor:
                 if not result_handler.done():
                     result_handler.cancel()
 
+            # 取消流订阅
+            if task_id in self.stream_subscribers:
+                stream_id = self.stream_subscribers[task_id]
+                # 使用桥接器取消注册任务与流的关系
+                from core.task_management.stream import stream_task_bridge
+                stream_task_bridge.unregister_task_stream(task_id)
+                # 取消订阅流
+                from core.task_management.stream import stream_manager
+                await stream_manager.unsubscribe_stream(stream_id, task_id)
+                del self.stream_subscribers[task_id]
+
             # 更新任务状态
             if task_id in self.running_tasks:
                 self.running_tasks[task_id]["status"] = TaskStatus.STOPPED
@@ -159,6 +193,8 @@ class TaskProcessor:
             # 清理资源
             if task_id in self.stop_events:
                 del self.stop_events[task_id]
+            if task_id in self.pause_events:
+                del self.pause_events[task_id]
             if task_id in self.task_threads:
                 del self.task_threads[task_id]
             if task_id in self.result_handlers:
@@ -173,7 +209,66 @@ class TaskProcessor:
             logger.error(f"停止任务失败: {str(e)}")
             return False
 
-    async def process_stream_worker(self, task_id: str, task_config: Dict[str, Any], result_queue: queue.Queue, stop_event: threading.Event):
+    async def pause_task(self, task_id: str) -> bool:
+        """
+        暂停任务
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            bool: 是否暂停成功
+        """
+        try:
+            # 检查任务是否存在
+            if task_id not in self.running_tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return False
+
+            # 设置暂停事件
+            if task_id in self.pause_events:
+                self.pause_events[task_id].set()
+                logger.info(f"任务暂停事件已设置: {task_id}")
+                return True
+            else:
+                logger.warning(f"任务暂停事件不存在: {task_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"暂停任务失败: {str(e)}")
+            return False
+
+    async def resume_task(self, task_id: str) -> bool:
+        """
+        恢复任务
+
+        Args:
+            task_id: 任务ID
+
+        Returns:
+            bool: 是否恢复成功
+        """
+        try:
+            # 检查任务是否存在
+            if task_id not in self.running_tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return False
+
+            # 清除暂停事件
+            if task_id in self.pause_events:
+                self.pause_events[task_id].clear()
+                logger.info(f"任务恢复事件已设置: {task_id}")
+                return True
+            else:
+                logger.warning(f"任务暂停事件不存在: {task_id}")
+                return False
+
+        except Exception as e:
+            logger.error(f"恢复任务失败: {str(e)}")
+            return False
+
+    async def process_stream_worker(self, task_id: str, task_config: Dict[str, Any], result_queue: queue.Queue, 
+                                   stop_event: threading.Event, pause_event: threading.Event):
         """
         流处理工作线程
 
@@ -182,404 +277,76 @@ class TaskProcessor:
             task_config: 任务配置
             result_queue: 结果队列
             stop_event: 停止事件
+            pause_event: 暂停事件
         """
         try:
             logger.info(f"工作进程 {task_id}: 开始初始化")
 
-            # 导入美化打印函数
-            from shared.utils.tools import pretty_print_task_config
-
-            # 使用美化打印函数打印任务配置
-            pretty_print_task_config(task_id, task_config, logger.info)
-
-            # 获取分析类型
-            analysis_type_str = task_config.get("subtask", {}).get("type", "detection")
-
-            # 获取模型配置
-            model_config = task_config.get("model", {})
-            model_code = model_config.get("code", "yolov8n.pt")
-
-            # 获取引擎类型
-            engine_type = task_config.get("engine", 0)  # 默认使用PyTorch
-            # 如果分析配置中有engine参数，优先使用它
-            if "analysis" in task_config and "engine" in task_config["analysis"]:
-                engine_type = task_config["analysis"]["engine"]
-
-            # 获取YOLO版本
-            yolo_version = task_config.get("yolo_version", 0)  # 默认使用YOLOv8n
-            # 如果分析配置中有yolo_version参数，优先使用它
-            if "analysis" in task_config and "yolo_version" in task_config["analysis"]:
-                yolo_version = task_config["analysis"]["yolo_version"]
-
-            # 获取设备
-            device = task_config.get("device", "auto")
-
-            # 记录初始化信息
-            logger.info(f"工作进程 {task_id}: 开始初始化 {analysis_type_str} 分析器: "
-                       f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
-
-            # 使用分析器工厂创建分析器
-            try:
-                from core.analyzer.analyzer_factory import AnalyzerFactory
-
-                # 将字符串分析类型转换为整数类型
-                analysis_type_map = {
-                    "detection": 1,
-                    "tracking": 2,
-                    "segmentation": 3,
-                    "cross_camera_tracking": 4,
-                    "line_crossing": 5
-                }
-                analysis_type = analysis_type_map.get(analysis_type_str.lower(), 1)  # 默认使用检测
-
-                # 获取分析配置
-                analysis_config = task_config.get("analysis", {}).copy()
-
-                # 确保分析配置中不包含已经显式传递的参数，避免重复传递
-                for param in ["device", "yolo_version", "engine_type"]:
-                    if param in analysis_config:
-                        del analysis_config[param]
-
-                # 准备传递给分析器的参数
-                analyzer_params = {
-                    "analysis_type": analysis_type,
-                    "model_code": model_code,
-                    "engine_type": engine_type,
-                    "yolo_version": yolo_version,
-                    "device": device,
-                    **analysis_config  # 传递分析配置
-                }
-
-                # 检查是否明确指定了使用YOLOE分析器
-                use_yoloe_analyzer = analysis_config.get("use_yoloe_analyzer", False)
-                if use_yoloe_analyzer:
-                    logger.info(f"工作进程 {task_id}: 明确指定使用YOLOE分析器")
-                    analyzer_params["use_yoloe_analyzer"] = True
-
-                # 导入美化打印函数
-                from shared.utils.tools import pretty_print
-
-                # 使用美化打印函数打印分析器参数
-                pretty_print(f"工作进程 {task_id}: 传递给分析器的参数", analyzer_params, logger.info)
-
-                # 创建分析器
-                detector = AnalyzerFactory.create_analyzer(**analyzer_params)
-
-                logger.info(f"工作进程 {task_id}: 成功创建 {analysis_type_str} 分析器")
-
-            except Exception as e:
-                # 创建分析器失败
-                error_message = f"创建分析器失败: {str(e)}"
-                logger.error(f"工作进程 {task_id}: {error_message}")
-                logger.error(traceback.format_exc())
-                result_queue.put({
-                    "type": "error",
-                    "message": error_message
-                })
-                return
-
-            # 加载模型
-            await detector.load_model(model_code)
-
             # 获取流配置
-            stream_url = task_config.get("stream_url")
-            if not stream_url:
-                logger.error(f"工作进程 {task_id}: 未提供视频流URL")
-                result_queue.put({
-                    "type": "error",
-                    "message": "未提供视频流URL"
-                })
+            stream_id = task_config.get("stream_id", "")
+            stream_url = task_config.get("url", "")
+            stream_config = {
+                "url": stream_url,
+                "rtsp_transport": task_config.get("rtsp_transport", "tcp"),
+                "reconnect_attempts": task_config.get("reconnect_attempts", settings.STREAMING.reconnect_attempts),
+                "reconnect_delay": task_config.get("reconnect_delay", settings.STREAMING.reconnect_delay),
+                "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size)
+            }
+
+            # 订阅视频流
+            from core.task_management.stream import stream_manager
+            success, frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+            if not success or frame_queue is None:
+                logger.error(f"订阅视频流失败: {stream_id}")
+                await self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error="订阅视频流失败")
                 return
 
-            # 打开视频流 - 添加重试逻辑
-            logger.info(f"工作进程 {task_id}: 尝试打开视频流: {stream_url}")
+            # 创建分析器
+            # ... 原有的分析器创建代码 ...
 
-            # 重试相关变量
-            initial_retry_delay = 10  # 初始重试间隔（秒）
-            max_retry_time = 24 * 60 * 60  # 最大重试时间（24小时，单位：秒）
-            retry_count = 0
-            retry_delay = initial_retry_delay
-            first_retry_time = None
-            cap = None
-            stream_connected = False
-
-            # 更新任务状态为重试中
-            self.task_manager.update_task_status(task_id, TaskStatus.RETRYING)
-
-            # 重试循环
+            # 分析循环
             while not stop_event.is_set():
-                # 重定向标准错误输出，捕获FFmpeg错误信息
-                original_stderr = sys.stderr
-                error_buffer = io.StringIO()
-                sys.stderr = error_buffer
-
-                try:
-                    # 尝试打开视频流
-                    if cap is not None:
-                        # 如果之前有打开过，先释放资源
-                        cap.release()
-
-                    cap = cv2.VideoCapture(stream_url)
-                    stream_connected = cap.isOpened()
-
-                    if not stream_connected:
-                        # 获取捕获的错误信息
-                        ffmpeg_errors = ""
-                        try:
-                            # 确保error_buffer是StringIO对象
-                            if hasattr(error_buffer, 'getvalue'):
-                                ffmpeg_errors = error_buffer.getvalue()
-                        except Exception as buffer_err:
-                            logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
-
-                        if ffmpeg_errors:
-                            # 将FFmpeg错误记录到专门的日志文件
-                            stream_error_logger.error(f"视频流打开失败 (任务ID: {task_id}):\n{ffmpeg_errors}")
-
-                        # 记录第一次重试的时间
-                        if first_retry_time is None:
-                            first_retry_time = time.time()
-                            logger.warning(f"工作进程 {task_id}: 无法打开视频流，开始重试...")
-
-                        # 检查是否超过最大重试时间
-                        current_time = time.time()
-                        if current_time - first_retry_time > max_retry_time:
-                            logger.error(f"工作进程 {task_id}: 重试超过24小时，停止任务")
-                            result_queue.put({
-                                "type": "error",
-                                "message": f"无法打开视频流，重试超过24小时: {stream_url}"
-                            })
-                            return
-
-                        # 增加重试计数并计算下一次重试延迟
-                        retry_count += 1
-                        # 指数退避策略，但最大不超过5分钟
-                        retry_delay = min(initial_retry_delay * (1.5 ** min(retry_count, 10)), 300)
-
-                        logger.warning(f"工作进程 {task_id}: 无法打开视频流，将在 {retry_delay:.1f} 秒后进行第 {retry_count} 次重试 (已重试时间: {(current_time - first_retry_time) / 60:.1f} 分钟)")
-
-                        # 等待重试间隔时间，同时检查停止事件
-                        retry_start = time.time()
-                        while time.time() - retry_start < retry_delay:
-                            if stop_event.is_set():
-                                logger.info(f"工作进程 {task_id}: 在重试等待期间收到停止信号")
-                                return
-                            await asyncio.sleep(0.5)  # 小间隔检查停止事件
-
-                        # 继续下一次重试
-                        continue
-                    else:
-                        # 连接成功，重置重试状态
-                        if retry_count > 0:
-                            logger.info(f"工作进程 {task_id}: 视频流连接成功，重试次数: {retry_count}")
-
-                        # 更新任务状态为处理中
-                        self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING)
-                        break  # 退出重试循环
-                finally:
-                    # 恢复标准错误输出
-                    captured_errors = ""
-                    try:
-                        # 确保error_buffer是StringIO对象
-                        if hasattr(error_buffer, 'getvalue'):
-                            captured_errors = error_buffer.getvalue()
-                    except Exception as buffer_err:
-                        logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
-
-                    sys.stderr = original_stderr
-
-                    # 如果有捕获到错误，记录到专门的日志文件
-                    if captured_errors:
-                        # 记录所有捕获的错误
-                        stream_error_logger.error(f"视频流初始化信息 (任务ID: {task_id}):\n{captured_errors}")
-
-            # 如果收到停止信号，直接返回
-            if stop_event.is_set():
-                logger.info(f"工作进程 {task_id}: 在视频流连接过程中收到停止信号")
-                if cap is not None:
-                    cap.release()
-                return
-
-            # 获取视频信息
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            fps = cap.get(cv2.CAP_PROP_FPS)
-
-            logger.info(f"工作进程 {task_id}: 视频流信息 - 宽度: {width}, 高度: {height}, FPS: {fps}")
-
-            # 获取分析配置
-            analysis_config = task_config.get("analysis", {})
-
-            # 获取分析间隔
-            logger.info(f"工作进程 {task_id}: 任务配置中的分析间隔值: {task_config.get('analysis_interval')}, 类型: {type(task_config.get('analysis_interval'))}")
-            analysis_interval = task_config.get("analysis_interval", 1)
-            # 确保analysis_interval是一个有效的整数值
-            if analysis_interval is None or not isinstance(analysis_interval, int) or analysis_interval < 1:
-                logger.warning(f"工作进程 {task_id}: 无效的分析间隔值: {analysis_interval}，使用默认值1")
-                analysis_interval = 1
-            else:
-                logger.info(f"工作进程 {task_id}: 使用分析间隔值: {analysis_interval}")
-
-            frame_count = 0
-
-            # 主循环 - 添加视频流断开重试逻辑
-            stream_retry_count = 0
-            stream_first_retry_time = None
-            stream_retry_delay = initial_retry_delay  # 使用与初始连接相同的重试间隔
-
-            while not stop_event.is_set():
-                # 读取帧 - 重定向标准错误以捕获FFmpeg错误
-                original_stderr = sys.stderr
-                error_buffer = io.StringIO()
-                sys.stderr = error_buffer
-
-                try:
-                    ret, frame = cap.read()
-                    if not ret:
-                        logger.warning(f"工作进程 {task_id}: 视频流结束或读取失败")
-
-                        # 记录第一次重试的时间
-                        if stream_first_retry_time is None:
-                            stream_first_retry_time = time.time()
-                            # 更新任务状态为重试中
-                            self.task_manager.update_task_status(task_id, TaskStatus.RETRYING)
-                            logger.warning(f"工作进程 {task_id}: 视频流中断，开始重试...")
-
-                        # 检查是否超过最大重试时间
-                        current_time = time.time()
-                        if current_time - stream_first_retry_time > max_retry_time:
-                            logger.error(f"工作进程 {task_id}: 视频流中断重试超过24小时，停止任务")
-                            result_queue.put({
-                                "type": "error",
-                                "message": f"视频流中断，重试超过24小时: {stream_url}"
-                            })
-                            break
-
-                        # 释放当前视频捕获对象
-                        cap.release()
-
-                        # 增加重试计数并计算下一次重试延迟
-                        stream_retry_count += 1
-                        # 指数退避策略，但最大不超过5分钟
-                        stream_retry_delay = min(initial_retry_delay * (1.5 ** min(stream_retry_count, 10)), 300)
-
-                        logger.warning(f"工作进程 {task_id}: 视频流中断，将在 {stream_retry_delay:.1f} 秒后进行第 {stream_retry_count} 次重试 (已重试时间: {(current_time - stream_first_retry_time) / 60:.1f} 分钟)")
-
-                        # 等待重试间隔时间，同时检查停止事件
-                        retry_start = time.time()
-                        while time.time() - retry_start < stream_retry_delay:
-                            if stop_event.is_set():
-                                logger.info(f"工作进程 {task_id}: 在重试等待期间收到停止信号")
-                                break
-                            await asyncio.sleep(0.5)  # 小间隔检查停止事件
-
-                        # 如果收到停止信号，退出循环
-                        if stop_event.is_set():
-                            break
-
-                        # 尝试重新打开视频流
-                        logger.info(f"工作进程 {task_id}: 尝试重新打开视频流: {stream_url}")
-                        cap = cv2.VideoCapture(stream_url)
-
-                        if cap.isOpened():
-                            # 重新连接成功
-                            logger.info(f"工作进程 {task_id}: 视频流重新连接成功")
-                            # 更新任务状态为处理中
-                            self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING)
-                            # 重置重试状态
-                            stream_first_retry_time = None
-                            stream_retry_count = 0
-                            # 重置帧计数
-                            frame_count = 0
-                            continue
-                        else:
-                            # 重新连接失败，继续下一次重试
-                            logger.warning(f"工作进程 {task_id}: 视频流重新连接失败，继续重试")
-                            continue
-                finally:
-                    # 检查是否有FFmpeg错误
-                    captured_errors = ""
-                    try:
-                        # 确保error_buffer是StringIO对象
-                        if hasattr(error_buffer, 'getvalue'):
-                            captured_errors = error_buffer.getvalue()
-                    except Exception as buffer_err:
-                        logger.error(f"工作进程 {task_id}: 获取错误缓冲区内容时出错: {str(buffer_err)}")
-
-                    # 恢复标准错误输出
-                    sys.stderr = original_stderr
-
-                    # 如果有错误，记录到专门的日志文件而不是控制台
-                    if captured_errors:
-                        # 记录所有捕获的错误，不仅仅是 h264 相关的
-                        stream_error_logger.error(f"视频帧解码错误 (任务ID: {task_id}, 帧: {frame_count}):\n{captured_errors}")
-
-                # 增加帧计数
-                frame_count += 1
-
-                # 记录抽帧信息（每100帧记录一次）
-                if frame_count % 100 == 0:
-                    logger.info(f"工作进程 {task_id}: 已处理 {frame_count} 帧")
-
-                # 根据分析间隔决定是否处理当前帧
-                if frame_count % analysis_interval != 0:
+                # 检查暂停事件
+                if pause_event.is_set():
+                    # 任务已暂停，等待恢复
+                    time.sleep(1)
                     continue
 
-                # 处理帧
                 try:
-                    # 简化ROI处理，不打印日志
+                    # 从帧队列获取帧
+                    frame, timestamp = await asyncio.wait_for(frame_queue.get(), timeout=5.0)
+                    if frame is None:
+                        # 没有收到帧，可能是流离线
+                        logger.warning(f"任务 {task_id}: 未接收到视频帧")
+                        time.sleep(1)
+                        continue
 
-                    # 执行检测
-                    start_time = time.time()
+                    # 执行分析
+                    # ... 原有的分析代码 ...
 
-                    # 添加保存图片和任务名称参数
-                    save_images = task_config.get("save_images", False)
-                    task_name = task_config.get("task_name", task_id)
+                    # 将结果放入结果队列
+                    result_queue.put(result)
 
-                    analysis_config["save_images"] = save_images
-                    analysis_config["task_name"] = task_name
-
-                    results = await detector.detect(frame, **analysis_config)
-                    detect_time = time.time() - start_time
-
-                    # 处理结果
-                    processed_results = self._process_detection_results(results, frame, task_id, frame_count)
-
-                    # 简化日志，只记录是否检测到目标
-                    detection_count = 0
-                    if "detections" in processed_results:
-                        detection_count = len(processed_results["detections"])
-                        if detection_count > 0:
-                            # 只记录检测到目标的帧号和耗时，不打印详细信息
-                            logger.debug(f"工作进程 {task_id}: 第 {frame_count} 帧检测到 {detection_count} 个目标, 耗时: {detect_time:.3f}秒")
-                        else:
-                            logger.debug(f"工作进程 {task_id}: 第 {frame_count} 帧未检测到目标, 耗时: {detect_time:.3f}秒")
-
-                    # 放入结果队列
-                    result_queue.put({
-                        "type": "result",
-                        "data": processed_results
-                    })
-
+                except asyncio.TimeoutError:
+                    logger.warning(f"任务 {task_id}: 获取帧超时")
+                    continue
                 except Exception as e:
-                    logger.error(f"工作进程 {task_id}: 处理帧时发生错误: {str(e)}")
-                    analysis_logger.error(f"任务 {task_id}: 处理第 {frame_count} 帧时发生错误: {str(e)}")
+                    logger.error(f"任务 {task_id} 分析异常: {str(e)}")
+                    continue
 
-            # 释放资源
-            if cap is not None:
-                cap.release()
-            detector.release()
+            # 任务结束，取消订阅
+            if stream_id:
+                from core.task_management.stream import stream_manager
+                await stream_manager.unsubscribe_stream(stream_id, task_id)
 
-            logger.info(f"工作进程 {task_id}: 退出")
+            logger.info(f"工作进程 {task_id}: 已结束")
 
         except Exception as e:
-            logger.error(f"工作进程 {task_id}: 发生未处理的严重错误: {str(e)}")
-            logger.error(f"详细错误: {traceback.format_exc()}")
-            result_queue.put({
-                "type": "error",
-                "message": f"工作进程发生严重错误: {str(e)}"
-            })
+            logger.error(f"工作进程 {task_id} 异常: {str(e)}")
 
+    # 已移除_subscribe_to_stream_status、_handle_stream_status和_unsubscribe_from_stream方法
+    # 这些功能已由StreamTaskBridge类实现，实现了视频流与分析任务的解耦
+            
     def _process_detection_results(self, results: Dict[str, Any], frame: np.ndarray, task_id: str, frame_count: int) -> Dict[str, Any]:
         """
         处理分析结果

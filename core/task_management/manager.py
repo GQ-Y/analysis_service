@@ -636,3 +636,74 @@ class TaskManager:
         except Exception as e:
             logger.error(f"停止任务异常: {str(e)}")
             return False
+
+    async def pause_task(self, task_id: str, reason: str = None) -> bool:
+        """暂停任务
+        
+        Args:
+            task_id: 任务ID
+            reason: 暂停原因
+            
+        Returns:
+            bool: 是否成功暂停
+        """
+        try:
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return False
+                
+            if self.tasks[task_id]["status"] != TaskStatus.PROCESSING:
+                logger.warning(f"只能暂停处理中的任务: {task_id}, 当前状态: {self.tasks[task_id]['status']}")
+                return False
+                
+            with self.task_lock:
+                self.tasks[task_id].update({
+                    "status": TaskStatus.PAUSED,
+                    "updated_at": time.time(),
+                    "pause_reason": reason
+                })
+                
+            # 通知任务处理器
+            await self.processor.pause_task(task_id)
+            
+            logger.info(f"任务已暂停: {task_id}, 原因: {reason}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"暂停任务失败: {str(e)}")
+            return False
+            
+    async def resume_task(self, task_id: str) -> bool:
+        """恢复暂停的任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            bool: 是否成功恢复
+        """
+        try:
+            if task_id not in self.tasks:
+                logger.warning(f"任务不存在: {task_id}")
+                return False
+                
+            if self.tasks[task_id]["status"] != TaskStatus.PAUSED:
+                logger.warning(f"只能恢复暂停的任务: {task_id}, 当前状态: {self.tasks[task_id]['status']}")
+                return False
+                
+            with self.task_lock:
+                self.tasks[task_id].update({
+                    "status": TaskStatus.PROCESSING,
+                    "updated_at": time.time(),
+                    "pause_reason": None
+                })
+                
+            # 通知任务处理器
+            await self.processor.resume_task(task_id)
+            
+            logger.info(f"任务已恢复: {task_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"恢复任务失败: {str(e)}")
+            return False

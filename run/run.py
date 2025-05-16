@@ -127,9 +127,16 @@ async def lifespan(app: FastAPI):
         # 创建任务管理器实例
         task_manager = TaskManager()
         await task_manager.initialize()
-
+        
         # 保存实例到应用状态
         app.state.task_manager = task_manager
+        
+        # 初始化流任务桥接器
+        # 这里延迟导入桥接器，确保在任务管理器初始化后再导入
+        from core.task_management.stream import stream_task_bridge
+        logger.info("正在初始化流任务桥接器...")
+        await stream_task_bridge.initialize(task_manager)
+        logger.info("流任务桥接器初始化完成")
 
         # 创建服务实例
         from services.http.task_service import TaskService
@@ -157,12 +164,55 @@ async def lifespan(app: FastAPI):
     if hasattr(app.state, "task_manager") and app.state.task_manager:
         try:
             logger.info("正在停止任务管理器...")
-            await app.state.task_manager.shutdown()
-            logger.info("任务管理器已停止")
+            try:
+                # 设置超时等待任务管理器关闭
+                await asyncio.wait_for(app.state.task_manager.shutdown(), timeout=10.0)
+                logger.info("任务管理器已正常停止")
+            except asyncio.TimeoutError:
+                logger.warning("等待任务管理器关闭超时，继续关闭流程")
+            except Exception as inner_e:
+                logger.error(f"任务管理器关闭过程中出错: {inner_e}")
         except Exception as e:
              logger.error(f"停止任务管理器时出错: {e}")
+        finally:
+            logger.info("任务管理器关闭流程已完成")
     else:
         logger.info("没有活动的任务管理器需要关闭")
+        
+    # 关闭节点健康监控器
+    try:
+        from core.task_management.stream import node_health_monitor
+        logger.info("正在关闭节点健康监控器...")
+        await node_health_monitor.shutdown()
+        logger.info("节点健康监控器已关闭")
+    except Exception as e:
+        logger.error(f"关闭节点健康监控器时出错: {e}")
+        
+    # 关闭流健康监控器
+    try:
+        from core.task_management.stream import stream_health_monitor
+        logger.info("正在关闭流健康监控器...")
+        await stream_health_monitor.shutdown()
+        logger.info("流健康监控器已关闭")
+    except Exception as e:
+        logger.error(f"关闭流健康监控器时出错: {e}")
+        
+    # 关闭流任务桥接器
+    try:
+        from core.task_management.stream import stream_task_bridge
+        logger.info("正在关闭流任务桥接器...")
+        try:
+            # 设置超时等待桥接器关闭
+            await asyncio.wait_for(stream_task_bridge.shutdown(), timeout=5.0)
+            logger.info("流任务桥接器已正常关闭")
+        except asyncio.TimeoutError:
+            logger.warning("等待流任务桥接器关闭超时，继续关闭流程")
+        except Exception as inner_e:
+            logger.error(f"流任务桥接器关闭过程中出错: {inner_e}")
+    except Exception as e:
+        logger.error(f"关闭流任务桥接器时出错: {e}")
+    finally:
+        logger.info("流任务桥接器关闭流程已完成")
 
     logger.info("Analysis Service stopped.")
 

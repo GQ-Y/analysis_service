@@ -1,7 +1,7 @@
 """Redis管理器模块"""
 import json
 from redis import asyncio as aioredis
-from typing import Optional, Any, Dict, List
+from typing import Optional, Any, Dict, List, Callable
 import asyncio
 from loguru import logger
 from shared.utils.logger import setup_logger
@@ -217,4 +217,51 @@ class RedisManager:
                 await self.redis.delete(*keys)
         except Exception as e:
             logger.error(f"删除匹配模式的键失败: {str(e)}")
+            raise
+            
+    # 发布订阅
+    async def publish(self, channel: str, message: str) -> int:
+        """发布消息到频道
+        
+        Args:
+            channel: 频道名称
+            message: 消息内容
+            
+        Returns:
+            int: 接收到消息的客户端数量
+        """
+        try:
+            logger.debug(f"发布消息到频道 {channel}")
+            return await self.redis.publish(channel, message)
+        except Exception as e:
+            logger.error(f"发布消息到频道 {channel} 失败: {str(e)}")
+            return 0
+            
+    async def subscribe(self, channel: str, callback: Callable):
+        """订阅频道
+        
+        Args:
+            channel: 频道名称
+            callback: 回调函数，接收频道名和消息内容 async def callback(channel, message)
+        """
+        try:
+            pubsub = self.redis.pubsub()
+            await pubsub.subscribe(channel)
+            logger.info(f"已订阅频道: {channel}")
+            
+            try:
+                while True:
+                    message = await pubsub.get_message(ignore_subscribe_messages=True)
+                    if message:
+                        logger.debug(f"从频道 {channel} 收到消息")
+                        await callback(channel, message["data"])
+                    await asyncio.sleep(0.01)
+            except asyncio.CancelledError:
+                logger.info(f"取消订阅频道: {channel}")
+                raise
+            finally:
+                await pubsub.unsubscribe(channel)
+                
+        except Exception as e:
+            logger.error(f"订阅频道 {channel} 失败: {str(e)}")
             raise 
