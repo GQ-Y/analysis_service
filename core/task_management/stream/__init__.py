@@ -5,15 +5,15 @@
 
 from .status import StreamStatus, StreamHealthStatus
 from .health_monitor import StreamHealthMonitor, stream_health_monitor
-from .stream import VideoStream
 from .manager import StreamManager, stream_manager
 from .node_monitor import NodeHealthMonitor, node_health_monitor
 from .stream_task_bridge import StreamTaskBridge, stream_task_bridge
+from core.media_kit.zlm_stream import ZLMVideoStream
 
 __all__ = [
-    "StreamManager", 
+    "StreamManager",
     "stream_manager",
-    "VideoStream",
+    "ZLMVideoStream",
     "StreamStatus",
     "StreamHealthStatus",
     "StreamHealthMonitor",
@@ -22,4 +22,4 @@ __all__ = [
     "node_health_monitor",
     "StreamTaskBridge",
     "stream_task_bridge"
-] 
+]

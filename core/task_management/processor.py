@@ -22,7 +22,7 @@ import json
 from core.config import settings
 from shared.utils.logger import setup_logger, setup_stream_error_logger, setup_analysis_logger
 from core.task_management.utils.status import TaskStatus
-from core.task_management.stream.status import StreamStatus
+from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 
 # 延迟导入stream_manager，避免循环导入
 from core.redis_manager import RedisManager
@@ -267,7 +267,7 @@ class TaskProcessor:
             logger.error(f"恢复任务失败: {str(e)}")
             return False
 
-    async def process_stream_worker(self, task_id: str, task_config: Dict[str, Any], result_queue: queue.Queue, 
+    async def process_stream_worker(self, task_id: str, task_config: Dict[str, Any], result_queue: queue.Queue,
                                    stop_event: threading.Event, pause_event: threading.Event):
         """
         流处理工作线程
@@ -288,7 +288,7 @@ class TaskProcessor:
             if not stream_id:
                 stream_id = f"stream_{task_id}"
                 logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
-                
+
             stream_url = task_config.get("stream_url", "")  # 修正字段名，使用stream_url而不是url
             stream_config = {
                 "url": stream_url,
@@ -331,35 +331,138 @@ class TaskProcessor:
                     # 从帧队列获取帧
                     logger.info(f"工作进程 {task_id}: 尝试获取帧")
                     frame, timestamp = await asyncio.wait_for(frame_queue.get(), timeout=5.0)
-                    
+
                     # 添加获取帧成功的日志
                     if frame is not None:
                         logger.info(f"工作进程 {task_id}: 成功获取帧，大小: {frame.shape}")
-                    
+
+                        # 重置连续错误计数
+                        if hasattr(self, '_frame_error_counts') and task_id in self._frame_error_counts:
+                            self._frame_error_counts[task_id] = 0
+
                     if frame is None:
                         # 没有收到帧，可能是流离线
                         logger.warning(f"任务 {task_id}: 未接收到视频帧")
+
+                        # 增加错误计数
+                        if not hasattr(self, '_frame_error_counts'):
+                            self._frame_error_counts = {}
+
+                        self._frame_error_counts[task_id] = self._frame_error_counts.get(task_id, 0) + 1
+                        error_count = self._frame_error_counts[task_id]
+
+                        # 如果连续错误次数过多，尝试重新订阅
+                        if error_count >= 3:
+                            logger.warning(f"任务 {task_id}: 连续 {error_count} 次未接收到视频帧，尝试重新订阅")
+
+                            # 检查流状态
+                            from core.task_management.stream import stream_manager
+                            stream_info = await stream_manager.get_stream_info(stream_id)
+
+                            if stream_info:
+                                # 尝试重新订阅
+                                await stream_manager.unsubscribe_stream(stream_id, task_id)
+                                success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+
+                                if success and new_frame_queue is not None:
+                                    logger.info(f"成功重新订阅流 {stream_id}")
+                                    frame_queue = new_frame_queue
+                                    self._frame_error_counts[task_id] = 0  # 重置错误计数
+                                else:
+                                    logger.error(f"重新订阅流 {stream_id} 失败")
+
                         time.sleep(1)
                         continue
 
                     # 执行分析
-                    # ... 原有的分析代码 ...
+                    # 这里应该有实际的分析代码，但由于我们只是测试帧获取，
+                    # 所以创建一个简单的结果对象
+                    result = {
+                        "task_id": task_id,
+                        "timestamp": timestamp,
+                        "frame_shape": frame.shape if frame is not None else None,
+                        "message": "成功获取帧"
+                    }
 
                     # 将结果放入结果队列
                     result_queue.put(result)
 
                 except asyncio.TimeoutError:
                     logger.warning(f"任务 {task_id}: 获取帧超时")
+
+                    # 增加错误计数
+                    if not hasattr(self, '_frame_timeout_counts'):
+                        self._frame_timeout_counts = {}
+
+                    self._frame_timeout_counts[task_id] = self._frame_timeout_counts.get(task_id, 0) + 1
+                    timeout_count = self._frame_timeout_counts[task_id]
+
                     # 检查流状态
                     from core.task_management.stream import stream_manager
                     stream_info = await stream_manager.get_stream_info(stream_id)
+
                     if stream_info:
                         status = stream_info.get("status")
                         health = stream_info.get("health_status")
                         logger.info(f"流 {stream_id} 状态: {status}, 健康状态: {health}")
+
+                        # 根据不同情况采取不同策略
+                        if status in [StreamStatus.RUNNING, StreamStatus.ONLINE]:
+                            # 流状态正常但获取帧超时
+                            if timeout_count >= 3:  # 连续超时3次以上才重新订阅
+                                logger.info(f"流 {stream_id} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
+                                await stream_manager.unsubscribe_stream(stream_id, task_id)
+                                success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+
+                                if success and new_frame_queue is not None:
+                                    logger.info(f"成功重新订阅流 {stream_id}")
+                                    frame_queue = new_frame_queue
+                                    self._frame_timeout_counts[task_id] = 0  # 重置超时计数
+                                else:
+                                    logger.error(f"重新订阅流 {stream_id} 失败")
+                        elif status in [StreamStatus.CONNECTING, StreamStatus.INITIALIZING]:
+                            # 流正在连接中，等待
+                            logger.info(f"流 {stream_id} 正在连接中，等待...")
+                        elif status in [StreamStatus.OFFLINE, StreamStatus.ERROR]:
+                            # 流离线或错误，尝试重新连接
+                            if timeout_count % 5 == 0:  # 每5次超时尝试一次重连
+                                logger.info(f"流 {stream_id} 状态异常 ({status})，尝试重新连接")
+                                # 通知流管理器重新连接
+                                await stream_manager.reconnect_stream(stream_id)
+
+                    # 短暂等待后继续
+                    await asyncio.sleep(1)
                     continue
+
                 except Exception as e:
                     logger.error(f"任务 {task_id} 分析异常: {str(e)}")
+                    logger.error(traceback.format_exc())
+
+                    # 增加错误计数
+                    if not hasattr(self, '_frame_exception_counts'):
+                        self._frame_exception_counts = {}
+
+                    self._frame_exception_counts[task_id] = self._frame_exception_counts.get(task_id, 0) + 1
+                    exception_count = self._frame_exception_counts[task_id]
+
+                    # 如果连续异常次数过多，尝试重新订阅
+                    if exception_count >= 5:
+                        logger.warning(f"任务 {task_id}: 连续 {exception_count} 次处理异常，尝试重新订阅")
+
+                        # 尝试重新订阅
+                        from core.task_management.stream import stream_manager
+                        await stream_manager.unsubscribe_stream(stream_id, task_id)
+                        success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+
+                        if success and new_frame_queue is not None:
+                            logger.info(f"成功重新订阅流 {stream_id}")
+                            frame_queue = new_frame_queue
+                            self._frame_exception_counts[task_id] = 0  # 重置异常计数
+                        else:
+                            logger.error(f"重新订阅流 {stream_id} 失败")
+
+                    # 短暂等待后继续
+                    await asyncio.sleep(1)
                     continue
 
             # 任务结束，取消订阅
@@ -374,7 +477,7 @@ class TaskProcessor:
 
     # 已移除_subscribe_to_stream_status、_handle_stream_status和_unsubscribe_from_stream方法
     # 这些功能已由StreamTaskBridge类实现，实现了视频流与分析任务的解耦
-            
+
     def _process_detection_results(self, results: Dict[str, Any], frame: np.ndarray, task_id: str, frame_count: int) -> Dict[str, Any]:
         """
         处理分析结果

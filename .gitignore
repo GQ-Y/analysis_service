@@ -13,3 +13,5 @@ frontend/*
 mobileclip_blt.pt
 tests/*
 zlmos/darwin/log/*
+ZLMediaKit/*
+test_stream.log

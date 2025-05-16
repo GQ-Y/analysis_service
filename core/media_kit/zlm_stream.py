@@ -73,7 +73,9 @@ class ZLMVideoStream(BaseVideoStream):
 
         # 帧回调相关
         self._frame_callback_registered = False
-        self._frame_callback_ref = None  # 保持回调函数的引用，防止被垃圾回收
+        self._frame_callback_ref = None  # 保持帧回调函数的引用，防止被垃圾回收
+        self._play_result_callback_ref = None  # 保持播放结果回调函数的引用，防止被垃圾回收
+        self._play_shutdown_callback_ref = None  # 保持播放中断回调函数的引用，防止被垃圾回收
 
         logger.info(f"创建ZLM流: {stream_id}, URL: {self._url}, 类型: {self.stream_type}, 使用SDK: {self._use_sdk}")
 
@@ -134,9 +136,9 @@ class ZLMVideoStream(BaseVideoStream):
             self._pull_task = asyncio.create_task(self._pull_stream_task())
             self._frame_task = asyncio.create_task(self._process_frames_task())
 
-            # 设置状态为运行中
-            self._status = StreamStatus.ONLINE  # 使用ONLINE代替RUNNING
-            logger.info(f"流 {self.stream_id} 启动成功")
+            # 设置状态为连接中，等待实际收到帧后再更新为ONLINE
+            self._status = StreamStatus.CONNECTING
+            logger.info(f"流 {self.stream_id} 启动成功，等待连接...")
             return True
         except Exception as e:
             logger.error(f"启动流 {self.stream_id} 时出错: {str(e)}")
@@ -180,17 +182,56 @@ class ZLMVideoStream(BaseVideoStream):
         # 停止ZLM播放器
         if self._player_handle:
             try:
+                # 注意：由于在释放播放器时遇到段错误，我们暂时跳过播放器释放步骤
+                # 只清除引用，让Python的垃圾回收机制处理
+                logger.info(f"跳过播放器释放步骤，只清除引用: {self.stream_id}")
+
+                # 如果在未来需要重新启用播放器释放，可以取消注释以下代码
+                """
                 # 使用C API释放播放器
-                if self.manager._lib and hasattr(self.manager._lib, 'mk_player_release'):
-                    logger.info(f"使用C API释放播放器: {self.stream_id}")
-                    self.manager._lib.mk_player_release(self._player_handle)
+                if self.manager._lib:
+                    try:
+                        # 先尝试停止播放
+                        if hasattr(self.manager._lib, 'mk_player_stop'):
+                            # 设置mk_player_stop的参数类型
+                            self.manager._lib.mk_player_stop.argtypes = [ctypes.c_void_p]
+
+                            logger.info(f"使用C API停止播放器: {self.stream_id}")
+                            # 检查播放器句柄是否有效
+                            if self._player_handle and int(self._player_handle) != 0:
+                                self.manager._lib.mk_player_stop(self._player_handle)
+                                # 等待一小段时间，确保停止操作完成
+                                time.sleep(0.5)
+                            else:
+                                logger.warning(f"播放器句柄无效，跳过停止: {self.stream_id}")
+
+                        # 然后释放播放器
+                        if hasattr(self.manager._lib, 'mk_player_release'):
+                            # 设置mk_player_release的参数类型
+                            self.manager._lib.mk_player_release.argtypes = [ctypes.c_void_p]
+
+                            logger.info(f"使用C API释放播放器: {self.stream_id}")
+                            # 检查播放器句柄是否有效
+                            if self._player_handle and int(self._player_handle) != 0:
+                                # 将播放器句柄转换为整数，然后再转换为c_void_p
+                                handle_int = int(self._player_handle)
+                                handle_ptr = ctypes.c_void_p(handle_int)
+                                self.manager._lib.mk_player_release(handle_ptr)
+                            else:
+                                logger.warning(f"播放器句柄无效，跳过释放: {self.stream_id}")
+                    except Exception as e:
+                        logger.error(f"释放播放器时出错: {str(e)}")
+                        logger.error(traceback.format_exc())
                 else:
                     logger.error(f"无法释放播放器: {self.stream_id}，C API不可用")
+                """
 
                 # 清除播放器句柄
                 self._player_handle = None
                 self._frame_callback_registered = False
                 self._frame_callback_ref = None
+                self._play_result_callback_ref = None
+                self._play_shutdown_callback_ref = None
             except Exception as e:
                 logger.error(f"停止ZLM播放器时出错: {str(e)}")
                 logger.error(traceback.format_exc())
@@ -205,6 +246,15 @@ class ZLMVideoStream(BaseVideoStream):
 
         # 设置状态
         self._status = StreamStatus.OFFLINE  # 使用OFFLINE代替STOPPED
+        self._health_status = StreamHealthStatus.OFFLINE  # 确保健康状态也被更新
+        self._is_running = False  # 确保运行状态被更新
+
+        # 通知健康监控器
+        try:
+            from core.task_management.stream.health_monitor import stream_health_monitor
+            stream_health_monitor.report_error(self.stream_id, "流已停止")
+        except Exception as e:
+            logger.error(f"通知健康监控器时出错: {str(e)}")
 
         logger.info(f"流 {self.stream_id} 停止成功")
         return True
@@ -262,17 +312,39 @@ class ZLMVideoStream(BaseVideoStream):
         Returns:
             Tuple[bool, Optional[np.ndarray]]: (是否成功, 帧数据)
         """
-        # 检查流状态
-        if not self._is_running or self._status != StreamStatus.RUNNING:
+        # 检查流状态 - 允许多种有效状态
+        valid_statuses = [StreamStatus.RUNNING, StreamStatus.ONLINE]
+        if not self._is_running or self._status not in valid_statuses:
+            logger.debug(f"流 {self.stream_id} 状态不可用: is_running={self._is_running}, status={self._status}")
+
+            # 如果流状态是CONNECTING或INITIALIZING，记录详细信息但仍返回标准格式
+            if self._status in [StreamStatus.CONNECTING, StreamStatus.INITIALIZING]:
+                logger.debug(f"流 {self.stream_id} 正在连接中")
+
             return False, None
 
         # 获取最新帧
         with self._frame_lock:
             if not self._frame_buffer:
-                return False, None
-            frame = self._frame_buffer[-1].copy()
+                logger.debug(f"流 {self.stream_id} 帧缓冲区为空")
+                # 检查帧缓冲区为空的原因
+                if self._stats.get("frames_received", 0) == 0:
+                    # 从未接收到帧
+                    logger.debug(f"流 {self.stream_id} 从未接收到帧")
+                else:
+                    # 曾经接收到帧，但当前缓冲区为空
+                    logger.debug(f"流 {self.stream_id} 曾经接收到帧，但当前缓冲区为空")
 
-        return True, frame
+                return False, None
+
+            # 成功获取帧
+            frame = self._frame_buffer[-1].copy()
+            logger.debug(f"流 {self.stream_id} 成功获取帧，大小: {frame.shape}")
+
+            # 更新最后获取帧的时间
+            self._stats["last_frame_get_time"] = time.time()
+
+            return True, frame
 
     async def get_snapshot(self, width: int = 0, height: int = 0) -> Optional[bytes]:
         """获取流的快照
@@ -358,6 +430,12 @@ class ZLMVideoStream(BaseVideoStream):
     def _register_frame_callback(self) -> bool:
         """注册帧回调函数
 
+        注意：在ZLMediaKit C API中，帧回调不是通过mk_player_set_on_data注册的，
+        而是通过mk_player_set_on_result注册播放结果回调，然后在播放成功后
+        通过mk_track_add_delegate为每个track注册帧回调。
+
+        这个函数现在只负责注册播放结果回调，实际的帧回调会在播放成功后注册。
+
         Returns:
             bool: 是否成功注册
         """
@@ -365,67 +443,182 @@ class ZLMVideoStream(BaseVideoStream):
             return False
 
         try:
-            # 检查是否支持帧回调
-            if not hasattr(self.manager._lib, 'mk_player_set_on_data'):
-                logger.warning("ZLMediaKit库不支持帧回调")
+            # 检查是否支持播放结果回调
+            if not hasattr(self.manager._lib, 'mk_player_set_on_result'):
+                logger.warning("ZLMediaKit库不支持播放结果回调")
                 return False
 
-            # 定义帧回调函数
-            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.POINTER(ctypes.c_char), ctypes.c_int, ctypes.c_uint64)
-            def on_frame(user_data, track_type, data, len_data, pts):
+            # 定义帧回调函数 - 这个会在播放成功后通过mk_track_add_delegate注册
+            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
+            def on_track_frame(user_data, frame_ptr):
                 try:
-                    # 只处理视频帧
-                    if track_type != 0:  # 0表示视频
+                    # 这里的frame_ptr是mk_frame类型，需要使用mk_frame_xxx函数获取数据
+                    if not frame_ptr:
                         return
 
-                    # 将数据转换为numpy数组
-                    if data and len_data > 0:
-                        # 复制数据，避免数据被释放
-                        buffer = ctypes.string_at(data, len_data)
+                    # 检查是否为视频帧
+                    if hasattr(self.manager._lib, 'mk_frame_is_video'):
+                        # 设置mk_frame_is_video的参数类型和返回值类型
+                        self.manager._lib.mk_frame_is_video.argtypes = [ctypes.c_void_p]
+                        self.manager._lib.mk_frame_is_video.restype = ctypes.c_int
 
-                        # 解码帧
-                        try:
-                            # 使用OpenCV解码
-                            frame_array = np.frombuffer(buffer, dtype=np.uint8)
-                            frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+                        is_video = self.manager._lib.mk_frame_is_video(frame_ptr)
+                        if not is_video:
+                            return
 
-                            if frame is not None:
-                                # 更新缓存
-                                with self._frame_lock:
-                                    self._frame_buffer.append(frame)
-                                    if len(self._frame_buffer) > self._frame_buffer_size:
-                                        self._frame_buffer.pop(0)
+                    # 获取帧数据
+                    if hasattr(self.manager._lib, 'mk_frame_get_data') and hasattr(self.manager._lib, 'mk_frame_get_data_size'):
+                        # 设置mk_frame_get_data的参数类型和返回值类型
+                        self.manager._lib.mk_frame_get_data.argtypes = [ctypes.c_void_p]
+                        self.manager._lib.mk_frame_get_data.restype = ctypes.c_char_p
 
-                                # 更新统计
-                                now = time.time()
-                                self._stats["frames_received"] += 1
-                                self._stats["last_frame_time"] = now
-                                self._last_frame_time = now
+                        # 设置mk_frame_get_data_size的参数类型和返回值类型
+                        self.manager._lib.mk_frame_get_data_size.argtypes = [ctypes.c_void_p]
+                        self.manager._lib.mk_frame_get_data_size.restype = ctypes.c_size_t
 
-                                # 更新状态
-                                self._status = StreamStatus.ONLINE
-                                self._health_status = StreamHealthStatus.HEALTHY
+                        data_ptr = self.manager._lib.mk_frame_get_data(frame_ptr)
+                        data_size = self.manager._lib.mk_frame_get_data_size(frame_ptr)
 
-                                # 通知帧处理任务
-                                asyncio.run_coroutine_threadsafe(
-                                    self._notify_frame_processed(frame, now),
-                                    asyncio.get_event_loop()
-                                )
-                        except Exception as e:
-                            logger.error(f"解码帧时出错: {str(e)}")
+                        if data_ptr and data_size > 0:
+                            # 复制数据，避免数据被释放
+                            buffer = ctypes.string_at(data_ptr, data_size)
+
+                            # 解码帧
+                            try:
+                                # 使用OpenCV解码
+                                frame_array = np.frombuffer(buffer, dtype=np.uint8)
+                                frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
+
+                                if frame is not None:
+                                    # 更新缓存
+                                    with self._frame_lock:
+                                        self._frame_buffer.append(frame)
+                                        if len(self._frame_buffer) > self._frame_buffer_size:
+                                            self._frame_buffer.pop(0)
+
+                                    # 更新统计
+                                    now = time.time()
+                                    self._stats["frames_received"] += 1
+                                    self._stats["last_frame_time"] = now
+                                    self._last_frame_time = now
+
+                                    # 更新状态
+                                    self._status = StreamStatus.ONLINE
+                                    self._health_status = StreamHealthStatus.HEALTHY
+
+                                    # 通知帧处理任务
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._notify_frame_processed(frame, now),
+                                        asyncio.get_event_loop()
+                                    )
+                            except Exception as e:
+                                logger.error(f"解码帧时出错: {str(e)}")
+                    else:
+                        logger.warning("ZLMediaKit库不支持获取帧数据")
                 except Exception as e:
                     logger.error(f"处理帧回调时出错: {str(e)}")
+                    logger.error(traceback.format_exc())
 
-            # 保存回调引用
-            self._frame_callback_ref = on_frame
+                return True
 
-            # 注册回调
-            self.manager._lib.mk_player_set_on_data(self._player_handle, self._frame_callback_ref, None)
+            # 定义播放结果回调函数
+            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int)
+            def on_play_result(user_data, err_code, err_msg, tracks, track_count):
+                try:
+                    if err_code == 0:
+                        # 播放成功
+                        logger.info(f"播放成功: {self.stream_id}")
+
+                        # 为每个track注册帧回调
+                        if track_count > 0 and tracks:
+                            for i in range(track_count):
+                                track = tracks[i]
+
+                                # 检查是否为视频track
+                                if hasattr(self.manager._lib, 'mk_track_is_video'):
+                                    # 设置mk_track_is_video的参数类型和返回值类型
+                                    self.manager._lib.mk_track_is_video.argtypes = [ctypes.c_void_p]
+                                    self.manager._lib.mk_track_is_video.restype = ctypes.c_int
+
+                                    # 检查是否为视频track
+                                    if self.manager._lib.mk_track_is_video(track):
+                                        logger.info(f"找到视频track: {self.stream_id}")
+
+                                        # 注册帧回调
+                                        if hasattr(self.manager._lib, 'mk_track_add_delegate'):
+                                            # 设置mk_track_add_delegate的参数类型
+                                            self.manager._lib.mk_track_add_delegate.argtypes = [
+                                                ctypes.c_void_p,  # track句柄
+                                                ctypes.c_void_p,  # 回调函数
+                                                ctypes.c_void_p   # 用户数据
+                                            ]
+                                            self.manager._lib.mk_track_add_delegate.restype = ctypes.c_void_p
+
+                                            # 注册回调
+                                            self.manager._lib.mk_track_add_delegate(track, on_track_frame, None)
+                                            logger.info(f"成功为视频track注册帧回调: {self.stream_id}")
+                    else:
+                        # 播放失败
+                        err_msg_str = err_msg.decode('utf-8') if err_msg else "未知错误"
+                        logger.error(f"播放失败: {self.stream_id}, 错误码: {err_code}, 错误信息: {err_msg_str}")
+
+                        # 更新状态
+                        self._status = StreamStatus.ERROR
+                        self._health_status = StreamHealthStatus.UNHEALTHY
+                        self._last_error = f"播放失败: 错误码 {err_code}, 错误信息: {err_msg_str}"
+                except Exception as e:
+                    logger.error(f"处理播放结果回调时出错: {str(e)}")
+                    logger.error(traceback.format_exc())
+
+            # 定义播放中断回调函数
+            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int)
+            def on_play_shutdown(user_data, err_code, err_msg, tracks, track_count):
+                try:
+                    # 播放中断
+                    err_msg_str = err_msg.decode('utf-8') if err_msg else "未知错误"
+                    logger.warning(f"播放中断: {self.stream_id}, 错误码: {err_code}, 错误信息: {err_msg_str}")
+
+                    # 更新状态
+                    self._status = StreamStatus.ERROR
+                    self._health_status = StreamHealthStatus.UNHEALTHY
+                    self._last_error = f"播放中断: 错误码 {err_code}, 错误信息: {err_msg_str}"
+                except Exception as e:
+                    logger.error(f"处理播放中断回调时出错: {str(e)}")
+                    logger.error(traceback.format_exc())
+
+            # 保存回调引用，防止被垃圾回收
+            self._frame_callback_ref = on_track_frame
+            self._play_result_callback_ref = on_play_result
+            self._play_shutdown_callback_ref = on_play_shutdown
+
+            # 设置回调函数参数类型
+            if hasattr(self.manager._lib, 'mk_player_set_on_result'):
+                self.manager._lib.mk_player_set_on_result.argtypes = [
+                    ctypes.c_void_p,  # 播放器句柄
+                    ctypes.c_void_p,  # 回调函数
+                    ctypes.c_void_p   # 用户数据
+                ]
+                # 注册播放结果回调
+                self.manager._lib.mk_player_set_on_result(self._player_handle, self._play_result_callback_ref, None)
+            else:
+                logger.warning("ZLMediaKit库不支持mk_player_set_on_result函数")
+
+            # 设置中断回调函数参数类型
+            if hasattr(self.manager._lib, 'mk_player_set_on_shutdown'):
+                self.manager._lib.mk_player_set_on_shutdown.argtypes = [
+                    ctypes.c_void_p,  # 播放器句柄
+                    ctypes.c_void_p,  # 回调函数
+                    ctypes.c_void_p   # 用户数据
+                ]
+                # 注册播放中断回调
+                self.manager._lib.mk_player_set_on_shutdown(self._player_handle, self._play_shutdown_callback_ref, None)
+            else:
+                logger.warning("ZLMediaKit库不支持mk_player_set_on_shutdown函数")
 
             # 标记为已注册
             self._frame_callback_registered = True
 
-            logger.info(f"成功注册帧回调: {self.stream_id}")
+            logger.info(f"成功注册播放结果回调: {self.stream_id}")
             return True
         except Exception as e:
             logger.error(f"注册帧回调时出错: {str(e)}")
@@ -482,6 +675,14 @@ class ZLMVideoStream(BaseVideoStream):
                     # 转换为C字符串
                     url_c = ctypes.c_char_p(self.url.encode('utf-8'))
 
+                    # 设置函数参数和返回值类型
+                    if not hasattr(self.manager._lib, 'mk_player_create'):
+                        logger.error("ZLMediaKit库不支持mk_player_create函数")
+                        return False
+
+                    # 设置mk_player_create的返回值类型
+                    self.manager._lib.mk_player_create.restype = ctypes.c_void_p
+
                     # 创建播放器
                     logger.info(f"使用C API创建播放器: {self.url}")
                     self._player_handle = self.manager._lib.mk_player_create()
@@ -495,24 +696,91 @@ class ZLMVideoStream(BaseVideoStream):
 
                     # 设置播放器参数
                     if hasattr(self.manager._lib, 'mk_player_set_option'):
+                        # 设置mk_player_set_option的参数类型
+                        self.manager._lib.mk_player_set_option.argtypes = [
+                            ctypes.c_void_p,  # 播放器句柄
+                            ctypes.c_char_p,  # 选项名
+                            ctypes.c_char_p   # 选项值
+                        ]
+
                         # 设置RTSP传输模式
                         rtsp_transport = self.config.get("rtsp_transport", "tcp")
                         if rtsp_transport == "tcp":
-                            self.manager._lib.mk_player_set_option(self._player_handle, b"rtsp_transport", b"tcp")
+                            self.manager._lib.mk_player_set_option(
+                                self._player_handle,
+                                "rtsp_transport".encode('utf-8'),
+                                "tcp".encode('utf-8')
+                            )
 
                         # 设置缓冲时间
                         buffer_ms = str(self.config.get("buffer_ms", 200)).encode('utf-8')
-                        self.manager._lib.mk_player_set_option(self._player_handle, b"buffer_ms", buffer_ms)
+                        self.manager._lib.mk_player_set_option(
+                            self._player_handle,
+                            "buffer_ms".encode('utf-8'),
+                            buffer_ms
+                        )
 
-                    # 播放URL
-                    result = self.manager._lib.mk_player_play_url(self._player_handle, url_c)
-                    if result != 0:
-                        logger.error(f"播放URL失败: {result}")
-                        self.manager._lib.mk_player_release(self._player_handle)
-                        self._player_handle = None
+                    # 设置mk_player_play的参数类型
+                    if hasattr(self.manager._lib, 'mk_player_play'):
+                        self.manager._lib.mk_player_play.argtypes = [
+                            ctypes.c_void_p,  # 播放器句柄
+                            ctypes.c_char_p   # URL
+                        ]
+
+                        # 播放URL - 使用正确的API函数名称
+                        # 官方API是mk_player_play而不是mk_player_play_url
+                        self.manager._lib.mk_player_play(self._player_handle, url_c)
+
+                        # mk_player_play没有返回值，不需要检查结果
+                        logger.info(f"播放URL成功: {self.url}")
+                    else:
+                        logger.error("ZLMediaKit库不支持mk_player_play函数")
                         return False
 
-                    logger.info(f"成功使用C API创建播放器: {self.url}")
+                    logger.info(f"C API创建播放器成功，等待验证流可用性: {self.url}")
+
+                    # 等待一小段时间，让ZLMediaKit有时间处理流
+                    await asyncio.sleep(1)
+
+                    # 验证流是否真的可用
+                    proxied_url = f"rtsp://{self.manager._config.server_address}:{self.manager._config.rtsp_port}/{self.app}/{self.stream_name}"
+
+                    # 使用OpenCV尝试打开流并读取一帧
+                    try:
+                        # 在线程池中执行OpenCV操作，避免阻塞
+                        loop = asyncio.get_event_loop()
+
+                        def verify_stream():
+                            try:
+                                cap = cv2.VideoCapture(proxied_url)
+                                if not cap.isOpened():
+                                    logger.warning(f"C API创建流成功，但OpenCV无法打开流: {proxied_url}")
+                                    return False
+
+                                # 尝试读取一帧
+                                ret, _ = cap.read()
+                                cap.release()
+
+                                if not ret:
+                                    logger.warning(f"C API创建流成功，但无法读取帧: {proxied_url}")
+                                    return False
+
+                                logger.info(f"流验证成功，可以通过OpenCV访问: {proxied_url}")
+                                return True
+                            except Exception as e:
+                                logger.error(f"验证流时出错: {str(e)}")
+                                return False
+
+                        # 在线程池中执行验证
+                        is_valid = await loop.run_in_executor(None, verify_stream)
+
+                        if not is_valid:
+                            logger.warning(f"C API创建的流无法通过OpenCV访问，但仍然继续: {self.url}")
+                            # 我们仍然返回True，因为C API创建成功，后续的_pull_stream_task会继续尝试
+                    except Exception as e:
+                        logger.error(f"验证流时发生异常: {str(e)}")
+                        # 继续执行，不影响返回结果
+
                     return True
 
                 except Exception as e:
@@ -575,7 +843,11 @@ class ZLMVideoStream(BaseVideoStream):
 
             # 创建OpenCV捕获对象
             # 这里我们暂时使用OpenCV直接拉流，在实际集成中应该使用ZLMediaKit API
-            proxied_url = f"rtsp://{self.manager._config.server_address}:{self.manager._config.rtsp_port}/{self.app}/{self.stream_name}"
+            # 尝试使用原始URL
+            proxied_url = self.url
+
+            # 如果需要，也可以使用代理URL
+            # proxied_url = f"rtsp://{self.manager._config.server_address}:{self.manager._config.rtsp_port}/{self.app}/{self.stream_name}"
 
             logger.info(f"拉流URL: {proxied_url}")
 
@@ -602,11 +874,44 @@ class ZLMVideoStream(BaseVideoStream):
 
                     # 重置重试计数
                     retry_count = 0
-                    self._status = StreamStatus.ONLINE  # 使用ONLINE代替RUNNING
-                    self._health_status = StreamHealthStatus.HEALTHY  # 使用HEALTHY代替GOOD
 
-                    # 读取帧
-                    frame_count = 0
+                    # 先尝试读取一帧，确认流真的可用
+                    ret, test_frame = cap.read()
+                    if not ret:
+                        logger.error(f"流可以打开但无法读取第一帧: {proxied_url}")
+                        self._status = StreamStatus.ERROR
+                        self._health_status = StreamHealthStatus.OFFLINE
+                        self._last_error = "流可以打开但无法读取第一帧"
+                        cap.release()
+
+                        # 重试
+                        retry_count += 1
+                        if retry_count > max_retry:
+                            logger.error(f"超过最大重试次数({max_retry})，停止拉流")
+                            break
+
+                        logger.info(f"等待 {retry_interval} 秒后重试 ({retry_count}/{max_retry})...")
+                        await asyncio.sleep(retry_interval)
+                        continue
+
+                    # 成功读取第一帧，更新状态
+                    logger.info(f"成功读取第一帧，流 {self.stream_id} 连接成功")
+                    self._status = StreamStatus.ONLINE
+                    self._health_status = StreamHealthStatus.HEALTHY
+
+                    # 处理第一帧
+                    with self._frame_lock:
+                        self._frame_buffer.append(test_frame)
+
+                    # 更新统计
+                    self._stats["frames_received"] += 1
+                    self._stats["last_frame_time"] = time.time()
+
+                    # 通知帧处理任务
+                    self._frame_processed_event.set()
+
+                    # 读取后续帧
+                    frame_count = 1
                     error_count = 0
                     max_consecutive_errors = self.config.get("max_consecutive_errors", 10)
                     frame_interval = 0.01  # 10ms
