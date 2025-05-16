@@ -2,16 +2,14 @@
 ZLMediaKit流模块
 负责管理单个媒体流的拉取、推送和分发
 """
-import os
 import time
 import asyncio
 import threading
 import traceback
 import ctypes
-from typing import Dict, Any, Optional, List, Set, Tuple, Callable, Union
+from typing import Dict, Any, Optional, Tuple, Set
 import cv2
 import numpy as np
-from queue import Queue, Empty
 from asyncio import Lock
 
 from loguru import logger
@@ -187,13 +185,7 @@ class ZLMVideoStream(BaseVideoStream):
                     logger.info(f"使用C API释放播放器: {self.stream_id}")
                     self.manager._lib.mk_player_release(self._player_handle)
                 else:
-                    # 回退到HTTP API
-                    logger.info(f"使用HTTP API停止流: {self.stream_id}")
-                    await self.manager.call_api("index/api/delStreamProxy", {
-                        "vhost": self.vhost,
-                        "app": self.app,
-                        "stream": self.stream_name
-                    })
+                    logger.error(f"无法释放播放器: {self.stream_id}，C API不可用")
 
                 # 清除播放器句柄
                 self._player_handle = None
@@ -535,37 +527,12 @@ class ZLMVideoStream(BaseVideoStream):
                             pass
                         self._player_handle = None
 
-                    logger.warning("回退到HTTP API创建流")
+                    logger.error("C API创建流失败，无法继续")
+                    return False
 
-            # 如果C API不可用或创建失败，使用HTTP API
-            result = await self.manager.call_api("index/api/addStreamProxy", {
-                "vhost": self.vhost,
-                "app": self.app,
-                "stream": self.stream_name,
-                "url": self.url,
-                "enable_mp4": 0,  # 禁用MP4录制
-                "enable_hls": 0,  # 禁用HLS
-                "enable_rtsp": 1,  # 启用RTSP
-                "enable_rtmp": 1,  # 启用RTMP
-                "enable_fmp4": 0,  # 禁用FMP4
-                "enable_ts": 0,    # 禁用TS
-                "add_mute_audio": 1  # 添加静音音轨
-            })
-
-            # 检查返回结果
-            if result.get("code") != 0:
-                error_msg = result.get("msg", "未知错误")
-
-                # 如果是流已经存在的错误，则直接返回True
-                if "stream already exists" in error_msg.lower():
-                    logger.warning(f"流 {self.stream_name} 已经存在，直接使用")
-                    return True
-
-                logger.error(f"启动RTSP代理失败: {error_msg}")
-                return False
-
-            logger.info(f"成功启动RTSP代理: {self.url} -> {self.app}/{self.stream_name}")
-            return True
+            # C API不可用，无法创建流
+            logger.error(f"无法创建流 {self.stream_name}，C API不可用")
+            return False
         except Exception as e:
             logger.error(f"启动RTSP流时出错: {str(e)}")
             return False

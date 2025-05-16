@@ -12,3 +12,4 @@ install_webrtc_deps.sh
 frontend/*
 mobileclip_blt.pt
 tests/*
+zlmos/darwin/log/*

@@ -5,13 +5,10 @@ ZLMediaKit管理器模块
 import os
 import sys
 import json
-import time
 import threading
-import asyncio
 import ctypes
 import traceback
-from typing import Dict, Any, List, Optional, Tuple, Callable, Set
-import requests
+from typing import Dict, Any, List, Optional, Callable
 from loguru import logger
 
 from shared.utils.logger import setup_logger
@@ -83,12 +80,12 @@ class ZLMediaKitManager:
 
             # 测试API连接
             try:
-                api_connected = await self._test_api_connection()
+                api_connected = self._test_api_connection()
                 if not api_connected:
-                    logger.warning("无法连接到ZLMediaKit API，将继续使用库功能，但HTTP API将不可用")
+                    logger.warning("无法连接到ZLMediaKit C API，请检查库是否正确安装")
             except Exception as api_err:
                 logger.warning(f"测试API连接时发生异常: {str(api_err)}")
-                logger.warning("将继续使用库功能，但HTTP API将不可用")
+                logger.warning("ZLMediaKit C API不可用")
 
             # 标记为运行中 - 即使API连接失败，库功能仍然可用
             self._is_running = True
@@ -98,18 +95,7 @@ class ZLMediaKitManager:
         except Exception as e:
             logger.error(f"ZLMediaKit初始化失败: {str(e)}")
             logger.error(traceback.format_exc())
-            # 尝试使用HTTP API直接连接而不启动本地库
-            logger.info("尝试直接连接ZLMediaKit服务器...")
-            # 测试API连接
-            try:
-                if await self._test_api_connection():
-                    logger.info("成功连接到现有的ZLMediaKit服务器")
-                    self._is_running = True
-                else:
-                    logger.error("无法连接到ZLMediaKit，库功能和HTTP API都不可用")
-            except Exception as api_err:
-                logger.error(f"尝试API连接时发生异常: {str(api_err)}")
-                logger.error("ZLMediaKit服务器不可用")
+            logger.error("无法初始化ZLMediaKit，请确保C API库正确安装")
 
     async def shutdown(self) -> None:
         """关闭ZLMediaKit
@@ -283,14 +269,14 @@ class ZLMediaKitManager:
             logger.error(traceback.format_exc())
             raise
 
-    async def _test_api_connection(self) -> bool:
+    def _test_api_connection(self) -> bool:
         """测试ZLMediaKit API连接
 
         Returns:
             bool: 连接是否成功
         """
         try:
-            # 首先尝试使用C API检查ZLMediaKit是否正常运行
+            # 使用C API检查ZLMediaKit是否正常运行
             if self._lib and hasattr(self._lib, 'mk_api_is_alive'):
                 is_alive = self._lib.mk_api_is_alive()
                 if is_alive:
@@ -298,35 +284,10 @@ class ZLMediaKitManager:
                     return True
                 else:
                     logger.warning("ZLMediaKit C API 连接失败")
-
-            # 如果C API不可用或连接失败，尝试HTTP API
-            url = f"{self._api_url}/index/api/getServerConfig"
-            params = {"secret": self._secret}
-
-            # 创建HTTP请求的函数
-            def make_request():
-                try:
-                    response = requests.get(url, params=params, timeout=5)
-                    if response.status_code == 200:
-                        json_data = response.json()
-                        if json_data.get("code") == 0:
-                            logger.info("ZLMediaKit HTTP API 连接正常")
-                            return True
-                        else:
-                            logger.error(f"API返回错误: {json_data.get('msg')}")
-                            return False
-                    else:
-                        response.raise_for_status()
-                        return False
-                except Exception as e:
-                    logger.error(f"测试API连接时出错: {str(e)}")
                     return False
-
-            # 在线程池中执行HTTP请求
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, make_request)
-
-            return result
+            else:
+                logger.warning("ZLMediaKit C API 不可用")
+                return False
         except Exception as e:
             logger.error(f"测试API连接失败: {str(e)}")
             return False
@@ -524,8 +485,8 @@ class ZLMediaKitManager:
             logger.error(traceback.format_exc())
             return []
 
-    async def call_api(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
-        """调用ZLMediaKit HTTP API
+    def call_api(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
+        """调用ZLMediaKit API (C API版本)
 
         Args:
             method: API方法名
@@ -535,29 +496,9 @@ class ZLMediaKitManager:
             Dict[str, Any]: API响应
         """
         try:
-            # 准备参数
-            api_params = {"secret": self._secret}
-            if params:
-                api_params.update(params)
-
-            # 构建URL
-            url = f"{self._api_url}/{method}"
-
-            # 创建HTTP请求函数
-            def make_request():
-                try:
-                    response = requests.get(url, params=api_params, timeout=5)
-                    response.raise_for_status()
-                    return response.json()
-                except Exception as e:
-                    logger.error(f"API请求失败: {str(e)}")
-                    return {"code": -1, "msg": str(e)}
-
-            # 在线程池中执行HTTP请求
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, make_request)
-
-            return result
+            logger.warning(f"HTTP API已禁用，请使用C API: {method}")
+            # 返回错误响应
+            return {"code": -1, "msg": "HTTP API已禁用，请使用C API"}
         except Exception as e:
             logger.error(f"调用API {method} 时出错: {str(e)}")
             logger.error(traceback.format_exc())
