@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from ultralytics import YOLO
 from typing import List, Dict, Any, Optional, Tuple
-from shared.utils.logger import setup_logger, setup_analysis_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger, get_analysis_logger
 from core.config import settings
 import time
 import asyncio
@@ -18,23 +18,34 @@ import colorsys
 from datetime import datetime
 from core.exceptions import ModelLoadException
 import io
+import json
+from core.analyzer.model_loader import ModelLoader
 
-logger = setup_logger(__name__)
-analysis_logger = setup_analysis_logger()
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
+test_logger = get_test_logger() # 获取测试日志记录器
+analysis_logger = get_analysis_logger() # 获取分析日志记录器
 
 class YOLODetector:
     """YOLO检测器实现"""
 
-    def __init__(self, model_code: Optional[str] = None):
+    def __init__(self, model_code: Optional[str] = None, engine_type: int = 0,
+                 yolo_version: int = 0, device: str = "auto"):
         """
         初始化检测器
 
         Args:
             model_code: 模型代码，如果提供则立即加载模型
+            engine_type: 推理引擎类型
+            yolo_version: YOLO版本
+            device: 推理设备
         """
         self.model = None
-        self.current_model_code = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() and settings.ANALYSIS.device != "cpu" else "cpu")
+        self.current_model_code = model_code
+        self.engine_type = engine_type
+        self.yolo_version = yolo_version
+        self.device = device
 
         # 默认配置
         self.default_confidence = settings.ANALYSIS.confidence
@@ -48,9 +59,14 @@ class YOLODetector:
         # 确保结果目录存在
         os.makedirs(self.results_dir, exist_ok=True)
 
-        logger.info(f"初始化YOLO检测器，使用设备: {self.device}")
-        logger.info(f"默认置信度阈值: {self.default_confidence}")
-        logger.info(f"结果保存目录: {self.results_dir}")
+        # 增强初始化日志
+        normal_logger.info(f"初始化YOLO检测器，使用设备: {self.device}")
+        normal_logger.info(f"默认置信度阈值: {self.default_confidence}")
+        normal_logger.info(f"结果保存目录: {self.results_dir}")
+        
+        # 添加分析日志
+        test_logger.info(f"[初始化] YOLO检测器: 模型={model_code}, 设备={self.device}")
+        test_logger.info(f"[初始化] YOLO检测器默认参数: 置信度={self.default_confidence}, IOU={self.default_iou}, 最大检测数={self.default_max_det}")
 
         # 如果提供了model_code，立即加载模型
         if model_code:
@@ -69,32 +85,10 @@ class YOLODetector:
             Exception: 当找不到模型时抛出异常
         """
         try:
-            # 检查本地缓存
-            cache_dir = os.path.join("data", "models", model_code)
-
-            # 检查多个可能的模型文件名
-            possible_filenames = ["best.pt", "base.pt", "model.pt", "weights.pt", f"{model_code}.pt"]
-
-            for filename in possible_filenames:
-                model_path = os.path.join(cache_dir, filename)
-                if os.path.exists(model_path):
-                    logger.info(f"找到本地缓存模型: {model_path}")
-                    return model_path
-
-            # 如果目录存在但没有找到特定文件，尝试查找任何.pt文件
-            if os.path.exists(cache_dir):
-                pt_files = [f for f in os.listdir(cache_dir) if f.endswith('.pt')]
-                if pt_files:
-                    model_path = os.path.join(cache_dir, pt_files[0])
-                    logger.info(f"找到本地缓存模型: {model_path}")
-                    return model_path
-
-            # 本地不存在，尝试查找默认模型
-            logger.info(f"本地未找到模型 {model_code}，尝试查找默认模型...")
-            return await self._find_default_model(model_code)
-
+            # 使用ModelLoader获取模型路径
+            return await ModelLoader.get_model_path(model_code, self.yolo_version)
         except Exception as e:
-            logger.error(f"获取模型路径时出错: {str(e)}")
+            exception_logger.error(f"获取模型路径时出错: {str(e)}")
             # 尝试查找默认模型
             return await self._find_default_model(model_code)
 
@@ -111,7 +105,8 @@ class YOLODetector:
         Raises:
             Exception: 当找不到默认模型时
         """
-        logger.info(f"尝试查找默认模型替代 {model_code}...")
+        normal_logger.info(f"尝试查找默认模型替代 {model_code}...")
+        test_logger.info(f"[模型查找] 尝试为 {model_code} 查找默认替代模型")
 
         # 检查通用模型目录
         models_dir = os.path.join("data", "models")
@@ -124,10 +119,13 @@ class YOLODetector:
                 pt_files = [f for f in os.listdir(yolo_path) if f.endswith('.pt')]
                 if pt_files:
                     model_path = os.path.join(yolo_path, pt_files[0])
-                    logger.warning(f"未找到{model_code}模型，使用替代模型: {model_path}")
+                    normal_logger.warning(f"未找到{model_code}模型，使用替代模型: {model_path}")
+                    test_logger.info(f"[模型查找] {model_code} 未找到，使用替代: {model_path}")
                     return model_path
 
         # 如果找不到任何模型，抛出异常
+        exception_logger.error(f"无法找到任何可用的模型，请确保至少有一个模型文件在data/models目录下。检查模型代码: {model_code}")
+        test_logger.info(f"[模型查找] {model_code} 未找到任何备用模型")
         raise Exception(f"无法找到任何可用的模型，请确保至少有一个模型文件在data/models目录下")
 
     async def load_model(self, model_code: str, max_retries: int = 3):
@@ -144,41 +142,99 @@ class YOLODetector:
         retry_count = 0
         last_error = None
 
+        # 记录开始加载模型
+        test_logger.info(f"[模型加载] 开始加载模型: {model_code}")
+        
         while retry_count < max_retries:
             try:
                 # 获取模型路径
                 model_path = await self.get_model_path(model_code)
-                logger.info(f"正在加载模型: {model_path}")
+                normal_logger.info(f"正在加载模型: {model_path}")
+                test_logger.info(f"[模型加载] 模型路径: {model_path}")
 
+                # 记录加载开始时间
+                load_start_time = time.time()
+                
                 # 加载模型
                 self.model = YOLO(model_path)
-                self.model.to(self.device)
+                # 确定设备
+                if self.device == "auto":
+                    self.current_device = "cuda" if torch.cuda.is_available() else "cpu"
+                else:
+                    self.current_device = self.device
+                self.model.to(self.current_device)
+                normal_logger.info(f"模型已移至设备: {self.current_device}")
+
+                # 记录加载耗时
+                load_time = time.time() - load_start_time
+                test_logger.info(f"[模型加载] 模型 {model_code} 加载耗时: {load_time:.2f}秒")
 
                 # 设置模型参数
                 self.model.conf = self.default_confidence
                 self.model.iou = self.default_iou
                 self.model.max_det = self.default_max_det
+                
+                # 特别记录model-gcc模型的详细信息
+                if "gcc" in model_code.lower():
+                    model_info = {
+                        "model_code": model_code,
+                        "model_path": model_path,
+                        "device": str(self.current_device),
+                        "confidence": self.model.conf,
+                        "iou": self.model.iou,
+                        "max_det": self.model.max_det,
+                        "model_type": type(self.model).__name__,
+                    }
+                    
+                    # 记录模型类别
+                    if hasattr(self.model, "names"):
+                        model_info["classes"] = self.model.names
+                        class_count = len(self.model.names)
+                        analysis_logger.info(f"[AI测试] model-gcc模型支持的类别数量: {class_count}")
+                        analysis_logger.info(f"[AI测试] model-gcc模型类别列表: {list(self.model.names.values())[:10]}{'...' if class_count > 10 else ''}")
+                    
+                    # 记录模型尺寸
+                    if hasattr(self.model, "model") and hasattr(self.model.model, "yaml"):
+                        if "imgsz" in self.model.model.yaml:
+                            model_info["input_size"] = self.model.model.yaml["imgsz"]
+                            analysis_logger.info(f"[AI测试] model-gcc模型输入尺寸: {self.model.model.yaml['imgsz']}")
+                    
+                    analysis_logger.info(f"[AI测试] model-gcc模型加载详情: {json.dumps(model_info, indent=2)}")
 
                 # 更新当前模型代码
                 self.current_model_code = model_code
 
-                logger.info(f"模型加载成功: {model_code}")
+                normal_logger.info(f"模型加载成功: {model_code}")
+                analysis_logger.info(f"[AI测试] 模型成功加载: {model_code}")
+                
+                # 记录可用显存信息(CUDA)
+                if torch.cuda.is_available():
+                    free_mem = torch.cuda.mem_get_info()[0] / (1024 ** 3)  # 转换为GB
+                    total_mem = torch.cuda.mem_get_info()[1] / (1024 ** 3)  # 转换为GB
+                    used_mem = total_mem - free_mem
+                    analysis_logger.info(f"[AI测试] 模型加载后GPU内存使用: {used_mem:.2f}GB/{total_mem:.2f}GB (已用/总共)")
+                
                 return  # 成功加载，退出函数
 
             except Exception as e:
                 last_error = e
                 retry_count += 1
-                logger.warning(f"模型加载失败 (尝试 {retry_count}/{max_retries}): {str(e)}")
+                normal_logger.warning(f"模型加载失败 (尝试 {retry_count}/{max_retries}): {str(e)}")
+                analysis_logger.error(f"[AI测试] 模型加载失败: {model_code}, 错误: {str(e)}")
 
                 if retry_count < max_retries:
                     # 等待一段时间后重试
                     await asyncio.sleep(1.0)
-                    logger.info(f"正在重试加载模型: {model_code}")
+                    normal_logger.info(f"正在重试加载模型: {model_code}")
+                    analysis_logger.info(f"[AI测试] 正在重试加载模型: {model_code} (第{retry_count}次)")
                 else:
                     # 达到最大重试次数，记录错误并抛出异常
-                    logger.error(f"模型加载失败，已达到最大重试次数: {str(last_error)}")
+                    normal_logger.error(f"模型加载失败，已达到最大重试次数: {str(last_error)}")
                     import traceback
-                    logger.error(traceback.format_exc())
+                    error_trace = traceback.format_exc()
+                    exception_logger.exception(error_trace)
+                    analysis_logger.error(f"[AI测试] 模型加载失败，已达到最大重试次数: {str(last_error)}")
+                    analysis_logger.error(f"[AI测试] 错误堆栈: {error_trace}")
 
                     # 确保模型为None
                     self.model = None
@@ -230,8 +286,7 @@ class YOLODetector:
 
             return image_bytes
         except Exception as e:
-            logger.error(f"编码结果图像时出错: {str(e)}")
-            logger.error(str(e), exc_info=True)
+            exception_logger.exception(f"编码结果图像时出错: {str(e)}")
             return b""
 
     async def detect(self,
@@ -269,11 +324,22 @@ class YOLODetector:
         inference_time_ms = 0
         post_process_time_ms = 0
         annotated_image_bytes = None
+        
+        # 记录检测任务信息
+        task_name = kwargs.get("task_name", "未命名任务")
+        
+        # 记录低阈值检测
+        if confidence is not None:
+            if confidence <= 0.05:
+                analysis_logger.info(f"[AI测试] 执行低阈值检测: task={task_name}, confidence={confidence}")
+            else:
+                analysis_logger.info(f"[AI测试] 执行检测: task={task_name}, confidence={confidence}")
 
         try:
             # 检查模型是否已加载
             if self.model is None:
-                logger.error("模型未加载，无法执行检测")
+                normal_logger.error("模型未加载，无法执行检测")
+                analysis_logger.error(f"[AI测试] 执行检测失败: task={task_name}, 错误=模型未加载")
                 return {
                     "detections": [],
                     "pre_process_time": 0,
@@ -285,56 +351,97 @@ class YOLODetector:
             # 设置模型参数
             if confidence is not None:
                 self.model.conf = confidence
+                analysis_logger.info(f"[AI测试] 设置检测阈值: task={task_name}, confidence={confidence}")
             if iou_threshold is not None:
                 self.model.iou = iou_threshold
+                analysis_logger.info(f"[AI测试] 设置IoU阈值: task={task_name}, iou_threshold={iou_threshold}")
             if classes is not None:
                 self.model.classes = classes
+                analysis_logger.info(f"[AI测试] 设置检测类别: task={task_name}, classes={classes}")
 
+            # 记录图像信息
+            if image is not None:
+                analysis_logger.info(f"[AI测试] 待分析图像: task={task_name}, shape={image.shape}")
+            
+            # 记录检测开始
+            detect_start_time = time.time()
+            
             # 运行检测
             results = self.model(image, verbose=verbose)
-
+            
+            # 记录检测用时
+            detect_time = time.time() - detect_start_time
+            
             # 获取计时信息
             if results and hasattr(results[0], 'speed'):
                 speed_info = results[0].speed
                 pre_process_time_ms = speed_info.get('preprocess', 0)
                 inference_time_ms = speed_info.get('inference', 0)
                 post_process_time_ms = speed_info.get('postprocess', 0)
+                analysis_logger.info(f"[AI测试] 检测性能指标: task={task_name}, 预处理={pre_process_time_ms}ms, 推理={inference_time_ms}ms, 后处理={post_process_time_ms}ms")
 
             # 解析检测结果
             detections = await self._parse_results(results)
+            
+            # 记录检测结果
+            if len(detections) > 0:
+                analysis_logger.info(f"[AI测试] 检测结果: task={task_name}, 检测到{len(detections)}个目标")
+                
+                # 统计类别分布
+                class_counts = {}
+                for det in detections:
+                    class_name = det.get("class_name", "unknown")
+                    if class_name in class_counts:
+                        class_counts[class_name] += 1
+                    else:
+                        class_counts[class_name] = 1
+                
+                analysis_logger.info(f"[AI测试] 类别分布: task={task_name}, {json.dumps(class_counts)}")
+                
+                # 记录前5个检测结果的详细信息
+                for i, det in enumerate(detections[:5]):
+                    analysis_logger.info(f"[AI测试] 检测结果[{i+1}]: task={task_name}, 类别={det.get('class_name')}, 置信度={det.get('confidence'):.4f}, 边界框={det.get('bbox')}")
+            else:
+                analysis_logger.info(f"[AI测试] 检测结果: task={task_name}, 未检测到目标")
 
             # 如果有ROI配置，进行ROI过滤
             if roi:
                 height, width = image.shape[:2]
+                filtered_before = len(detections)
                 detections = self._filter_by_roi(detections, roi, roi_type, height, width)
+                filtered_after = len(detections)
+                
+                if filtered_before != filtered_after:
+                    analysis_logger.info(f"[AI测试] ROI过滤: task={task_name}, 过滤前={filtered_before}个目标, 过滤后={filtered_after}个目标")
 
             # --- 总是生成和编码标注图像 ---
             try:
                 annotated_image = results[0].plot() # 使用ultralytics自带的plot
                 is_success, buffer = cv2.imencode(".jpg", annotated_image)
                 if not is_success:
-                    logger.warning("标注图像编码失败")
+                    normal_logger.warning("标注图像编码失败")
+                    analysis_logger.warning(f"[AI测试] 标注图像编码失败: task={task_name}")
                 else:
                     annotated_image_bytes = buffer.tobytes()
 
                     # 检查是否需要保存图片
                     save_images = kwargs.get("save_images", False)
 
-                    # 只在检测到目标时才保存图片，但不打印日志
+                    # 只在检测到目标时才保存图片
                     if save_images and len(detections) > 0:
-                        # 获取任务名称
-                        task_name = kwargs.get("task_name", None)
-
                         # 保存图片
-                        await self._save_result_image(annotated_image, detections, task_name)
+                        saved_path = await self._save_result_image(annotated_image, detections, task_name)
+                        if saved_path:
+                            analysis_logger.info(f"[AI测试] 保存分析结果图片: task={task_name}, path={saved_path}")
 
             except Exception as plot_err:
-                    logger.error(f"绘制或编码标注图像时出错: {plot_err}")
+                exception_logger.exception(f"绘制或编码标注图像时出错: {plot_err}")
+                analysis_logger.error(f"[AI测试] 生成标注图像失败: task={task_name}, 错误={str(plot_err)}")
             # --- 结束图像处理 ---
 
-            # 计算总耗时（但不使用，仅用于调试）
-            _ = (time.time() - start_time) * 1000
-            # logger.debug(f"检测总耗时: {_:.2f}ms...")
+            # 计算总耗时
+            total_time_ms = (time.time() - start_time) * 1000
+            analysis_logger.info(f"[AI测试] 检测完成: task={task_name}, 共{len(detections)}个目标, 总耗时{total_time_ms:.2f}ms")
 
             # 构建返回字典 (始终包含 annotated_image_bytes，即使为 None)
             return_data = {
@@ -348,9 +455,12 @@ class YOLODetector:
             return return_data
 
         except Exception as e:
-            logger.error(f"检测失败: {str(e)}")
+            exception_logger.exception(f"检测失败: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            error_trace = traceback.format_exc()
+            exception_logger.error(error_trace)
+            analysis_logger.error(f"[AI测试] 检测执行失败: task={task_name}, 错误={str(e)}")
+            analysis_logger.error(f"[AI测试] 错误堆栈: {error_trace}")
             return {
                 "detections": [],
                 "pre_process_time": 0,
@@ -429,7 +539,7 @@ class YOLODetector:
                             "y2": int(roi["y2"])
                         }
                 else:
-                    logger.error("无效的矩形ROI格式")
+                    normal_logger.error("无效的矩形ROI格式")
                     return detections
 
             elif roi_type in [2, 3]:  # 多边形或线段ROI
@@ -438,7 +548,7 @@ class YOLODetector:
                 elif "coordinates" in roi:
                     points = roi["coordinates"]
                 else:
-                    logger.error("无效的多边形/线段ROI格式")
+                    normal_logger.error("无效的多边形/线段ROI格式")
                     return detections
 
                 if normalized:
@@ -521,9 +631,9 @@ class YOLODetector:
             return filtered_detections
 
         except Exception as e:
-            logger.error(f"根据ROI过滤检测结果失败: {str(e)}")
+            exception_logger.exception(f"根据ROI过滤检测结果失败: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.error(traceback.format_exc())
             analysis_logger.error(f"ROI过滤失败: {str(e)}")
             # 如果过滤失败，返回原始检测结果
             return detections
@@ -672,17 +782,22 @@ class YOLODetector:
                     file_size = os.path.getsize(file_path)
                     # 检查文件大小是否正常
                     if file_size == 0:
+                        analysis_logger.warning(f"[AI测试] 保存的结果图片大小为0: task={task_name}, path={file_path}")
                         return None
+                    analysis_logger.info(f"[AI测试] 结果图片已保存: task={task_name}, size={file_size/1024:.1f}KB, path={file_path}")
                 else:
+                    analysis_logger.warning(f"[AI测试] 结果图片保存失败: task={task_name}, path={file_path}")
                     return None
-            except Exception:
+            except Exception as e:
+                analysis_logger.error(f"[AI测试] 保存结果图片异常: task={task_name}, 错误={str(e)}")
                 return None
 
             # 返回相对路径
             relative_path = os.path.join("results", date_str, filename)
             return relative_path
 
-        except Exception:
+        except Exception as e:
+            analysis_logger.error(f"[AI测试] 保存结果图片异常: task={task_name}, 错误={str(e)}")
             return None
 
     async def draw_detections(self, image: np.ndarray, detections: List[Dict[str, Any]]) -> np.ndarray:
@@ -749,9 +864,8 @@ class YOLODetector:
             return result_image
 
         except Exception as e:
-            logger.error(f"绘制检测结果时出错: {str(e)}")
-            logger.error(str(e), exc_info=True)
-            return image
+            exception_logger.exception(f"绘制检测结果时出错: {str(e)}")
+            return image.copy()
 
     async def _parse_results(self, results) -> List[Dict[str, Any]]:
         """解析YOLO检测结果
@@ -760,11 +874,7 @@ class YOLODetector:
             results: YOLO检测结果
 
         Returns:
-            检测结果列表，每个检测包含:
-            - bbox: 边界框坐标
-            - confidence: 置信度
-            - class_id: 类别ID
-            - class_name: 类别名称
+            List[Dict[str, Any]]: 解析后的检测结果列表
         """
         try:
             detections = []
@@ -788,12 +898,22 @@ class YOLODetector:
                         "class_name": name
                     }
                     detections.append(detection)
+            
+            # 记录低阈值检测的详细结果
+            if len(detections) > 0 and any(d["confidence"] <= 0.1 for d in detections):
+                low_conf_detections = [d for d in detections if d["confidence"] <= 0.1]
+                if low_conf_detections:
+                    analysis_logger.info(f"[AI测试] 低阈值检测结果: 检测到{len(low_conf_detections)}个低置信度目标 (置信度<=0.1)")
+                    # 按置信度从高到低排序
+                    low_conf_detections.sort(key=lambda x: x["confidence"], reverse=True)
+                    # 记录低置信度检测结果的详细信息（最多5个）
+                    for i, det in enumerate(low_conf_detections[:5]):
+                        analysis_logger.info(f"[AI测试] 低置信度检测[{i+1}]: 类别={det['class_name']}, 置信度={det['confidence']:.4f}")
 
             return detections
 
         except Exception as e:
-            logger.error(f"解析检测结果失败: {str(e)}")
-            logger.error(str(e), exc_info=True)
+            exception_logger.exception(f"解析检测结果失败: {str(e)}")
             return []
 
     async def process_video_frame(self, frame: np.ndarray, frame_index: int, **kwargs) -> Dict[str, Any]:
@@ -840,20 +960,9 @@ class YOLODetector:
         }
 
     def release(self) -> None:
-        """
-        释放资源
-        """
-        # 释放模型资源
-        if self.model:
-            # 确保模型被释放
-            self.model = None
-
-        # 强制执行垃圾回收
-        import gc
-        gc.collect()
-
-        # 如果使用CUDA，清空缓存
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
-        logger.info("YOLO检测器资源已释放")
+        """释放模型和资源"""
+        # 清除模型实例和CUDA缓存
+        torch.cuda.empty_cache()
+        self.model = None
+        
+        normal_logger.info("YOLO检测器资源已释放")

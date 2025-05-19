@@ -6,9 +6,11 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from models.task import TaskBase, QueueTask
 from services.task_store import TaskStore
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class TaskCRUD:
     """任务CRUD操作类"""
@@ -39,7 +41,7 @@ class TaskCRUD:
             # 获取任务列表
             return await self.store.list_tasks(status, limit)
         except Exception as e:
-            logger.error(f"获取任务列表失败: {str(e)}")
+            exception_logger.exception(f"获取任务列表失败: {str(e)}")
             return []
 
     async def create_task(
@@ -115,7 +117,7 @@ class TaskCRUD:
             return None
 
         except Exception as e:
-            logger.error(f"创建任务失败: {str(e)}")
+            exception_logger.exception(f"创建任务失败: {str(e)}")
             return None
 
     async def update_task_status(
@@ -178,5 +180,5 @@ class TaskCRUD:
             return None
 
         except Exception as e:
-            logger.error(f"创建队列任务失败: {str(e)}")
+            exception_logger.exception(f"创建队列任务失败: {str(e)}")
             return None

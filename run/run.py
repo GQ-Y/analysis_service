@@ -17,10 +17,12 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 sys.path.append(str(ROOT_DIR))
 
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from run.middlewares import setup_exception_handlers, RequestLoggingMiddleware
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 def show_service_banner(service_name: str):
     """显示服务启动标识"""
@@ -32,7 +34,8 @@ def show_service_banner(service_name: str):
 ██║ ╚═╝ ██║███████╗███████╗██║  ██╗   ██║   ╚██████╔╝███████╗╚██████╔╝
 ╚═╝     ╚═╝╚══════╝╚══════╝╚═╝  ╚═╝   ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝
     """
-    print(banner)
+    # 使用普通日志记录横幅信息
+    normal_logger.info(f"服务启动横幅:\n{banner}")
 
 def create_app() -> FastAPI:
     """
@@ -97,80 +100,64 @@ def create_app() -> FastAPI:
         static_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-    # 静态文件已挂载
-
+    normal_logger.info("FastAPI 应用已创建并配置完成。")
     return app
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
     # 启动时执行
-    show_service_banner("analysis_service")
-    logger.info("Starting Analysis Service...")
+    show_service_banner("analysis_service") # Banner会通过normal_logger打印
+    normal_logger.info("开始分析服务生命周期管理...")
 
     # 记录启动时间
     app.state.start_time = time.time()
 
     if settings.DEBUG_ENABLED:
-        logger.info("分析服务启动...")
-        logger.info(f"环境: {settings.ENVIRONMENT}")
-        logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
-        logger.info(f"版本: {settings.VERSION}")
-        logger.info(f"注册的路由: {[route.path for route in app.routes]}")
+        normal_logger.info("分析服务以调试模式启动。")
+        normal_logger.info(f"环境: {settings.ENVIRONMENT}")
+        normal_logger.info(f"版本: {settings.VERSION}")
+        normal_logger.info(f"注册的路由: {[route.path for route in app.routes]}")
     
     # 检查并自动安装ZLMediaKit
     from run.middlewares import init_zlm_environment
-    logger.info("正在检查ZLMediaKit环境...")
+    normal_logger.info("正在检查ZLMediaKit环境...")
     if init_zlm_environment():
-        logger.info("ZLMediaKit环境检查完成，库文件已就绪")
+        normal_logger.info("ZLMediaKit环境检查完成，库文件已就绪。")
     else:
-        logger.warning("ZLMediaKit环境检查失败，将尝试使用现有配置继续")
+        normal_logger.warning("ZLMediaKit环境检查失败，将尝试使用现有配置继续。")
         
     # 初始化ZLMediaKit
-    logger.info("正在初始化ZLMediaKit...")
+    normal_logger.info("正在初始化ZLMediaKit...")
     try:
-        # 导入ZLMediaKit管理器
         from core.media_kit.zlm_manager import zlm_manager
-        
-        # 初始化ZLMediaKit
         await zlm_manager.initialize()
-        
-        # 保存实例到应用状态
         app.state.zlm_manager = zlm_manager
-        
-        logger.info("ZLMediaKit初始化成功")
+        normal_logger.info("ZLMediaKit初始化成功。")
     except Exception as e:
-        logger.warning(f"ZLMediaKit初始化失败: {str(e)}")
-        logger.warning("将继续使用OpenCV进行视频处理")
+        exception_logger.exception("ZLMediaKit初始化失败。将继续使用OpenCV进行视频处理。")
 
     # 初始化任务管理器
-    logger.info("正在初始化任务管理器...")
+    normal_logger.info("正在初始化任务管理器...")
     try:
-        # 导入任务管理器
         from core.task_management.manager import TaskManager
         from core.task_management.stream import stream_manager
 
-        # 初始化流管理器
-        logger.info("正在初始化流管理器...")
+        normal_logger.info("正在初始化流管理器...")
         await stream_manager.initialize()
-        logger.info("流管理器初始化完成")
+        normal_logger.info("流管理器初始化完成。")
 
-        # 创建任务管理器实例
         task_manager = TaskManager()
         await task_manager.initialize()
         
-        # 保存实例到应用状态
         app.state.task_manager = task_manager
         app.state.stream_manager = stream_manager
         
-        # 初始化流任务桥接器
-        # 这里延迟导入桥接器，确保在任务管理器初始化后再导入
         from core.task_management.stream import stream_task_bridge
-        logger.info("正在初始化流任务桥接器...")
+        normal_logger.info("正在初始化流任务桥接器...")
         await stream_task_bridge.initialize(task_manager)
-        logger.info("流任务桥接器初始化完成")
+        normal_logger.info("流任务桥接器初始化完成。")
 
-        # 创建服务实例
         from services.http.task_service import TaskService
         from services.analysis_service import AnalysisService
         from services.http.callback_service import CallbackService
@@ -181,108 +168,97 @@ async def lifespan(app: FastAPI):
         app.state.callback_service = CallbackService()
         app.state.video_encoder_service = VideoEncoderService()
 
-        logger.info("任务管理器和服务初始化成功")
+        normal_logger.info("任务管理器和服务初始化成功。")
 
     except Exception as e:
-        logger.error(f"服务初始化失败: {str(e)}")
-        logger.error(traceback.format_exc())
+        exception_logger.exception("服务初始化失败。")
 
     yield  # 这里是应用运行期间
 
     # 关闭时执行
-    logger.info("Shutting down Analysis Service...")
+    normal_logger.info("正在关闭分析服务...")
 
-    # 关闭任务管理器
     if hasattr(app.state, "task_manager") and app.state.task_manager:
         try:
-            logger.info("正在停止任务管理器...")
+            normal_logger.info("正在停止任务管理器...")
             try:
-                # 设置超时等待任务管理器关闭
                 await asyncio.wait_for(app.state.task_manager.shutdown(), timeout=10.0)
-                logger.info("任务管理器已正常停止")
+                normal_logger.info("任务管理器已正常停止。")
             except asyncio.TimeoutError:
-                logger.warning("等待任务管理器关闭超时，继续关闭流程")
+                exception_logger.warning("等待任务管理器关闭超时。")
             except Exception as inner_e:
-                logger.error(f"任务管理器关闭过程中出错: {inner_e}")
+                exception_logger.exception("任务管理器关闭过程中出错。")
         except Exception as e:
-             logger.error(f"停止任务管理器时出错: {e}")
+             exception_logger.exception("停止任务管理器时出错。")
         finally:
-            logger.info("任务管理器关闭流程已完成")
+            normal_logger.info("任务管理器关闭流程已完成。")
     else:
-        logger.info("没有活动的任务管理器需要关闭")
+        normal_logger.info("没有活动的任务管理器需要关闭。")
         
-    # 关闭流管理器
     if hasattr(app.state, "stream_manager") and app.state.stream_manager:
         try:
-            logger.info("正在关闭流管理器...")
+            normal_logger.info("正在关闭流管理器...")
             try:
-                # 设置超时等待流管理器关闭
                 await asyncio.wait_for(app.state.stream_manager.shutdown(), timeout=10.0)
-                logger.info("流管理器已正常关闭")
+                normal_logger.info("流管理器已正常关闭。")
             except asyncio.TimeoutError:
-                logger.warning("等待流管理器关闭超时，继续关闭流程")
+                exception_logger.warning("等待流管理器关闭超时。")
             except Exception as inner_e:
-                logger.error(f"流管理器关闭过程中出错: {inner_e}")
+                exception_logger.exception("流管理器关闭过程中出错。")
         except Exception as e:
-            logger.error(f"关闭流管理器时出错: {e}")
+            exception_logger.exception("关闭流管理器时出错。")
         finally:
-            logger.info("流管理器关闭流程已完成")
+            normal_logger.info("流管理器关闭流程已完成。")
     else:
-        logger.info("没有活动的流管理器需要关闭")
+        normal_logger.info("没有活动的流管理器需要关闭。")
         
-    # 关闭节点健康监控器
     try:
         from core.task_management.stream import node_health_monitor
-        logger.info("正在关闭节点健康监控器...")
+        normal_logger.info("正在关闭节点健康监控器...")
         await node_health_monitor.shutdown()
-        logger.info("节点健康监控器已关闭")
+        normal_logger.info("节点健康监控器已关闭。")
     except Exception as e:
-        logger.error(f"关闭节点健康监控器时出错: {e}")
+        exception_logger.exception("关闭节点健康监控器时出错。")
         
-    # 关闭流健康监控器
     try:
         from core.task_management.stream import stream_health_monitor
-        logger.info("正在关闭流健康监控器...")
+        normal_logger.info("正在关闭流健康监控器...")
         await stream_health_monitor.shutdown()
-        logger.info("流健康监控器已关闭")
+        normal_logger.info("流健康监控器已关闭。")
     except Exception as e:
-        logger.error(f"关闭流健康监控器时出错: {e}")
+        exception_logger.exception("关闭流健康监控器时出错。")
         
-    # 关闭流任务桥接器
     try:
         from core.task_management.stream import stream_task_bridge
-        logger.info("正在关闭流任务桥接器...")
+        normal_logger.info("正在关闭流任务桥接器...")
         try:
-            # 设置超时等待桥接器关闭
             await asyncio.wait_for(stream_task_bridge.shutdown(), timeout=5.0)
-            logger.info("流任务桥接器已正常关闭")
+            normal_logger.info("流任务桥接器已正常关闭。")
         except asyncio.TimeoutError:
-            logger.warning("等待流任务桥接器关闭超时，继续关闭流程")
+            exception_logger.warning("等待流任务桥接器关闭超时。")
         except Exception as inner_e:
-            logger.error(f"流任务桥接器关闭过程中出错: {inner_e}")
+            exception_logger.exception("流任务桥接器关闭过程中出错。")
     except Exception as e:
-        logger.error(f"关闭流任务桥接器时出错: {e}")
+        exception_logger.exception("关闭流任务桥接器时出错。")
     finally:
-        logger.info("流任务桥接器关闭流程已完成")
+        normal_logger.info("流任务桥接器关闭流程已完成。")
         
-    # 关闭ZLMediaKit
     if hasattr(app.state, "zlm_manager") and app.state.zlm_manager:
         try:
-            logger.info("正在关闭ZLMediaKit...")
+            normal_logger.info("正在关闭ZLMediaKit...")
             try:
-                # 设置超时等待ZLMediaKit关闭
                 await asyncio.wait_for(app.state.zlm_manager.shutdown(), timeout=5.0)
-                logger.info("ZLMediaKit已正常关闭")
+                normal_logger.info("ZLMediaKit已正常关闭。")
             except asyncio.TimeoutError:
-                logger.warning("等待ZLMediaKit关闭超时，继续关闭流程")
+                exception_logger.warning("等待ZLMediaKit关闭超时。")
             except Exception as inner_e:
-                logger.error(f"ZLMediaKit关闭过程中出错: {inner_e}")
+                exception_logger.exception("ZLMediaKit关闭过程中出错。")
         except Exception as e:
-            logger.error(f"关闭ZLMediaKit时出错: {e}")
+            exception_logger.exception("关闭ZLMediaKit时出错。")
         finally:
-            logger.info("ZLMediaKit关闭流程已完成")
+            normal_logger.info("ZLMediaKit关闭流程已完成。")
 
-    logger.info("Analysis Service stopped.")
+    normal_logger.info("分析服务已停止。")
 
 def parse_args():
     """解析命令行参数"""
@@ -327,17 +303,17 @@ def start_app(host=None, port=None, reload=None, workers=None, debug=None, parse
     workers = workers or 1
 
     # 打印启动信息
-    logger.info(f"启动分析服务 - 版本: {settings.VERSION}")
-    logger.info(f"主机: {host}, 端口: {port}")
-    logger.info(f"调试模式: {settings.DEBUG_ENABLED}, 热重载: {reload}")
-    logger.info(f"工作进程数: {workers}")
+    normal_logger.info(f"尝试启动分析服务 - 版本: {settings.VERSION}")
+    normal_logger.info(f"主机: {host}, 端口: {port}")
+    normal_logger.info(f"调试模式: {settings.DEBUG_ENABLED}, 热重载: {reload}")
+    normal_logger.info(f"工作进程数: {workers}")
 
     # 创建应用实例
     app = create_app()
 
     # 如果是直接运行，使用uvicorn启动
     if reload:
-        # 热重载模式下，使用uvicorn.run启动
+        normal_logger.info("使用Uvicorn热重载模式启动。")
         uvicorn.run(
             "run.run:create_app",
             host=host,
@@ -345,16 +321,17 @@ def start_app(host=None, port=None, reload=None, workers=None, debug=None, parse
             reload=reload,
             factory=True,
             workers=1,  # 热重载模式下只能使用1个工作进程
-            log_level="debug" if settings.DEBUG_ENABLED else "info"
+            log_level="warning"  # 使用warning级别以关闭INFO日志
         )
     else:
-        # 非热重载模式下，使用Config和Server启动
+        normal_logger.info("使用Uvicorn标准服务器模式启动。")
+        app_instance = create_app() # 在此模式下，我们需要传递实例
         config = uvicorn.Config(
-            app,
+            app_instance,
             host=host,
             port=port,
             workers=workers,
-            log_level="debug" if settings.DEBUG_ENABLED else "info"
+            log_level="warning"  # 使用warning级别以关闭INFO日志
         )
         server = uvicorn.Server(config)
         server.run()

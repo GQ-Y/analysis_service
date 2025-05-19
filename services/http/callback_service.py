@@ -8,10 +8,11 @@ import aiohttp
 import json
 import time
 from datetime import datetime
-import logging
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class CallbackService:
     """HTTP回调服务"""
@@ -39,10 +40,10 @@ class CallbackService:
             callback_interval: 回调间隔(秒)，如果为None则不限制回调频率
         """
         if not callback_url or not enable_callback:
-            logger.info(f"任务 {task_id} 未启用回调或未提供回调URL")
+            normal_logger.info(f"任务 {task_id} 未启用回调或未提供回调URL")
             return
 
-        logger.info(f"注册任务回调: {task_id}, URL: {callback_url}, 间隔: {callback_interval}秒")
+        normal_logger.info(f"注册任务回调: {task_id}, URL: {callback_url}, 间隔: {callback_interval}秒")
         
         # 存储回调URL和状态
         self.callback_urls[task_id] = callback_url
@@ -71,7 +72,7 @@ class CallbackService:
             self.callback_intervals[task_id] = {}
         
         self.callback_intervals[task_id][object_id] = interval
-        logger.info(f"注册对象回调间隔: 任务 {task_id}, 对象 {object_id}, 间隔: {interval}秒")
+        normal_logger.info(f"注册对象回调间隔: 任务 {task_id}, 对象 {object_id}, 间隔: {interval}秒")
 
     def unregister_task(self, task_id: str):
         """
@@ -93,7 +94,7 @@ class CallbackService:
         if task_id in self.callback_intervals:
             del self.callback_intervals[task_id]
         
-        logger.info(f"取消注册任务回调: {task_id}")
+        normal_logger.info(f"取消注册任务回调: {task_id}")
 
     async def send_callback(self, task_id: str, data: Dict[str, Any], 
                           object_id: Optional[str] = None) -> bool:
@@ -135,7 +136,7 @@ class CallbackService:
             
             # 检查是否满足回调间隔
             if interval > 0 and current_time - last_time < interval:
-                logger.debug(f"对象回调间隔未满足: 任务 {task_id}, 对象 {object_id}, "
+                normal_logger.debug(f"对象回调间隔未满足: 任务 {task_id}, 对象 {object_id}, "
                            f"间隔: {interval}秒, 上次: {current_time - last_time:.2f}秒前")
                 return False
             
@@ -150,7 +151,7 @@ class CallbackService:
             
             # 检查是否满足回调间隔
             if interval > 0 and current_time - last_time < interval:
-                logger.debug(f"任务回调间隔未满足: 任务 {task_id}, "
+                normal_logger.debug(f"任务回调间隔未满足: 任务 {task_id}, "
                            f"间隔: {interval}秒, 上次: {current_time - last_time:.2f}秒前")
                 return False
             
@@ -175,12 +176,12 @@ class CallbackService:
                     timeout=aiohttp.ClientTimeout(total=5)  # 5秒超时
                 ) as response:
                     if response.status == 200:
-                        logger.info(f"回调发送成功: 任务 {task_id}, URL: {callback_url}")
+                        normal_logger.info(f"回调发送成功: 任务 {task_id}, URL: {callback_url}")
                         return True
                     else:
-                        logger.warning(f"回调发送失败: 任务 {task_id}, URL: {callback_url}, "
+                        normal_logger.warning(f"回调发送失败: 任务 {task_id}, URL: {callback_url}, "
                                      f"状态码: {response.status}")
                         return False
         except Exception as e:
-            logger.error(f"回调发送异常: 任务 {task_id}, URL: {callback_url}, 错误: {str(e)}")
+            exception_logger.exception(f"回调发送异常: 任务 {task_id}, URL: {callback_url}, 错误: {str(e)}")
             return False

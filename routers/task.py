@@ -15,9 +15,11 @@ from models.responses import BaseResponse
 from services.http.task_service import TaskService
 from core.task_management.utils.status import TaskStatus
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 # 创建路由
 router = APIRouter(
@@ -205,7 +207,7 @@ async def start_task(
         )
 
     except Exception as e:
-        logger.error(f"启动任务失败: {str(e)}")
+        exception_logger.exception(f"启动任务失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/start",
@@ -423,7 +425,7 @@ async def start_batch_tasks(
         )
 
     except Exception as e:
-        logger.error(f"批量启动任务失败: {str(e)}")
+        exception_logger.exception(f"批量启动任务失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/batch/start",
@@ -475,7 +477,7 @@ async def stop_task(
         )
 
     except Exception as e:
-        logger.error(f"停止任务失败: {str(e)}")
+        exception_logger.exception(f"停止任务失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path=f"/api/v1/tasks/stop/{task_id}",
@@ -552,7 +554,7 @@ async def get_task_status(
         )
 
     except Exception as e:
-        logger.error(f"获取任务状态失败: {str(e)}")
+        exception_logger.exception(f"获取任务状态失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path=f"/api/v1/tasks/status/{task_id}",
@@ -637,7 +639,7 @@ async def list_tasks(
         )
 
     except Exception as e:
-        logger.error(f"获取任务列表失败: {str(e)}")
+        exception_logger.exception(f"获取任务列表失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/list",

@@ -1,15 +1,18 @@
 """
 ZLMediaKit配置模块
+定义ZLMediaKit相关配置
 """
 import os
 from dataclasses import dataclass, field
 from typing import Dict, Any, Optional
 import json
 
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.config import settings
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 @dataclass
 class ZLMConfig:
@@ -35,7 +38,7 @@ class ZLMConfig:
     enable_fmp4: bool = False         # 是否启用FMP4
     
     # 日志相关配置
-    log_level: int = 4                # 日志级别，0-4，4为最详细
+    log_level: int = 1                # 日志级别，0-4，0为最详细，1仅错误日志
     log_path: str = "logs/zlm"        # 日志路径
     log_days: int = 7                 # 日志保留天数
     
@@ -54,6 +57,8 @@ class ZLMConfig:
     
     def __post_init__(self):
         """初始化后处理"""
+        normal_logger.info(f"ZLMediaKit配置: {self.server_address}:{self.http_port}")
+        
         # 从环境变量或配置文件加载配置
         self._load_from_env()
         self._load_from_settings()
@@ -81,7 +86,7 @@ class ZLMConfig:
                     try:
                         setattr(self, key, json.loads(value))
                     except json.JSONDecodeError:
-                        logger.warning(f"无法解析环境变量 {env_key} 的JSON值: {value}")
+                        normal_logger.warning(f"无法解析环境变量 {env_key} 的JSON值: {value}")
     
     def _load_from_settings(self):
         """从应用设置加载配置"""

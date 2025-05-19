@@ -11,12 +11,13 @@ import time
 import traceback
 import numpy as np
 from queue import Queue, Empty
-from loguru import logger
 
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class ZLMBridge:
     """ZLMediaKit与OpenCV桥接类"""
@@ -56,7 +57,7 @@ class ZLMBridge:
         # 设置初始化标记
         self._initialized = True
         
-        logger.info("ZLMediaKit桥接器初始化完成")
+        normal_logger.info("ZLMediaKit桥接器初始化完成")
     
     async def initialize(self) -> None:
         """初始化桥接器
@@ -67,10 +68,10 @@ class ZLMBridge:
         try:
             # 已经运行则跳过
             if self._is_running:
-                logger.info("ZLMediaKit桥接器已经在运行中")
+                normal_logger.info("ZLMediaKit桥接器已经在运行中")
                 return
                 
-            logger.info("初始化ZLMediaKit桥接器...")
+            normal_logger.info("初始化ZLMediaKit桥接器...")
             
             # 导入ZLM管理器，延迟导入避免循环依赖
             from .zlm_manager import zlm_manager
@@ -86,10 +87,9 @@ class ZLMBridge:
             # 标记为运行中
             self._is_running = True
             
-            logger.info("ZLMediaKit桥接器初始化完成")
+            normal_logger.info("ZLMediaKit桥接器初始化完成")
         except Exception as e:
-            logger.error(f"初始化ZLMediaKit桥接器失败: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"初始化ZLMediaKit桥接器失败: {str(e)}")
     
     async def shutdown(self) -> None:
         """关闭桥接器
@@ -99,10 +99,10 @@ class ZLMBridge:
         """
         try:
             if not self._is_running:
-                logger.info("ZLMediaKit桥接器未运行，无需关闭")
+                normal_logger.info("ZLMediaKit桥接器未运行，无需关闭")
                 return
                 
-            logger.info("正在关闭ZLMediaKit桥接器...")
+            normal_logger.info("正在关闭ZLMediaKit桥接器...")
             
             # 取消注册事件回调
             if self._zlm_manager:
@@ -119,10 +119,9 @@ class ZLMBridge:
             # 标记为未运行
             self._is_running = False
             
-            logger.info("ZLMediaKit桥接器已关闭")
+            normal_logger.info("ZLMediaKit桥接器已关闭")
         except Exception as e:
-            logger.error(f"关闭ZLMediaKit桥接器时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"关闭ZLMediaKit桥接器时出错: {str(e)}")
     
     def _register_callbacks(self) -> None:
         """注册事件回调"""
@@ -146,7 +145,7 @@ class ZLMBridge:
             # 检查是否已经存在
             with self._mapping_lock:
                 if stream_id in self._stream_mapping:
-                    logger.info(f"流 {stream_id} 的桥接已存在")
+                    normal_logger.info(f"流 {stream_id} 的桥接已存在")
                     return True
             
             # 创建ZLM流ID
@@ -163,7 +162,7 @@ class ZLMBridge:
             
             # 确保配置中包含URL
             if "url" not in config:
-                logger.error(f"创建桥接失败: 配置中缺少URL")
+                exception_logger.error(f"创建桥接失败: 配置中缺少URL")
                 return False
             
             # 配置ZLM流
@@ -173,7 +172,7 @@ class ZLMBridge:
             # 创建ZLM流
             success = await self._zlm_manager.create_stream(zlm_stream_id, zlm_config)
             if not success:
-                logger.error(f"创建ZLM流 {zlm_stream_id} 失败")
+                exception_logger.error(f"创建ZLM流 {zlm_stream_id} 失败")
                 return False
             
             # 保存映射关系
@@ -181,11 +180,10 @@ class ZLMBridge:
                 self._stream_mapping[stream_id] = zlm_stream_id
                 self._reverse_mapping[zlm_stream_id] = stream_id
             
-            logger.info(f"成功创建流桥接: {stream_id} -> {zlm_stream_id}")
+            normal_logger.info(f"成功创建流桥接: {stream_id} -> {zlm_stream_id}")
             return True
         except Exception as e:
-            logger.error(f"创建流桥接时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"创建流桥接时出错: {str(e)}")
             return False
     
     async def stop_bridge(self, stream_id: str) -> bool:
@@ -208,20 +206,19 @@ class ZLMBridge:
                         del self._reverse_mapping[zlm_stream_id]
             
             if not zlm_stream_id:
-                logger.warning(f"流 {stream_id} 的桥接不存在，无需停止")
+                normal_logger.warning(f"流 {stream_id} 的桥接不存在，无需停止")
                 return True
             
             # 停止ZLM流
             success = await self._zlm_manager.stop_stream(zlm_stream_id)
             if not success:
-                logger.error(f"停止ZLM流 {zlm_stream_id} 失败")
+                exception_logger.error(f"停止ZLM流 {zlm_stream_id} 失败")
                 return False
             
-            logger.info(f"成功停止流桥接: {stream_id} -> {zlm_stream_id}")
+            normal_logger.info(f"成功停止流桥接: {stream_id} -> {zlm_stream_id}")
             return True
         except Exception as e:
-            logger.error(f"停止流桥接时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"停止流桥接时出错: {str(e)}")
             return False
     
     async def get_bridge_status(self, stream_id: str) -> Optional[Dict[str, Any]]:
@@ -241,13 +238,13 @@ class ZLMBridge:
                     zlm_stream_id = self._stream_mapping[stream_id]
             
             if not zlm_stream_id:
-                logger.warning(f"流 {stream_id} 的桥接不存在")
+                normal_logger.warning(f"流 {stream_id} 的桥接不存在")
                 return None
             
             # 获取ZLM流信息
             info = await self._zlm_manager.get_stream_info(zlm_stream_id)
             if not info:
-                logger.error(f"获取ZLM流 {zlm_stream_id} 信息失败")
+                exception_logger.error(f"获取ZLM流 {zlm_stream_id} 信息失败")
                 return None
             
             # 转换为桥接状态
@@ -262,8 +259,7 @@ class ZLMBridge:
             
             return bridge_info
         except Exception as e:
-            logger.error(f"获取桥接状态时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"获取桥接状态时出错: {str(e)}")
             return None
     
     async def subscribe_zlm_stream(self, stream_id: str, subscriber_id: str) -> Tuple[bool, Optional[asyncio.Queue]]:
@@ -284,7 +280,7 @@ class ZLMBridge:
                     zlm_stream_id = self._stream_mapping[stream_id]
             
             if not zlm_stream_id:
-                logger.warning(f"流 {stream_id} 的桥接不存在，无法订阅")
+                normal_logger.warning(f"流 {stream_id} 的桥接不存在，无法订阅")
                 return False, None
             
             # 从ZLM获取流对象
@@ -292,7 +288,7 @@ class ZLMBridge:
                 from .zlm_stream import ZLMVideoStream
                 with self._zlm_manager._stream_lock:
                     if zlm_stream_id not in self._zlm_manager._streams:
-                        logger.warning(f"ZLM流 {zlm_stream_id} 不存在，无法订阅")
+                        normal_logger.warning(f"ZLM流 {zlm_stream_id} 不存在，无法订阅")
                         return False, None
                     
                     stream = self._zlm_manager._streams[zlm_stream_id]
@@ -300,21 +296,19 @@ class ZLMBridge:
                 # 订阅流
                 success, frame_queue = await stream.subscribe(subscriber_id)
                 if not success:
-                    logger.error(f"订阅ZLM流 {zlm_stream_id} 失败")
+                    exception_logger.error(f"订阅ZLM流 {zlm_stream_id} 失败")
                     return False, None
                 
-                logger.info(f"成功订阅ZLM流: {stream_id} -> {zlm_stream_id}, 订阅者: {subscriber_id}")
+                normal_logger.info(f"成功订阅ZLM流: {stream_id} -> {zlm_stream_id}, 订阅者: {subscriber_id}")
                 return True, frame_queue
             except ImportError as e:
-                logger.error(f"导入ZLMVideoStream失败: {str(e)}")
+                exception_logger.error(f"导入ZLMVideoStream失败: {str(e)}")
                 return False, None
             except Exception as e:
-                logger.error(f"从ZLM获取流对象时出错: {str(e)}")
-                logger.error(traceback.format_exc())
+                exception_logger.exception(f"从ZLM获取流对象时出错: {str(e)}")
                 return False, None
         except Exception as e:
-            logger.error(f"订阅ZLM流时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"订阅ZLM流时出错: {str(e)}")
             return False, None
     
     async def unsubscribe_zlm_stream(self, stream_id: str, subscriber_id: str) -> bool:
@@ -335,14 +329,14 @@ class ZLMBridge:
                     zlm_stream_id = self._stream_mapping[stream_id]
             
             if not zlm_stream_id:
-                logger.warning(f"流 {stream_id} 的桥接不存在，无法取消订阅")
+                normal_logger.warning(f"流 {stream_id} 的桥接不存在，无法取消订阅")
                 return False
             
             # 从ZLM获取流对象
             from .zlm_stream import ZLMVideoStream
             with self._zlm_manager._stream_lock:
                 if zlm_stream_id not in self._zlm_manager._streams:
-                    logger.warning(f"ZLM流 {zlm_stream_id} 不存在，无法取消订阅")
+                    normal_logger.warning(f"ZLM流 {zlm_stream_id} 不存在，无法取消订阅")
                     return False
                 
                 stream = self._zlm_manager._streams[zlm_stream_id]
@@ -350,14 +344,13 @@ class ZLMBridge:
             # 取消订阅
             success = await stream.unsubscribe(subscriber_id)
             if not success:
-                logger.error(f"取消订阅ZLM流 {zlm_stream_id} 失败")
+                exception_logger.error(f"取消订阅ZLM流 {zlm_stream_id} 失败")
                 return False
             
-            logger.info(f"成功取消订阅ZLM流: {stream_id} -> {zlm_stream_id}, 订阅者: {subscriber_id}")
+            normal_logger.info(f"成功取消订阅ZLM流: {stream_id} -> {zlm_stream_id}, 订阅者: {subscriber_id}")
             return True
         except Exception as e:
-            logger.error(f"取消订阅ZLM流时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"取消订阅ZLM流时出错: {str(e)}")
             return False
     
     def _on_zlm_stream_status_changed(self, data: Dict[str, Any]) -> None:
@@ -418,8 +411,7 @@ class ZLMBridge:
                     data.get("last_error", "")
                 ))
         except Exception as e:
-            logger.error(f"处理ZLM流状态变化事件时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"处理ZLM流状态变化事件时出错: {str(e)}")
 
 # 单例实例
 zlm_bridge = ZLMBridge() 

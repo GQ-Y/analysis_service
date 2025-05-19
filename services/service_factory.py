@@ -4,14 +4,15 @@
 """
 import os
 import sys
-import logging
 from typing import Dict, Any, List, Optional, Union
 
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from services.base_analyzer import BaseAnalyzerService
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 def create_analyzer_service() -> BaseAnalyzerService:
     """
@@ -26,17 +27,17 @@ def create_analyzer_service() -> BaseAnalyzerService:
     service_mode = get_service_mode()
     
     if service_mode == "http":
-        logger.info("创建HTTP模式分析服务")
+        normal_logger.info("创建HTTP模式分析服务")
         from services.http.http_analyzer import HTTPAnalyzerService
         return HTTPAnalyzerService()
     elif service_mode == "mqtt":
-        logger.info("创建MQTT模式分析服务")
+        normal_logger.info("创建MQTT模式分析服务")
         # 未来支持MQTT模式
         # from services.mqtt.mqtt_analyzer import MQTTAnalyzerService
         # return MQTTAnalyzerService()
         raise NotImplementedError("MQTT模式尚未实现")
     else:
-        logger.warning(f"未知的服务模式: {service_mode}，使用默认HTTP模式")
+        normal_logger.warning(f"未知的服务模式: {service_mode}，使用默认HTTP模式")
         from services.http.http_analyzer import HTTPAnalyzerService
         return HTTPAnalyzerService()
 
@@ -54,7 +55,7 @@ def get_service_mode() -> str:
     
     # 验证服务模式
     if service_mode not in ["http", "mqtt"]:
-        logger.warning(f"无效的服务模式: {service_mode}，使用默认HTTP模式")
+        normal_logger.warning(f"无效的服务模式: {service_mode}，使用默认HTTP模式")
         service_mode = "http"
         
     return service_mode
@@ -72,17 +73,17 @@ def create_task_service():
     service_mode = get_service_mode()
     
     if service_mode == "http":
-        logger.info("创建HTTP模式任务服务")
+        normal_logger.info("创建HTTP模式任务服务")
         from services.http.task_service import TaskService
         return TaskService()
     elif service_mode == "mqtt":
-        logger.info("创建MQTT模式任务服务")
+        normal_logger.info("创建MQTT模式任务服务")
         # 未来支持MQTT模式
         # from services.mqtt.task_service import TaskService
         # return TaskService()
         raise NotImplementedError("MQTT模式尚未实现")
     else:
-        logger.warning(f"未知的服务模式: {service_mode}，使用默认HTTP模式")
+        normal_logger.warning(f"未知的服务模式: {service_mode}，使用默认HTTP模式")
         from services.http.task_service import TaskService
         return TaskService()
 

@@ -4,10 +4,9 @@ import time
 import threading
 from typing import Dict, Optional, Tuple, Any, List
 import traceback
-from loguru import logger
 
 # 导入共享工具
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
 # 导入状态定义
 from .status import StreamStatus, StreamHealthStatus
@@ -18,8 +17,9 @@ from .interface import IVideoStream
 # 导入ZLMediaKit流实现
 from core.media_kit.zlm_stream import ZLMVideoStream
 
-logger = setup_logger(__name__)
-
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 
 class StreamManager:
@@ -43,9 +43,8 @@ class StreamManager:
 
         self._initialized = True
         self._streams: Dict[str, IVideoStream] = {}  # stream_id -> IVideoStream
-        self._stream_lock = asyncio.Lock()
-
-        logger.info("流管理器初始化完成，使用ZLMediaKit作为流媒体引擎")
+        
+        normal_logger.info("流管理器初始化完成，使用ZLMediaKit作为流媒体引擎")
 
     async def initialize(self):
         """初始化流管理器，包括ZLMediaKit管理器"""
@@ -56,12 +55,11 @@ class StreamManager:
             # 初始化ZLMediaKit管理器
             await zlm_manager.initialize()
 
-            logger.info("ZLMediaKit管理器初始化成功")
+            normal_logger.info("ZLMediaKit管理器初始化成功")
         except Exception as e:
-            logger.error(f"初始化ZLMediaKit管理器失败: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"初始化ZLMediaKit管理器失败: {str(e)}")
 
-        logger.info("流管理器初始化完成")
+        normal_logger.info("流管理器初始化完成")
 
     async def get_or_create_stream(self, stream_id: str, config: Dict[str, Any]) -> IVideoStream:
         """获取或创建视频流
@@ -79,25 +77,26 @@ class StreamManager:
             task_id = config.get("task_id", "")
             if task_id:
                 stream_id = f"stream_{task_id}"
-                logger.info(f"流ID为空，使用任务ID({task_id})生成流ID: {stream_id}")
+                normal_logger.info(f"流ID为空，使用任务ID({task_id})生成流ID: {stream_id}")
             else:
                 # 如果没有任务ID，则使用随机ID
                 stream_id = f"stream_{time.time()}"
-                logger.info(f"流ID为空，生成临时ID: {stream_id}")
+                normal_logger.info(f"流ID为空，生成临时ID: {stream_id}")
             # 更新配置中的stream_id
             config["stream_id"] = stream_id
 
-        async with self._stream_lock:
+        # 创建当前事件循环的锁
+        async with asyncio.Lock():
             # 检查流是否已存在
             if stream_id in self._streams:
-                logger.info(f"返回已存在的视频流: {stream_id}")
+                normal_logger.info(f"返回已存在的视频流: {stream_id}")
                 return self._streams[stream_id]
 
             # 导入ZLMediaKit管理器
             from core.media_kit.zlm_manager import zlm_manager
 
             # 创建新的ZLMediaKit视频流
-            logger.info(f"创建新的ZLMediaKit视频流: {stream_id}")
+            normal_logger.info(f"创建新的ZLMediaKit视频流: {stream_id}")
             stream = ZLMVideoStream(stream_id, config, zlm_manager)
 
             # 添加到管理器
@@ -107,8 +106,7 @@ class StreamManager:
             try:
                 await stream.start()
             except Exception as e:
-                logger.error(f"启动流失败: {str(e)}")
-                logger.error(traceback.format_exc())
+                exception_logger.exception(f"启动流失败: {str(e)}")
                 # 从管理器中移除失败的流
                 if stream_id in self._streams:
                     del self._streams[stream_id]
@@ -125,16 +123,17 @@ class StreamManager:
         Returns:
             bool: 是否成功释放
         """
-        async with self._stream_lock:
+        # 创建当前事件循环的锁
+        async with asyncio.Lock():
             if stream_id not in self._streams:
-                logger.warning(f"尝试释放不存在的流: {stream_id}")
+                normal_logger.warning(f"尝试释放不存在的流: {stream_id}")
                 return False
 
             stream = self._streams[stream_id]
 
             # 如果没有订阅者，停止并移除流
             if stream.subscriber_count == 0:
-                logger.info(f"流 {stream_id} 没有订阅者，停止并移除")
+                normal_logger.info(f"流 {stream_id} 没有订阅者，停止并移除")
 
                 # 停止流
                 await stream.stop()
@@ -143,7 +142,7 @@ class StreamManager:
                 del self._streams[stream_id]
                 return True
 
-            logger.info(f"流 {stream_id} 仍有 {stream.subscriber_count} 个订阅者，保持运行")
+            normal_logger.info(f"流 {stream_id} 仍有 {stream.subscriber_count} 个订阅者，保持运行")
             return False
 
     async def get_stream(self, stream_id: str) -> Optional[IVideoStream]:
@@ -155,7 +154,8 @@ class StreamManager:
         Returns:
             Optional[IVideoStream]: 视频流对象，如果不存在则返回None
         """
-        async with self._stream_lock:
+        # 创建当前事件循环的锁
+        async with asyncio.Lock():
             return self._streams.get(stream_id)
 
     async def subscribe_stream(self, stream_id: str, subscriber_id: str, config: Dict[str, Any]) -> Tuple[bool, Optional[asyncio.Queue]]:
@@ -172,7 +172,7 @@ class StreamManager:
         # 确保有效的stream_id
         if not stream_id:
             stream_id = f"stream_{subscriber_id}"
-            logger.info(f"流ID为空，使用订阅者ID({subscriber_id})生成流ID: {stream_id}")
+            normal_logger.info(f"流ID为空，使用订阅者ID({subscriber_id})生成流ID: {stream_id}")
             # 更新配置中的stream_id
             config["stream_id"] = stream_id
 
@@ -187,8 +187,7 @@ class StreamManager:
 
             return success, queue
         except Exception as e:
-            logger.error(f"获取或订阅流 {stream_id} 时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"获取或订阅流 {stream_id} 时出错: {str(e)}")
             return False, None
 
     async def unsubscribe_stream(self, stream_id: str, subscriber_id: str) -> bool:
@@ -203,9 +202,9 @@ class StreamManager:
         """
         # 直接使用ZLMediaKit流
 
-        async with self._stream_lock:
+        async with asyncio.Lock():
             if stream_id not in self._streams:
-                logger.warning(f"尝试取消订阅不存在的流: {stream_id}")
+                normal_logger.warning(f"尝试取消订阅不存在的流: {stream_id}")
                 return False
 
             stream = self._streams[stream_id]
@@ -230,9 +229,9 @@ class StreamManager:
             health_status: 健康状态
             error_msg: 错误信息
         """
-        async with self._stream_lock:
+        async with asyncio.Lock():
             if stream_id not in self._streams:
-                logger.warning(f"尝试更新不存在的流状态: {stream_id}")
+                normal_logger.warning(f"尝试更新不存在的流状态: {stream_id}")
                 return
 
             stream = self._streams[stream_id]
@@ -245,7 +244,7 @@ class StreamManager:
             if error_msg:
                 stream.set_last_error(error_msg)
 
-            logger.info(f"更新流状态: {stream_id}, 状态: {status.name}, 健康状态: {health_status.name}")
+            normal_logger.info(f"更新流状态: {stream_id}, 状态: {status.name}, 健康状态: {health_status.name}")
 
     async def reconnect_stream(self, stream_id: str) -> bool:
         """重新连接流
@@ -256,9 +255,9 @@ class StreamManager:
         Returns:
             bool: 是否成功重新连接
         """
-        async with self._stream_lock:
+        async with asyncio.Lock():
             if stream_id not in self._streams:
-                logger.warning(f"尝试重新连接不存在的流: {stream_id}")
+                normal_logger.warning(f"尝试重新连接不存在的流: {stream_id}")
                 return False
 
             stream = self._streams[stream_id]
@@ -272,26 +271,25 @@ class StreamManager:
 
             try:
                 # 先停止流
-                logger.info(f"重新连接流 {stream_id}，先停止当前流")
+                normal_logger.info(f"重新连接流 {stream_id}，先停止当前流")
                 await stream.stop()
 
                 # 等待一段时间
                 await asyncio.sleep(1)
 
                 # 重新启动流
-                logger.info(f"重新启动流 {stream_id}")
+                normal_logger.info(f"重新启动流 {stream_id}")
                 success = await stream.start()
 
                 if success:
-                    logger.info(f"成功重新连接流 {stream_id}")
+                    normal_logger.info(f"成功重新连接流 {stream_id}")
                     return True
                 else:
-                    logger.error(f"重新连接流 {stream_id} 失败")
+                    normal_logger.error(f"重新连接流 {stream_id} 失败")
                     return False
 
             except Exception as e:
-                logger.error(f"重新连接流 {stream_id} 时出错: {str(e)}")
-                logger.error(traceback.format_exc())
+                exception_logger.exception(f"重新连接流 {stream_id} 时出错: {str(e)}")
                 return False
 
     async def get_all_streams(self) -> List[Dict[str, Any]]:
@@ -300,7 +298,7 @@ class StreamManager:
         Returns:
             List[Dict[str, Any]]: 流信息列表
         """
-        async with self._stream_lock:
+        async with asyncio.Lock():
             result = []
             for stream in self._streams.values():
                 info_method = stream.get_info
@@ -327,12 +325,11 @@ class StreamManager:
 
             # 流不存在
 
-            logger.warning(f"流 {stream_id} 不存在或无法获取流信息")
+            normal_logger.warning(f"流 {stream_id} 不存在或无法获取流信息")
             return None
 
         except Exception as e:
-            logger.error(f"获取流信息时发生错误: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"获取流信息时发生错误: {str(e)}")
             return None
 
     async def get_stream_status(self, stream_id: str) -> Optional[StreamStatus]:
@@ -356,9 +353,10 @@ class StreamManager:
 
     async def stop_all_streams(self):
         """停止所有流"""
-        async with self._stream_lock:
+        # 创建当前事件循环的锁
+        async with asyncio.Lock():
             for stream_id, stream in list(self._streams.items()):
-                logger.info(f"停止流: {stream_id}")
+                normal_logger.info(f"停止流: {stream_id}")
                 await stream.stop()
 
             self._streams.clear()
@@ -372,12 +370,11 @@ class StreamManager:
         try:
             from core.media_kit.zlm_manager import zlm_manager
             await zlm_manager.shutdown()
-            logger.info("ZLMediaKit管理器已关闭")
+            normal_logger.info("ZLMediaKit管理器已关闭")
         except Exception as e:
-            logger.error(f"关闭ZLMediaKit管理器时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"关闭ZLMediaKit管理器时出错: {str(e)}")
 
-        logger.info("流管理器已关闭")
+        normal_logger.info("流管理器已关闭")
 
 # 创建单例实例
 stream_manager = StreamManager()

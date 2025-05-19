@@ -21,9 +21,11 @@ from core.analyzer.detection.yolo_detector import YOLODetector
 from core.analyzer.segmentation.yolo_segmentor import YOLOSegmentor
 from core.task_management import TaskStatus
 from services.base_analyzer import BaseAnalyzerService
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class HTTPAnalyzerService(BaseAnalyzerService):
     """HTTP分析服务"""
@@ -31,7 +33,7 @@ class HTTPAnalyzerService(BaseAnalyzerService):
     def __init__(self):
         """初始化HTTP分析服务"""
         super().__init__()
-        logger.info("初始化HTTP分析服务")
+        normal_logger.info("初始化HTTP分析服务")
 
         # 初始化任务相关组件
         self.task_queue = None
@@ -46,16 +48,16 @@ class HTTPAnalyzerService(BaseAnalyzerService):
         self.is_running = False
         self.start_time = None
 
-        logger.info("HTTP分析服务初始化完成")
+        normal_logger.info("HTTP分析服务初始化完成")
 
     async def start(self):
         """启动服务"""
         if self.is_running:
-            logger.warning("HTTP分析服务已经在运行中")
+            normal_logger.warning("HTTP分析服务已经在运行中")
             return True
 
         try:
-            logger.info("正在启动HTTP分析服务...")
+            normal_logger.info("正在启动HTTP分析服务...")
 
             # 初始化任务队列
             self.task_queue = TaskQueue()
@@ -76,23 +78,21 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             self.is_running = True
             self.start_time = datetime.now()
 
-            logger.info("HTTP分析服务启动成功")
+            normal_logger.info("HTTP分析服务启动成功")
             return True
 
         except Exception as e:
-            logger.error(f"启动HTTP分析服务失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"启动HTTP分析服务失败: {str(e)}")
             return False
 
     async def stop(self):
         """停止服务"""
         if not self.is_running:
-            logger.warning("HTTP分析服务已经停止")
+            normal_logger.warning("HTTP分析服务已经停止")
             return True
 
         try:
-            logger.info("正在停止HTTP分析服务...")
+            normal_logger.info("正在停止HTTP分析服务...")
 
             # 停止所有任务
             if self.task_manager:
@@ -110,13 +110,11 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             # 更新服务状态
             self.is_running = False
 
-            logger.info("HTTP分析服务停止成功")
+            normal_logger.info("HTTP分析服务停止成功")
             return True
 
         except Exception as e:
-            logger.error(f"停止HTTP分析服务失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"停止HTTP分析服务失败: {str(e)}")
             return False
 
     async def process_image(self, image_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -173,9 +171,7 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             }
 
         except Exception as e:
-            logger.error(f"处理图像失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"处理图像失败: {str(e)}")
             return {
                 "success": False,
                 "message": f"处理图像失败: {str(e)}",
@@ -253,9 +249,7 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             }
 
         except Exception as e:
-            logger.error(f"处理视频失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"处理视频失败: {str(e)}")
             return {
                 "success": False,
                 "message": f"处理视频失败: {str(e)}",
@@ -359,9 +353,7 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             }
 
         except Exception as e:
-            logger.error(f"处理流失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"处理流失败: {str(e)}")
             return {
                 "success": False,
                 "message": f"处理流失败: {str(e)}",
@@ -406,7 +398,7 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             return status
 
         except Exception as e:
-            logger.error(f"获取服务状态失败: {str(e)}")
+            exception_logger.exception(f"获取服务状态失败: {str(e)}")
             return {
                 "service": "http_analyzer",
                 "status": "error",

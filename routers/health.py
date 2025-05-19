@@ -10,9 +10,11 @@ from datetime import datetime
 
 from core.config import settings
 from core.models import StandardResponse
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 # 创建路由
 router = APIRouter(
@@ -98,7 +100,7 @@ async def health_check(request: Request) -> StandardResponse:
         )
         
     except Exception as e:
-        logger.error(f"健康检查失败: {str(e)}")
+        exception_logger.exception(f"健康检查失败: {str(e)}")
         return StandardResponse(
             requestId=request_id,
             path="/api/v1/health",

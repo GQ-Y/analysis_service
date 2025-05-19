@@ -9,11 +9,13 @@ import platform
 import subprocess
 import time
 from pathlib import Path
-from loguru import logger
 
-from shared.utils.logger import setup_logger
+# 使用新的日志记录器
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 # 预编译库所在路径
 LOCAL_PREBUILT_PATH = "zlmos/darwin"
@@ -32,37 +34,40 @@ class ZLMChecker:
         Returns:
             bool: 安装是否成功
         """
-        logger.info("正在检查ZLMediaKit环境...")
+        normal_logger.info("正在检查ZLMediaKit环境...")
 
         # 检查系统类型
         if not ZLMChecker._check_system():
-            logger.warning("不支持的系统类型，跳过ZLMediaKit安装")
+            normal_logger.warning("不支持的系统类型，跳过ZLMediaKit安装")
             return False
 
         # 检查库文件是否已安装
         lib_path = DEFAULT_LIB_PATH
-        lib_file = os.path.join(lib_path, "libmk_api.dylib")
+        # 根据平台选择正确的库文件名
+        lib_name = "libmk_api.dylib" if platform.system().lower() == "darwin" else "libmk_api.so"
+        lib_file = os.path.join(lib_path, lib_name)
+        
         if os.path.exists(lib_file):
-            logger.info(f"ZLMediaKit库文件已存在: {lib_file}")
+            normal_logger.info(f"ZLMediaKit库文件已存在: {lib_file}")
             # 设置环境变量
             ZLMChecker._set_env_now(lib_path)
         else:
             # 安装库文件
-            logger.info("ZLMediaKit库文件不存在，开始自动安装...")
+            normal_logger.info("ZLMediaKit库文件不存在，开始自动安装...")
             if not ZLMChecker._install_zlm():
-                logger.error("安装ZLMediaKit库文件失败")
+                exception_logger.error("安装ZLMediaKit库文件失败")
                 return False
 
         # 检查并启动ZLMediaKit服务进程
         if not ZLMChecker.check_zlm_process():
-            logger.info("ZLMediaKit服务未运行，尝试启动...")
+            normal_logger.info("ZLMediaKit服务未运行，尝试启动...")
             if ZLMChecker.start_zlm_service():
-                logger.info("成功启动ZLMediaKit服务")
+                normal_logger.info("成功启动ZLMediaKit服务")
             else:
-                logger.warning("无法启动ZLMediaKit服务，部分功能可能不可用")
+                normal_logger.warning("无法启动ZLMediaKit服务，部分功能可能不可用")
                 # 即使服务无法启动，库文件已经安装，所以仍然返回成功
         else:
-            logger.info("ZLMediaKit服务已在运行")
+            normal_logger.info("ZLMediaKit服务已在运行")
 
         return True
 
@@ -74,10 +79,12 @@ class ZLMChecker:
             bool: 系统是否支持
         """
         system = platform.system().lower()
-        if system != "darwin":
-            logger.warning(f"当前只支持macOS系统，当前系统为: {system}")
-            return False
-
+        # 同时支持 macOS (darwin) 和 Linux
+        if system not in ["darwin", "linux"]:
+            normal_logger.warning(f"当前系统 ({system}) 可能不受官方支持，但将尝试继续。官方支持macOS和Linux。")
+            # 仍然返回True，尝试让其在其他类Unix系统上工作，但给出警告
+            # 如果确实只想支持darwin, 则取消下一行注释并修改上一行日志
+            # return False 
         return True
 
     @staticmethod
@@ -88,253 +95,284 @@ class ZLMChecker:
             bool: 安装是否成功
         """
         try:
-            # 检查预编译库是否存在
-            local_lib_path = os.path.join(LOCAL_PREBUILT_PATH, "libmk_api.dylib")
-            if not os.path.exists(local_lib_path):
-                logger.error(f"找不到预编译库文件: {local_lib_path}")
-                return False
-
-            # 创建目标目录
             lib_path = DEFAULT_LIB_PATH
             os.makedirs(lib_path, exist_ok=True)
+            
+            # 根据平台选择正确的库文件名和预编译路径
+            system = platform.system().lower()
+            if system == "darwin":
+                lib_name = "libmk_api.dylib"
+                local_prebuilt_dir = "zlmos/darwin"
+            elif system == "linux":
+                lib_name = "libmk_api.so"
+                local_prebuilt_dir = "zlmos/linux" # 假设Linux预编译库在这个路径
+                if not os.path.exists(local_prebuilt_dir):
+                    # 如果Linux预编译库不存在，可以尝试从ZLMediaKit/release目录寻找
+                    # 或者提示用户手动编译和放置
+                    normal_logger.warning(f"Linux预编译库目录 {local_prebuilt_dir} 不存在，请确保已编译或下载ZLMediaKit库。")
+                    # 此处可以添加更复杂的逻辑来查找或下载库
+                    # 为简化，我们假设如果zlmos/linux不存在，则安装失败
+                    # return False 
+            else:
+                exception_logger.error(f"不支持的操作系统: {system}，无法确定库文件名和路径。")
+                return False
 
-            # 复制库文件
-            dest_file = os.path.join(lib_path, "libmk_api.dylib")
-            logger.info(f"正在复制 {local_lib_path} 到 {dest_file}")
-            shutil.copy2(local_lib_path, dest_file)
+            dest_file = os.path.join(lib_path, lib_name)
+            if os.path.exists(dest_file):
+                normal_logger.info(f"库文件已存在: {dest_file}")
+                os.chmod(dest_file, 0o755)
+                normal_logger.info(f"已设置库文件权限为755")
+                ZLMChecker._set_env_now(lib_path)
+                return True
+                
+            local_lib_file_path = os.path.join(PROJECT_ROOT, local_prebuilt_dir, lib_name)
+            if not os.path.exists(local_lib_file_path):
+                exception_logger.error(f"找不到预编译库文件: {local_lib_file_path}")
+                # 尝试从 ZLMediaKit/release/linux/libmk_api.so 寻找 (如果适用)
+                if system == "linux":
+                    alternative_path = PROJECT_ROOT / "ZLMediaKit" / "release" / "linux" / lib_name
+                    if alternative_path.exists():
+                        local_lib_file_path = str(alternative_path)
+                        normal_logger.info(f"在备用路径找到Linux库: {local_lib_file_path}")
+                    else:
+                        exception_logger.error(f"备用路径 {alternative_path} 也未找到Linux库。")
+                        return False
+                else:
+                     return False # Darwin下如果zlmos/darwin没有，则失败
 
-            # 设置库文件权限
+            normal_logger.info(f"正在复制 {local_lib_file_path} 到 {dest_file}")
+            shutil.copy2(local_lib_file_path, dest_file)
+
             os.chmod(dest_file, 0o755)
-            logger.info(f"已设置库文件权限为755")
+            normal_logger.info(f"已设置库文件权限为755")
 
-            # 复制配置文件
-            ZLMChecker._copy_config_files()
-
-            # 更新.env文件
+            ZLMChecker._copy_config_files(local_prebuilt_dir)
             ZLMChecker._update_env_file(lib_path)
-
-            # 设置环境变量
             ZLMChecker._set_env_now(lib_path)
 
-            logger.info("ZLMediaKit库安装成功")
+            normal_logger.info("ZLMediaKit库安装成功")
             return True
         except Exception as e:
-            logger.error(f"安装ZLMediaKit库时出错: {str(e)}")
+            exception_logger.exception(f"安装ZLMediaKit库时出错")
             return False
 
     @staticmethod
-    def _copy_config_files():
+    def _copy_config_files(prebuilt_dir: str):
         """复制配置文件"""
-        # 创建配置目录
         os.makedirs("config/zlm", exist_ok=True)
-
-        # 检查配置文件是否存在
-        config_path = os.path.join(LOCAL_PREBUILT_PATH, "config.ini")
-        if os.path.exists(config_path):
-            dest_file = "config/zlm/config.ini"
+        config_filename = "config.ini"
+        config_path_source = os.path.join(PROJECT_ROOT, prebuilt_dir, config_filename)
+        
+        if os.path.exists(config_path_source):
+            dest_file = os.path.join("config", "zlm", config_filename)
             try:
-                logger.info(f"正在复制配置文件 {config_path} 到 {dest_file}")
-                shutil.copy2(config_path, dest_file)
+                normal_logger.info(f"正在复制配置文件 {config_path_source} 到 {dest_file}")
+                shutil.copy2(config_path_source, dest_file)
             except Exception as e:
-                logger.warning(f"复制配置文件时出错: {str(e)}")
+                exception_logger.warning(f"复制配置文件时出错: {str(e)}")
+        else:
+            normal_logger.warning(f"源配置文件 {config_path_source} 不存在，跳过复制。")
 
     @staticmethod
     def _update_env_file(lib_path):
         """更新.env文件"""
-        env_file = ".env"
+        env_file = PROJECT_ROOT / ".env"
+        new_lines = []
+        zlm_lib_path_key = "STREAMING__ZLM_LIB_PATH"
+        use_zlm_key = "STREAMING__USE_ZLMEDIAKIT"
+        lib_path_found = False
+        use_zlm_found = False
 
-        if not os.path.exists(env_file):
-            # 创建新的.env文件
-            logger.warning("未找到.env文件，将创建新文件")
+        if env_file.exists():
+            with open(env_file, "r") as f:
+                lines = f.readlines()
+            
+            for line in lines:
+                stripped_line = line.strip()
+                if stripped_line.startswith(f"{zlm_lib_path_key}="):
+                    new_lines.append(f"{zlm_lib_path_key}={lib_path}\n")
+                    lib_path_found = True
+                elif stripped_line.startswith(f"{use_zlm_key}="):
+                    new_lines.append(f"{use_zlm_key}=true\n")
+                    use_zlm_found = True
+                else:
+                    new_lines.append(line)
+        else:
+            normal_logger.warning("未找到.env文件，将创建新文件并添加ZLMediaKit配置")
+            new_lines.append("# ZLMediaKit配置\n")
+
+        if not lib_path_found:
+            new_lines.append(f"{zlm_lib_path_key}={lib_path}\n")
+        if not use_zlm_found:
+            new_lines.append(f"{use_zlm_key}=true\n")
+        
+        try:
             with open(env_file, "w") as f:
-                f.write("# ZLMediaKit配置\n")
-                f.write("STREAMING__USE_ZLMEDIAKIT=true\n")
-                f.write(f"STREAMING__ZLM_LIB_PATH={lib_path}\n")
-            logger.info(f"已创建.env文件并添加ZLMediaKit配置")
-            return
-
-        # 读取现有.env文件
-        with open(env_file, "r") as f:
-            content = f.read()
-
-        # 检查是否需要更新配置
-        updated = False
-
-        if "STREAMING__USE_ZLMEDIAKIT=" in content:
-            # 更新现有配置
-            lines = content.split("\n")
-            for i, line in enumerate(lines):
-                if line.startswith("STREAMING__USE_ZLMEDIAKIT="):
-                    lines[i] = "STREAMING__USE_ZLMEDIAKIT=true"
-                    updated = True
-                elif line.startswith("STREAMING__ZLM_LIB_PATH="):
-                    lines[i] = f"STREAMING__ZLM_LIB_PATH={lib_path}"
-                    updated = True
-
-            if updated:
-                # 写回更新后的内容
-                with open(env_file, "w") as f:
-                    f.write("\n".join(lines))
-                logger.info("已更新.env文件中的ZLMediaKit配置")
-                return
-
-        # 添加新配置
-        with open(env_file, "a") as f:
-            f.write("\n# ZLMediaKit配置\n")
-            f.write("STREAMING__USE_ZLMEDIAKIT=true\n")
-            f.write(f"STREAMING__ZLM_LIB_PATH={lib_path}\n")
-        logger.info("已向.env文件添加ZLMediaKit配置")
+                f.writelines(new_lines)
+            normal_logger.info(f"已更新/创建.env文件并设置ZLMediaKit配置: {env_file}")
+        except Exception as e:
+            exception_logger.error(f"更新.env文件时出错: {str(e)}")
 
     @staticmethod
     def _set_env_now(lib_path):
         """立即设置环境变量（仅对当前会话有效）"""
-        # 检查zlmos目录是否存在
-        zlmos_path = os.path.join(PROJECT_ROOT, "zlmos", "darwin")
-        if os.path.exists(zlmos_path):
-            # 优先使用zlmos目录
-            os.environ["ZLM_LIB_PATH"] = zlmos_path
-            os.environ["LD_LIBRARY_PATH"] = f"{zlmos_path}:{os.environ.get('LD_LIBRARY_PATH', '')}"
-            print(f"设置ZLMediaKit库路径: {zlmos_path}")
-            logger.info(f"已设置当前会话的环境变量 ZLM_LIB_PATH={zlmos_path}")
-        else:
-            # 使用lib目录
-            os.environ["ZLM_LIB_PATH"] = lib_path
-            os.environ["LD_LIBRARY_PATH"] = f"{lib_path}:{os.environ.get('LD_LIBRARY_PATH', '')}"
-            logger.info(f"已设置当前会话的环境变量 ZLM_LIB_PATH={lib_path}")
+        os.environ["ZLM_LIB_PATH"] = lib_path
+        env_var_name = "DYLD_LIBRARY_PATH" if platform.system().lower() == "darwin" else "LD_LIBRARY_PATH"
+        current_env_path = os.environ.get(env_var_name, "")
+        if lib_path not in current_env_path.split(os.pathsep):
+            os.environ[env_var_name] = f"{lib_path}{os.pathsep}{current_env_path}"
+        
+        normal_logger.info(f"已设置当前会话环境变量 {env_var_name}，包含路径: {lib_path}")
+        normal_logger.info(f"已设置当前会话环境变量 ZLM_LIB_PATH={lib_path}")
+        # 移除print语句，使用日志
+        # print(f"设置ZLMediaKit库路径: {lib_path}") 
 
     @staticmethod
     def check_zlm_process():
-        """检查ZLMediaKit进程是否在运行
-
-        Returns:
-            bool: 进程是否在运行
-        """
+        """检查ZLMediaKit进程是否在运行"""
         try:
-            # 在macOS上使用pgrep命令检查进程
             process_name = "MediaServer"
-            result = subprocess.run(["pgrep", process_name],
-                                   stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE)
-
-            if result.returncode == 0:
-                pid = result.stdout.decode().strip()
-                logger.info(f"检测到ZLMediaKit进程正在运行，PID: {pid}")
-                return True
+            # pgrep对于跨平台可能不是最佳选择，但对于macOS和Linux通常可用
+            # 对于Windows，可能需要 tasklist | findstr MediaServer.exe
+            if platform.system().lower() in ["darwin", "linux"]:
+                result = subprocess.run(["pgrep", "-f", process_name], 
+                                        capture_output=True, text=True)
+                if result.returncode == 0 and result.stdout.strip():
+                    pids = result.stdout.strip().split("\n")
+                    normal_logger.info(f"检测到ZLMediaKit ({process_name})进程正在运行，PIDs: {', '.join(pids)}")
+                    return True
+                else:
+                    normal_logger.warning(f"未检测到ZLMediaKit ({process_name})进程。pgrep退出码: {result.returncode}, 输出: {result.stdout.strip()}, 错误: {result.stderr.strip()}")
+                    return False
             else:
-                logger.warning("未检测到ZLMediaKit进程")
-                return False
+                normal_logger.warning(f"对于操作系统 {platform.system()}，检查ZLMediaKit进程的逻辑未实现。")
+                return False # 假设未运行
+        except FileNotFoundError:
+            exception_logger.error("检查ZLMediaKit进程时出错: pgrep命令未找到。请确保pgrep已安装。")
+            return False
         except Exception as e:
-            logger.error(f"检查ZLMediaKit进程时出错: {str(e)}")
+            exception_logger.exception("检查ZLMediaKit进程时发生未知错误")
             return False
 
     @staticmethod
     def start_zlm_service():
-        """尝试启动ZLMediaKit服务
-
-        Returns:
-            bool: 是否成功启动
-        """
+        """尝试启动ZLMediaKit服务"""
         try:
-            # 检查是否已有进程在运行
             if ZLMChecker.check_zlm_process():
-                logger.info("ZLMediaKit服务已在运行")
+                normal_logger.info("ZLMediaKit服务已在运行，无需重复启动。")
                 return True
 
-            # 检查MediaServer可执行文件是否存在
-            media_server_path = os.path.join(LOCAL_PREBUILT_PATH, "MediaServer")
-            if not os.path.exists(media_server_path):
-                logger.error(f"找不到ZLMediaKit可执行文件: {media_server_path}")
+            system_type = platform.system().lower()
+            media_server_executable = "MediaServer"
+            prebuilt_dir_segment = f"zlmos/{system_type}" 
+            media_server_path_candidate1 = PROJECT_ROOT / prebuilt_dir_segment / media_server_executable
+            # 备用路径，例如直接在ZLMediaKit编译产物中
+            media_server_path_candidate2 = PROJECT_ROOT / "ZLMediaKit" / "release" / system_type / media_server_executable 
+
+            media_server_path = None
+            if media_server_path_candidate1.exists():
+                media_server_path = media_server_path_candidate1
+            elif media_server_path_candidate2.exists():
+                 normal_logger.info(f"在主预编译路径 {media_server_path_candidate1} 未找到MediaServer，但在备用路径 {media_server_path_candidate2} 找到。")
+                 media_server_path = media_server_path_candidate2
+            else:
+                exception_logger.error(f"找不到ZLMediaKit可执行文件 ({media_server_executable}) 在尝试的路径: {media_server_path_candidate1} 或 {media_server_path_candidate2}")
                 return False
 
-            # 确保配置目录存在
-            os.makedirs("config/zlm", exist_ok=True)
+            config_dir = PROJECT_ROOT / "config" / "zlm"
+            os.makedirs(config_dir, exist_ok=True)
+            config_file_path = config_dir / "config.ini"
 
-            # 复制配置文件
-            config_path = os.path.join(LOCAL_PREBUILT_PATH, "config.ini")
-            if os.path.exists(config_path):
-                dest_file = "config/zlm/config.ini"
-                if not os.path.exists(dest_file):
-                    logger.info(f"正在复制配置文件 {config_path} 到 {dest_file}")
-                    shutil.copy2(config_path, dest_file)
+            # 尝试从预编译目录复制config.ini (如果它不存在的话)
+            if not config_file_path.exists():
+                source_config_path = PROJECT_ROOT / prebuilt_dir_segment / "config.ini"
+                if source_config_path.exists():
+                    try:
+                        shutil.copy2(source_config_path, config_file_path)
+                        normal_logger.info(f"已从 {source_config_path} 复制配置文件到 {config_file_path}")
+                    except Exception as e:
+                        exception_logger.warning(f"复制配置文件 {source_config_path} 失败: {str(e)}")
+                else:
+                    normal_logger.warning(f"源配置文件 {source_config_path} 不存在，ZLMediaKit可能使用默认配置或无法启动。")
+            
+            normal_logger.info(f"正在启动ZLMediaKit服务: {media_server_path} -c {config_file_path}")
+            
+            # 确保MediaServer可执行
+            if not os.access(media_server_path, os.X_OK):
+                 os.chmod(media_server_path, 0o755)
+                 normal_logger.info(f"已为 {media_server_path} 添加执行权限。")
 
-            # 启动ZLMediaKit服务
-            logger.info(f"正在启动ZLMediaKit服务: {media_server_path}")
+            process = subprocess.Popen([str(media_server_path), "-c", str(config_file_path)],
+                                     stdout=subprocess.PIPE, # 捕获输出以便调试
+                                     stderr=subprocess.PIPE,
+                                     start_new_session=True,
+                                     cwd=media_server_path.parent) # 在MediaServer所在目录运行
 
-            # 使用非阻塞方式启动服务，并传递配置文件路径
-            config_file_path = os.path.abspath("config/zlm/config.ini")
-            subprocess.Popen([media_server_path, "-c", config_file_path],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            start_new_session=True)
+            normal_logger.info(f"ZLMediaKit服务启动命令已发送，PID (可能是shell的): {process.pid}")
+            time.sleep(3) # 给服务一些启动时间
 
-            # 等待几秒让进程启动
-            time.sleep(3)
-
-            # 再次检查进程是否在运行
             if ZLMChecker.check_zlm_process():
-                logger.info("成功启动ZLMediaKit服务")
-
-                # 读取ZLMediaKit可能已修改的配置
+                normal_logger.info("成功启动ZLMediaKit服务。")
                 try:
                     ZLMChecker._update_zlm_config()
                 except Exception as e:
-                    logger.warning(f"更新ZLMediaKit配置时出错: {str(e)}")
-
+                    exception_logger.warning(f"更新ZLMediaKit配置时出错: {str(e)}")
                 return True
             else:
-                logger.error("ZLMediaKit服务启动失败")
+                # 读取启动过程中的输出，帮助诊断
+                stdout, stderr = process.communicate(timeout=2) # 等待子进程结束或超时
+                exception_logger.error(f"ZLMediaKit服务启动失败。进程退出码: {process.returncode}")
+                if stdout:
+                    exception_logger.error(f"ZLMediaKit启动输出 (stdout):\n{stdout.decode(errors='ignore')}")
+                if stderr:
+                    exception_logger.error(f"ZLMediaKit启动错误 (stderr):\n{stderr.decode(errors='ignore')}")
                 return False
         except Exception as e:
-            logger.error(f"启动ZLMediaKit服务时出错: {str(e)}")
+            exception_logger.exception("启动ZLMediaKit服务时发生未知错误")
             return False
 
     @staticmethod
     def _update_zlm_config():
-        """更新ZLMediaKit配置
-
-        ZLMediaKit在启动时可能会修改配置文件，比如生成新的secret
-        此方法读取配置文件并更新环境变量
-        """
+        """更新ZLMediaKit配置"""
         try:
-            config_file = "config/zlm/config.ini"
-            if os.path.exists(config_file):
+            config_file = PROJECT_ROOT / "config" / "zlm" / "config.ini"
+            if config_file.exists():
                 import configparser
-                config = configparser.ConfigParser()
+                config = configparser.ConfigParser(interpolation=None) # 关闭插值以避免 % 问题
                 config.read(config_file)
 
                 if 'api' in config and 'secret' in config['api']:
                     new_secret = config['api']['secret']
-                    logger.info(f"读取到ZLMediaKit API密钥: {new_secret}")
+                    normal_logger.info(f"读取到ZLMediaKit API密钥: {new_secret}")
 
-                    # 更新.env文件中的密钥
-                    env_file = ".env"
-                    if os.path.exists(env_file):
+                    env_file = PROJECT_ROOT / ".env"
+                    api_secret_key = "STREAMING__ZLM_API_SECRET"
+                    lines = []
+                    secret_found = False
+                    if env_file.exists():
                         with open(env_file, "r") as f:
-                            content = f.read()
+                            lines = f.readlines()
+                        
+                        for i, line in enumerate(lines):
+                            if line.strip().startswith(f"{api_secret_key}="):
+                                lines[i] = f"{api_secret_key}={new_secret}\n"
+                                secret_found = True
+                                break
+                    
+                    if not secret_found:
+                        lines.append(f"\n{api_secret_key}={new_secret}\n")
+                    
+                    with open(env_file, "w") as f:
+                        f.writelines(lines)
+                    normal_logger.info("已更新.env文件中的ZLMediaKit API密钥")
 
-                        # 检查是否需要更新密钥
-                        if "STREAMING__ZLM_API_SECRET=" in content:
-                            lines = content.split("\n")
-                            for i, line in enumerate(lines):
-                                if line.startswith("STREAMING__ZLM_API_SECRET="):
-                                    lines[i] = f"STREAMING__ZLM_API_SECRET={new_secret}"
-
-                            # 写回更新后的内容
-                            with open(env_file, "w") as f:
-                                f.write("\n".join(lines))
-                        else:
-                            # 添加新配置
-                            with open(env_file, "a") as f:
-                                f.write(f"\nSTREAMING__ZLM_API_SECRET={new_secret}\n")
-
-                        logger.info("已更新.env文件中的ZLMediaKit API密钥")
-
-                    # 更新环境变量
                     os.environ["ZLM_API_SECRET"] = new_secret
-                    logger.info(f"已设置环境变量 ZLM_API_SECRET={new_secret}")
+                    normal_logger.info(f"已设置当前会话环境变量 ZLM_API_SECRET={new_secret}")
+            else:
+                normal_logger.warning(f"ZLMediaKit配置文件 {config_file} 不存在，无法更新API密钥。")
         except Exception as e:
-            logger.error(f"更新ZLMediaKit配置时出错: {str(e)}")
-            raise
+            exception_logger.exception("更新ZLMediaKit配置时出错")
+            # 不向上抛出，因为这不是关键失败
 
 # 导出类
 __all__ = ["ZLMChecker"]

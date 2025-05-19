@@ -20,16 +20,17 @@ import contextlib
 import json
 
 from core.config import settings
-from shared.utils.logger import setup_logger, setup_stream_error_logger, setup_analysis_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 from core.task_management.utils.status import TaskStatus
 from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 
 # 延迟导入stream_manager，避免循环导入
 from core.redis_manager import RedisManager
 
-logger = setup_logger(__name__)
-stream_error_logger = setup_stream_error_logger()
-analysis_logger = setup_analysis_logger()
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
+test_logger = get_test_logger()
 
 class TaskProcessor:
     """任务处理器"""
@@ -66,7 +67,7 @@ class TaskProcessor:
         # 初始化 Redis 实例
         self.redis = RedisManager()
 
-        logger.info("任务处理器初始化完成")
+        normal_logger.info("任务处理器初始化完成")
         return True
 
     async def shutdown(self):
@@ -75,7 +76,7 @@ class TaskProcessor:
         for task_id in list(self.running_tasks.keys()):
             await self.stop_task(task_id)
 
-        logger.info("任务处理器已关闭")
+        normal_logger.info("任务处理器已关闭")
         return True
 
     async def start_stream_analysis(self, task_id: str, task_config: Dict[str, Any]) -> bool:
@@ -92,7 +93,7 @@ class TaskProcessor:
         try:
             # 检查任务是否已存在
             if task_id in self.running_tasks:
-                logger.warning(f"任务已存在: {task_id}")
+                normal_logger.warning(f"任务已存在: {task_id}")
                 return False
 
             # 创建停止和暂停事件
@@ -135,11 +136,11 @@ class TaskProcessor:
             result_handler = asyncio.create_task(self._handle_results(task_id, result_queue))
             self.result_handlers[task_id] = result_handler
 
-            logger.info(f"流处理进程已启动: {task_id}")
+            normal_logger.info(f"流处理进程已启动: {task_id}")
             return True
 
         except Exception as e:
-            logger.error(f"启动流分析任务失败: {str(e)}")
+            normal_logger.error(f"启动流分析任务失败: {str(e)}")
             return False
 
     async def stop_task(self, task_id: str) -> bool:
@@ -155,7 +156,7 @@ class TaskProcessor:
         try:
             # 检查任务是否存在
             if task_id not in self.running_tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 设置停止事件
@@ -202,11 +203,11 @@ class TaskProcessor:
             if task_id in self.running_tasks:
                 del self.running_tasks[task_id]
 
-            logger.info(f"任务已停止: {task_id}")
+            normal_logger.info(f"任务已停止: {task_id}")
             return True
 
         except Exception as e:
-            logger.error(f"停止任务失败: {str(e)}")
+            normal_logger.error(f"停止任务失败: {str(e)}")
             return False
 
     async def pause_task(self, task_id: str) -> bool:
@@ -222,20 +223,20 @@ class TaskProcessor:
         try:
             # 检查任务是否存在
             if task_id not in self.running_tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 设置暂停事件
             if task_id in self.pause_events:
                 self.pause_events[task_id].set()
-                logger.info(f"任务暂停事件已设置: {task_id}")
+                normal_logger.info(f"任务暂停事件已设置: {task_id}")
                 return True
             else:
-                logger.warning(f"任务暂停事件不存在: {task_id}")
+                normal_logger.warning(f"任务暂停事件不存在: {task_id}")
                 return False
 
         except Exception as e:
-            logger.error(f"暂停任务失败: {str(e)}")
+            normal_logger.error(f"暂停任务失败: {str(e)}")
             return False
 
     async def resume_task(self, task_id: str) -> bool:
@@ -251,20 +252,20 @@ class TaskProcessor:
         try:
             # 检查任务是否存在
             if task_id not in self.running_tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 清除暂停事件
             if task_id in self.pause_events:
                 self.pause_events[task_id].clear()
-                logger.info(f"任务恢复事件已设置: {task_id}")
+                normal_logger.info(f"任务恢复事件已设置: {task_id}")
                 return True
             else:
-                logger.warning(f"任务暂停事件不存在: {task_id}")
+                normal_logger.warning(f"任务暂停事件不存在: {task_id}")
                 return False
 
         except Exception as e:
-            logger.error(f"恢复任务失败: {str(e)}")
+            normal_logger.error(f"恢复任务失败: {str(e)}")
             return False
 
     async def process_stream_worker(self, task_id: str, task_config: Dict[str, Any], result_queue: queue.Queue,
@@ -280,14 +281,14 @@ class TaskProcessor:
             pause_event: 暂停事件
         """
         try:
-            logger.info(f"工作进程 {task_id}: 开始初始化")
+            normal_logger.info(f"工作进程 {task_id}: 开始初始化")
 
             # 获取流配置
             stream_id = task_config.get("stream_id", "")
             # 如果stream_id为空，使用task_id作为替代
             if not stream_id:
                 stream_id = f"stream_{task_id}"
-                logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
+                normal_logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
 
             stream_url = task_config.get("stream_url", "")  # 修正字段名，使用stream_url而不是url
             stream_config = {
@@ -306,13 +307,13 @@ class TaskProcessor:
                 success, frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
                 if not success or frame_queue is None:
                     error_msg = f"订阅视频流失败: {stream_id}"
-                    logger.error(error_msg)
+                    normal_logger.error(error_msg)
                     self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                     return
             except Exception as e:
                 error_msg = f"订阅视频流时发生异常: {str(e)}"
-                logger.error(error_msg)
-                logger.error(traceback.format_exc())
+                normal_logger.error(error_msg)
+                normal_logger.error(traceback.format_exc())
                 self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                 return
 
@@ -342,7 +343,7 @@ class TaskProcessor:
                         self._frame_count[task_id] += 1
                         # 每100帧打印一次状态信息
                         if self._frame_count[task_id] % 100 == 0:
-                            logger.info(f"任务 {task_id}: 已处理 {self._frame_count[task_id]} 帧，当前帧大小: {frame.shape}")
+                            normal_logger.info(f"任务 {task_id}: 已处理 {self._frame_count[task_id]} 帧，当前帧大小: {frame.shape}")
 
                         # 重置连续错误计数
                         if hasattr(self, '_frame_error_counts') and task_id in self._frame_error_counts:
@@ -350,7 +351,7 @@ class TaskProcessor:
 
                     if frame is None:
                         # 没有收到帧，可能是流离线
-                        logger.warning(f"任务 {task_id}: 未接收到视频帧")
+                        normal_logger.warning(f"任务 {task_id}: 未接收到视频帧")
 
                         # 增加错误计数
                         if not hasattr(self, '_frame_error_counts'):
@@ -361,7 +362,7 @@ class TaskProcessor:
 
                         # 如果连续错误次数过多，尝试重新订阅
                         if error_count >= 3:
-                            logger.warning(f"任务 {task_id}: 连续 {error_count} 次未接收到视频帧，尝试重新订阅")
+                            normal_logger.warning(f"任务 {task_id}: 连续 {error_count} 次未接收到视频帧，尝试重新订阅")
 
                             # 检查流状态
                             from core.task_management.stream import stream_manager
@@ -373,11 +374,11 @@ class TaskProcessor:
                                 success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
 
                                 if success and new_frame_queue is not None:
-                                    logger.info(f"成功重新订阅流 {stream_id}")
+                                    normal_logger.info(f"成功重新订阅流 {stream_id}")
                                     frame_queue = new_frame_queue
                                     self._frame_error_counts[task_id] = 0  # 重置错误计数
                                 else:
-                                    logger.error(f"重新订阅流 {stream_id} 失败")
+                                    normal_logger.error(f"重新订阅流 {stream_id} 失败")
 
                         time.sleep(1)
                         continue
@@ -396,7 +397,7 @@ class TaskProcessor:
                     result_queue.put(result)
 
                 except asyncio.TimeoutError:
-                    logger.warning(f"任务 {task_id}: 获取帧超时")
+                    normal_logger.warning(f"任务 {task_id}: 获取帧超时")
 
                     # 增加错误计数
                     if not hasattr(self, '_frame_timeout_counts'):
@@ -412,29 +413,29 @@ class TaskProcessor:
                     if stream_info:
                         status = stream_info.get("status")
                         health = stream_info.get("health_status")
-                        logger.info(f"流 {stream_id} 状态: {status}, 健康状态: {health}")
+                        normal_logger.info(f"流 {stream_id} 状态: {status}, 健康状态: {health}")
 
                         # 根据不同情况采取不同策略
                         if status in [StreamStatus.RUNNING, StreamStatus.ONLINE]:
                             # 流状态正常但获取帧超时
                             if timeout_count >= 3:  # 连续超时3次以上才重新订阅
-                                logger.info(f"流 {stream_id} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
+                                normal_logger.info(f"流 {stream_id} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
                                 await stream_manager.unsubscribe_stream(stream_id, task_id)
                                 success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
 
                                 if success and new_frame_queue is not None:
-                                    logger.info(f"成功重新订阅流 {stream_id}")
+                                    normal_logger.info(f"成功重新订阅流 {stream_id}")
                                     frame_queue = new_frame_queue
                                     self._frame_timeout_counts[task_id] = 0  # 重置超时计数
                                 else:
-                                    logger.error(f"重新订阅流 {stream_id} 失败")
+                                    normal_logger.error(f"重新订阅流 {stream_id} 失败")
                         elif status in [StreamStatus.CONNECTING, StreamStatus.INITIALIZING]:
                             # 流正在连接中，等待
-                            logger.info(f"流 {stream_id} 正在连接中，等待...")
+                            normal_logger.info(f"流 {stream_id} 正在连接中，等待...")
                         elif status in [StreamStatus.OFFLINE, StreamStatus.ERROR]:
                             # 流离线或错误，尝试重新连接
                             if timeout_count % 5 == 0:  # 每5次超时尝试一次重连
-                                logger.info(f"流 {stream_id} 状态异常 ({status})，尝试重新连接")
+                                normal_logger.info(f"流 {stream_id} 状态异常 ({status})，尝试重新连接")
                                 # 通知流管理器重新连接
                                 await stream_manager.reconnect_stream(stream_id)
 
@@ -443,8 +444,8 @@ class TaskProcessor:
                     continue
 
                 except Exception as e:
-                    logger.error(f"任务 {task_id} 分析异常: {str(e)}")
-                    logger.error(traceback.format_exc())
+                    normal_logger.error(f"任务 {task_id} 分析异常: {str(e)}")
+                    normal_logger.error(traceback.format_exc())
 
                     # 增加错误计数
                     if not hasattr(self, '_frame_exception_counts'):
@@ -455,7 +456,7 @@ class TaskProcessor:
 
                     # 如果连续异常次数过多，尝试重新订阅
                     if exception_count >= 5:
-                        logger.warning(f"任务 {task_id}: 连续 {exception_count} 次处理异常，尝试重新订阅")
+                        normal_logger.warning(f"任务 {task_id}: 连续 {exception_count} 次处理异常，尝试重新订阅")
 
                         # 尝试重新订阅
                         from core.task_management.stream import stream_manager
@@ -463,11 +464,11 @@ class TaskProcessor:
                         success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
 
                         if success and new_frame_queue is not None:
-                            logger.info(f"成功重新订阅流 {stream_id}")
+                            normal_logger.info(f"成功重新订阅流 {stream_id}")
                             frame_queue = new_frame_queue
                             self._frame_exception_counts[task_id] = 0  # 重置异常计数
                         else:
-                            logger.error(f"重新订阅流 {stream_id} 失败")
+                            normal_logger.error(f"重新订阅流 {stream_id} 失败")
 
                     # 短暂等待后继续
                     await asyncio.sleep(1)
@@ -478,10 +479,10 @@ class TaskProcessor:
                 from core.task_management.stream import stream_manager
                 await stream_manager.unsubscribe_stream(stream_id, task_id)
 
-            logger.info(f"工作进程 {task_id}: 已结束")
+            normal_logger.info(f"工作进程 {task_id}: 已结束")
 
         except Exception as e:
-            logger.error(f"工作进程 {task_id} 异常: {str(e)}")
+            normal_logger.error(f"工作进程 {task_id} 异常: {str(e)}")
 
     # 已移除_subscribe_to_stream_status、_handle_stream_status和_unsubscribe_from_stream方法
     # 这些功能已由StreamTaskBridge类实现，实现了视频流与分析任务的解耦
@@ -567,13 +568,13 @@ class TaskProcessor:
                                 elif all(k in bbox for k in ['xmin', 'ymin', 'xmax', 'ymax']):
                                     x1, y1, x2, y2 = float(bbox['xmin']), float(bbox['ymin']), float(bbox['xmax']), float(bbox['ymax'])
                                 else:
-                                    logger.debug(f"未知的边界框字典格式: {bbox}")
+                                    normal_logger.debug(f"未知的边界框字典格式: {bbox}")
                                     continue
                             elif isinstance(bbox, list) and len(bbox) == 4:
                                 # 如果是列表格式，直接使用
                                 x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
                             else:
-                                logger.debug(f"未知的边界框格式: {type(bbox)}, 值: {bbox}")
+                                normal_logger.debug(f"未知的边界框格式: {type(bbox)}, 值: {bbox}")
                                 continue
 
                             # 检查坐标是否已经是像素坐标
@@ -602,11 +603,11 @@ class TaskProcessor:
                             cv2.putText(preview_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         except (ValueError, TypeError) as e:
                             # 忽略无效的边界框
-                            logger.debug(f"忽略无效的检测边界框: {bbox}, 错误: {str(e)}")
+                            normal_logger.debug(f"忽略无效的检测边界框: {bbox}, 错误: {str(e)}")
                             continue
                     except Exception as e:
                         # 忽略处理单个检测时的错误
-                        logger.debug(f"处理检测结果时发生错误: {str(e)}, 检测结果: {det}")
+                        normal_logger.debug(f"处理检测结果时发生错误: {str(e)}, 检测结果: {det}")
                         continue
 
             # 绘制跟踪结果
@@ -625,13 +626,13 @@ class TaskProcessor:
                                 elif all(k in bbox for k in ['xmin', 'ymin', 'xmax', 'ymax']):
                                     x1, y1, x2, y2 = float(bbox['xmin']), float(bbox['ymin']), float(bbox['xmax']), float(bbox['ymax'])
                                 else:
-                                    logger.debug(f"未知的边界框字典格式: {bbox}")
+                                    normal_logger.debug(f"未知的边界框字典格式: {bbox}")
                                     continue
                             elif isinstance(bbox, list) and len(bbox) == 4:
                                 # 如果是列表格式，直接使用
                                 x1, y1, x2, y2 = float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])
                             else:
-                                logger.debug(f"未知的边界框格式: {type(bbox)}, 值: {bbox}")
+                                normal_logger.debug(f"未知的边界框格式: {type(bbox)}, 值: {bbox}")
                                 continue
 
                             # 检查坐标是否已经是像素坐标
@@ -658,11 +659,11 @@ class TaskProcessor:
                             cv2.putText(preview_frame, f"ID: {track_id}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
                         except (ValueError, TypeError) as e:
                             # 忽略无效的边界框
-                            logger.debug(f"忽略无效的跟踪边界框: {bbox}, 错误: {str(e)}")
+                            normal_logger.debug(f"忽略无效的跟踪边界框: {bbox}, 错误: {str(e)}")
                             continue
                     except Exception as e:
                         # 忽略处理单个跟踪对象时的错误
-                        logger.debug(f"处理跟踪结果时发生错误: {str(e)}, 跟踪结果: {track}")
+                        normal_logger.debug(f"处理跟踪结果时发生错误: {str(e)}, 跟踪结果: {track}")
                         continue
 
             # 存储预览帧
@@ -690,7 +691,7 @@ class TaskProcessor:
             task_id: 任务ID
             result_queue: 结果队列
         """
-        logger.info(f"启动结果处理器: {task_id}")
+        normal_logger.info(f"启动结果处理器: {task_id}")
 
         # 获取任务配置
         task_config = self.running_tasks.get(task_id, {}).get("config", {})
@@ -727,7 +728,7 @@ class TaskProcessor:
                         enable_callback=callback_enabled,
                         callback_interval=callback_interval
                     )
-                    logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
+                    normal_logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
             else:
                 # 如果无法从应用状态获取，创建新的回调服务实例
                 from services.http.callback_service import CallbackService
@@ -741,16 +742,16 @@ class TaskProcessor:
                         enable_callback=callback_enabled,
                         callback_interval=callback_interval
                     )
-                    logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
+                    normal_logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
         except Exception as e:
-            logger.warning(f"回调服务初始化失败，任务 {task_id} 将不会发送回调: {str(e)}")
+            normal_logger.warning(f"回调服务初始化失败，任务 {task_id} 将不会发送回调: {str(e)}")
             callback_service = None
 
         try:
             while True:
                 # 检查任务是否已停止
                 if task_id not in self.running_tasks:
-                    logger.info(f"任务已停止，结束结果处理: {task_id}")
+                    normal_logger.info(f"任务已停止，结束结果处理: {task_id}")
                     break
 
                 # 尝试从队列获取结果
@@ -767,13 +768,13 @@ class TaskProcessor:
                 if result_type == "error":
                     # 处理错误
                     error_message = result.get("message", "未知错误")
-                    logger.error(f"任务 {task_id} 发生错误: {error_message}")
+                    normal_logger.error(f"任务 {task_id} 发生错误: {error_message}")
 
                     # 更新任务状态
                     self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_message)
 
                     # 发送错误通知
-                    logger.info(f"任务 {task_id} 发送错误通知: {error_message}")
+                    normal_logger.info(f"任务 {task_id} 发送错误通知: {error_message}")
 
                     # 发送错误回调
                     if callback_service and callback_enabled and callback_url:
@@ -825,11 +826,11 @@ class TaskProcessor:
                 result_queue.task_done()
 
         except asyncio.CancelledError:
-            logger.info(f"结果处理器被取消: {task_id}")
+            normal_logger.info(f"结果处理器被取消: {task_id}")
             # 取消注册任务回调
             if callback_service:
                 callback_service.unregister_task(task_id)
 
         except Exception as e:
-            logger.error(f"结果处理器发生错误: {str(e)}")
-            logger.error(traceback.format_exc())
+            normal_logger.error(f"结果处理器发生错误: {str(e)}")
+            normal_logger.error(traceback.format_exc())

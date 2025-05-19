@@ -6,9 +6,11 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import aioredis
 from models.task import TaskBase, QueueTask
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class TaskStore:
     """任务存储服务"""
@@ -72,7 +74,7 @@ class TaskStore:
             return True
 
         except Exception as e:
-            logger.error(f"保存任务失败: {str(e)}")
+            exception_logger.exception(f"保存任务失败: {str(e)}")
             return False
 
     async def get_task(self, task_id: str) -> Optional[TaskBase]:
@@ -103,7 +105,7 @@ class TaskStore:
             return TaskBase(**task_dict)
 
         except Exception as e:
-            logger.error(f"获取任务失败: {str(e)}")
+            exception_logger.exception(f"获取任务失败: {str(e)}")
             return None
 
     async def save_queue_task(self, task: QueueTask) -> bool:
@@ -133,7 +135,7 @@ class TaskStore:
             return True
 
         except Exception as e:
-            logger.error(f"保存队列任务失败: {str(e)}")
+            exception_logger.exception(f"保存队列任务失败: {str(e)}")
             return False
 
     async def get_queue_task(self, task_id: str) -> Optional[QueueTask]:
@@ -158,7 +160,7 @@ class TaskStore:
             return QueueTask.from_dict(json.loads(task_data))
 
         except Exception as e:
-            logger.error(f"获取队列任务失败: {str(e)}")
+            exception_logger.exception(f"获取队列任务失败: {str(e)}")
             return None
 
     async def get_pending_tasks(self, count: int = 10) -> List[QueueTask]:
@@ -192,7 +194,7 @@ class TaskStore:
             return tasks
 
         except Exception as e:
-            logger.error(f"获取待处理任务失败: {str(e)}")
+            exception_logger.exception(f"获取待处理任务失败: {str(e)}")
             return []
 
     async def remove_from_queue(self, task_id: str) -> bool:
@@ -213,7 +215,7 @@ class TaskStore:
             return True
 
         except Exception as e:
-            logger.error(f"从队列移除任务失败: {str(e)}")
+            exception_logger.exception(f"从队列移除任务失败: {str(e)}")
             return False
 
     async def list_tasks(
@@ -270,7 +272,7 @@ class TaskStore:
             return tasks
 
         except Exception as e:
-            logger.error(f"获取任务列表失败: {str(e)}")
+            exception_logger.exception(f"获取任务列表失败: {str(e)}")
             return []
 
     async def update_task_status(
@@ -317,5 +319,5 @@ class TaskStore:
             return await self.save_task(task)
 
         except Exception as e:
-            logger.error(f"更新任务状态失败: {str(e)}")
+            exception_logger.exception(f"更新任务状态失败: {str(e)}")
             return False

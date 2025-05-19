@@ -10,14 +10,15 @@ from asyncio import Queue, Lock
 import traceback
 
 import numpy as np
-from loguru import logger
 
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from .status import StreamStatus, StreamHealthStatus
 from .interface import IVideoStream
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class BaseVideoStream(IVideoStream):
     """基础视频流类，实现通用功能"""
@@ -54,7 +55,7 @@ class BaseVideoStream(IVideoStream):
         self._reconnect_max_delay = config.get("max_reconnect_delay", 60.0)
         self._max_consecutive_errors = config.get("max_consecutive_errors", settings.STREAMING.max_consecutive_errors)
         
-        logger.info(f"基础视频流 {stream_id} 初始化完成: {self._url}")
+        normal_logger.info(f"基础视频流 {stream_id} 初始化完成: {self._url}")
     
     @property
     def stream_id(self) -> str:
@@ -96,7 +97,7 @@ class BaseVideoStream(IVideoStream):
             status: 新状态
         """
         if self._status != status:
-            logger.info(f"流 {self._stream_id} 状态变更: {self._status.name} -> {status.name}")
+            normal_logger.info(f"流 {self._stream_id} 状态变更: {self._status.name} -> {status.name}")
             self._status = status
             
     def set_health_status(self, health_status: StreamHealthStatus) -> None:
@@ -106,7 +107,7 @@ class BaseVideoStream(IVideoStream):
             health_status: 新健康状态
         """
         if self._health_status != health_status:
-            logger.info(f"流 {self._stream_id} 健康状态变更: {self._health_status.name} -> {health_status.name}")
+            normal_logger.info(f"流 {self._stream_id} 健康状态变更: {self._health_status.name} -> {health_status.name}")
             self._health_status = health_status
             
     def set_last_error(self, error_msg: str) -> None:
@@ -116,7 +117,7 @@ class BaseVideoStream(IVideoStream):
             error_msg: 错误信息
         """
         if error_msg:
-            logger.error(f"流 {self._stream_id} 错误: {error_msg}")
+            exception_logger.error(f"流 {self._stream_id} 错误: {error_msg}")
             self._last_error = error_msg
             
     async def _reconnect_with_backoff(self) -> bool:
@@ -131,11 +132,11 @@ class BaseVideoStream(IVideoStream):
             delay = min(self._reconnect_base_delay * (2 ** attempt), self._reconnect_max_delay)
             
             # 等待延迟时间
-            logger.info(f"等待 {delay:.1f} 秒后重试连接 ({attempt+1}/{self._reconnect_attempts})...")
+            normal_logger.info(f"等待 {delay:.1f} 秒后重试连接 ({attempt+1}/{self._reconnect_attempts})...")
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
                 if self._stop_event.is_set():
-                    logger.info("重连过程中收到停止请求")
+                    normal_logger.info("重连过程中收到停止请求")
                     return False
             except asyncio.TimeoutError:
                 # 超时正常，继续重连
@@ -145,16 +146,15 @@ class BaseVideoStream(IVideoStream):
             try:
                 success = await self._connect()
                 if success:
-                    logger.info(f"重连成功: {self._stream_id}")
+                    normal_logger.info(f"重连成功: {self._stream_id}")
                     return True
             except Exception as e:
-                logger.error(f"重连时出错: {str(e)}")
-                logger.error(traceback.format_exc())
+                exception_logger.exception(f"重连时出错: {str(e)}")
                 
             attempt += 1
             
         if attempt >= self._reconnect_attempts:
-            logger.error(f"超过最大重试次数({self._reconnect_attempts})，停止重连")
+            exception_logger.error(f"超过最大重试次数({self._reconnect_attempts})，停止重连")
             self.set_status(StreamStatus.ERROR)
             self.set_health_status(StreamHealthStatus.UNHEALTHY)
             self.set_last_error(f"超过最大重试次数({self._reconnect_attempts})")

@@ -4,12 +4,14 @@
 """
 import os
 import sys
-import logging
+import time
 import asyncio
 import uuid
+import json
 import numpy as np
 import cv2
-from typing import Dict, Any, List, Optional, Union
+import base64
+from typing import Dict, Any, List, Optional, Union, Tuple
 from datetime import datetime
 from abc import ABC, abstractmethod
 
@@ -21,9 +23,14 @@ if parent_dir not in sys.path:
 
 from core.config import settings
 from core.analyzer.detection.yolo_detector import YOLODetector
-from shared.utils.logger import setup_logger
+from core.analyzer.model_loader import ModelLoader
+from core.analyzer.analyzer_factory import analyzer_factory
+from core.task_management.utils.status import TaskStatus
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class BaseAnalyzerService(ABC):
     """
@@ -33,7 +40,7 @@ class BaseAnalyzerService(ABC):
 
     def __init__(self):
         """初始化基础分析器服务"""
-        logger.info("初始化基础分析服务")
+        normal_logger.info("初始化基础分析服务")
 
         # 加载的检测器
         self.detectors = {}
@@ -44,7 +51,11 @@ class BaseAnalyzerService(ABC):
         # 初始化任务处理器
         self.task_handlers = {}
 
-        logger.info("基础分析服务初始化完成")
+        self.task_manager = None
+        self.model_loader = ModelLoader()
+        self.task_results = {}  # 存储任务结果
+
+        normal_logger.info("基础分析服务初始化完成")
 
     def get_detector(self, model_code: str) -> YOLODetector:
         """
@@ -58,11 +69,11 @@ class BaseAnalyzerService(ABC):
         """
         if model_code not in self.detectors:
             try:
-                logger.info(f"创建检测器实例: {model_code}")
+                normal_logger.info(f"创建检测器实例: {model_code}")
                 self.detectors[model_code] = YOLODetector(model_code)
-                logger.info(f"检测器实例创建成功: {model_code}")
+                normal_logger.info(f"检测器实例创建成功: {model_code}")
             except Exception as e:
-                logger.error(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
+                exception_logger.error(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
                 raise ValueError(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
 
         return self.detectors[model_code]
@@ -77,7 +88,7 @@ class BaseAnalyzerService(ABC):
         # 检查模型目录中的模型文件
         model_dir = settings.STORAGE.model_dir
         if not os.path.exists(model_dir):
-            logger.warning(f"模型目录不存在: {model_dir}")
+            normal_logger.warning(f"模型目录不存在: {model_dir}")
             return ["yolov8n"]  # 返回默认模型
 
         # 获取模型目录中的所有.pt或.onnx文件
@@ -88,10 +99,10 @@ class BaseAnalyzerService(ABC):
                 model_files.append(model_name)
 
         if not model_files:
-            logger.warning(f"模型目录中未找到模型文件: {model_dir}")
+            normal_logger.warning(f"模型目录中未找到模型文件: {model_dir}")
             return ["yolov8n"]  # 返回默认模型
 
-        logger.debug(f"找到可用模型: {model_files}")
+        normal_logger.debug(f"找到可用模型: {model_files}")
         return model_files
 
     def analyze_image(self, *args, **kwargs) -> Dict[str, Any]:
@@ -152,7 +163,7 @@ class BaseAnalyzerService(ABC):
             s.close()
             return ip
         except Exception as e:
-            logger.warning(f"获取本地IP失败: {str(e)}")
+            normal_logger.warning(f"获取本地IP失败: {str(e)}")
             return "127.0.0.1"
 
     def _get_mac_address(self) -> str:
@@ -167,7 +178,7 @@ class BaseAnalyzerService(ABC):
             mac_str = ':'.join(['{:02x}'.format((mac >> elements) & 0xff) for elements in range(0, 8*6, 8)][::-1])
             return mac_str
         except Exception as e:
-            logger.error(f"获取MAC地址失败: {str(e)}")
+            exception_logger.error(f"获取MAC地址失败: {str(e)}")
             # 使用随机生成的MAC地址
             import random
             mac = [random.randint(0x00, 0xff) for _ in range(6)]
@@ -184,11 +195,11 @@ class BaseAnalyzerService(ABC):
             for interface_name, interface_addresses in addresses.items():
                 for address in interface_addresses:
                     if address.family == socket.AF_INET:  # IPv4
-                        logger.info(f"接口: {interface_name}, IPv4: {address.address}")
+                        normal_logger.info(f"接口: {interface_name}, IPv4: {address.address}")
                     elif address.family == psutil.AF_LINK:  # MAC地址
-                        logger.info(f"接口: {interface_name}, MAC: {address.address}")
+                        normal_logger.info(f"接口: {interface_name}, MAC: {address.address}")
         except Exception as e:
-            logger.error(f"记录网络接口信息失败: {str(e)}")
+            exception_logger.error(f"记录网络接口信息失败: {str(e)}")
 
     def draw_detections(self, image: np.ndarray, detections: List[Dict]) -> np.ndarray:
         """绘制检测结果"""
@@ -223,8 +234,8 @@ class BaseAnalyzerService(ABC):
 
     def stop(self):
         """停止分析服务"""
-        logger.info("停止基础分析服务")
-        logger.info("基础分析服务已停止")
+        normal_logger.info("停止基础分析服务")
+        normal_logger.info("基础分析服务已停止")
 
     # 添加一个辅助方法来同步处理检测器的模型加载
     def sync_load_model(self, detector, model_code: str):
@@ -253,9 +264,9 @@ class BaseAnalyzerService(ABC):
 
             return True
         except Exception as e:
-            logger.error(f"同步加载模型失败: {str(e)}")
+            exception_logger.error(f"同步加载模型失败: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.error(traceback.format_exc())
             return False
 
     # 同步处理检测
@@ -286,9 +297,9 @@ class BaseAnalyzerService(ABC):
 
             return detections
         except Exception as e:
-            logger.error(f"同步执行检测失败: {str(e)}")
+            exception_logger.error(f"同步执行检测失败: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.error(traceback.format_exc())
             return []
 
     def register_task_handler(self, task_type: str, handler: callable):
@@ -300,7 +311,7 @@ class BaseAnalyzerService(ABC):
             handler: 处理函数
         """
         self.task_handlers[task_type] = handler
-        logger.info(f"注册任务处理器: {task_type}")
+        normal_logger.info(f"注册任务处理器: {task_type}")
 
     async def process_task(self, task_type: str, task_id: str, task_data: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -321,14 +332,14 @@ class BaseAnalyzerService(ABC):
                 raise ValueError(f"未找到任务处理器: {task_type}")
 
             # 执行任务处理
-            logger.info(f"开始处理任务: {task_id}, 类型: {task_type}")
+            normal_logger.info(f"开始处理任务: {task_id}, 类型: {task_type}")
             result = await handler(task_id, task_data)
-            logger.info(f"任务处理完成: {task_id}")
+            normal_logger.info(f"任务处理完成: {task_id}")
 
             return result
 
         except Exception as e:
-            logger.error(f"处理任务失败: {task_id}, 错误: {str(e)}")
+            exception_logger.error(f"处理任务失败: {task_id}, 错误: {str(e)}")
             raise
 
     async def connect(self) -> bool:
@@ -418,3 +429,165 @@ class BaseAnalyzerService(ABC):
             Dict[str, Any]: 服务状态
         """
         pass
+
+    async def initialize(self) -> bool:
+        """初始化服务
+        
+        Returns:
+            bool: 是否初始化成功
+        """
+        try:
+            normal_logger.info("初始化分析服务")
+            
+            # 加载模型
+            await self.model_loader.load_models()
+            
+            normal_logger.info("分析服务初始化成功")
+            return True
+        except Exception as e:
+            exception_logger.exception(f"初始化分析服务失败: {str(e)}")
+            return False
+
+    async def analyze_video(self, video_path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        """分析视频
+        
+        这是一个需要被子类实现的方法
+        
+        Args:
+            video_path: 视频文件路径
+            params: 分析参数
+            
+        Returns:
+            Dict[str, Any]: 分析结果
+        """
+        raise NotImplementedError("子类必须实现analyze_video方法")
+
+    async def start_stream_analysis(self, stream_url: str, params: Dict[str, Any]) -> str:
+        """开始流分析
+        
+        这是一个需要被子类实现的方法
+        
+        Args:
+            stream_url: 流URL
+            params: 分析参数
+            
+        Returns:
+            str: 任务ID
+        """
+        raise NotImplementedError("子类必须实现start_stream_analysis方法")
+
+    async def stop_stream_analysis(self, task_id: str) -> bool:
+        """停止流分析
+        
+        这是一个需要被子类实现的方法
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            bool: 是否停止成功
+        """
+        raise NotImplementedError("子类必须实现stop_stream_analysis方法")
+
+    async def get_stream_analysis_result(self, task_id: str) -> Dict[str, Any]:
+        """获取流分析结果
+        
+        这是一个需要被子类实现的方法
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Dict[str, Any]: 分析结果
+        """
+        raise NotImplementedError("子类必须实现get_stream_analysis_result方法")
+
+    async def shutdown(self) -> bool:
+        """关闭服务
+        
+        Returns:
+            bool: 是否关闭成功
+        """
+        try:
+            normal_logger.info("关闭分析服务")
+            return True
+        except Exception as e:
+            exception_logger.exception(f"关闭分析服务失败: {str(e)}")
+            return False
+
+    def _create_analyzer(self, analyzer_type: str, params: Dict[str, Any]) -> Any:
+        """创建分析器
+        
+        Args:
+            analyzer_type: 分析器类型
+            params: 分析器参数
+            
+        Returns:
+            Any: 分析器实例
+        """
+        try:
+            analyzer = analyzer_factory.create_analyzer(analyzer_type, **params)
+            if analyzer:
+                normal_logger.info(f"创建分析器成功: {analyzer_type}")
+                return analyzer
+            else:
+                exception_logger.error(f"创建分析器失败: {analyzer_type}")
+                return None
+        except Exception as e:
+            exception_logger.exception(f"创建分析器异常: {str(e)}")
+            return None
+
+    async def _load_image(self, image_path: str) -> Tuple[bool, Optional[np.ndarray]]:
+        """加载图像
+        
+        Args:
+            image_path: 图像路径
+            
+        Returns:
+            Tuple[bool, Optional[np.ndarray]]: (是否成功, 图像数据)
+        """
+        try:
+            if not os.path.exists(image_path):
+                exception_logger.error(f"图像文件不存在: {image_path}")
+                return False, None
+            
+            image = cv2.imread(image_path)
+            if image is None:
+                exception_logger.error(f"无法读取图像: {image_path}")
+                return False, None
+            
+            return True, image
+        except Exception as e:
+            exception_logger.exception(f"加载图像失败: {str(e)}")
+            return False, None
+
+    def _encode_image(self, image: np.ndarray, format: str = ".jpg", quality: int = 95) -> Optional[str]:
+        """编码图像为Base64字符串
+        
+        Args:
+            image: 图像数据
+            format: 图像格式
+            quality: 图像质量
+            
+        Returns:
+            Optional[str]: Base64编码的图像
+        """
+        try:
+            if image is None:
+                return None
+            
+            # 编码参数
+            encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
+            
+            # 编码图像
+            success, buffer = cv2.imencode(format, image, encode_params)
+            if not success:
+                exception_logger.error("编码图像失败")
+                return None
+            
+            # 转换为Base64
+            encoded_image = base64.b64encode(buffer).decode('utf-8')
+            return encoded_image
+        except Exception as e:
+            exception_logger.exception(f"编码图像失败: {str(e)}")
+            return None

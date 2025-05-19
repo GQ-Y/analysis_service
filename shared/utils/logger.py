@@ -5,106 +5,110 @@ from loguru import logger
 import sys
 import os
 
-def setup_logger(name: str):
-    """设置日志配置
+# 确保日志目录存在
+LOGS_DIR = "logs"
+os.makedirs(LOGS_DIR, exist_ok=True)
 
-    Args:
-        name: 日志记录器名称
-    """
-    # 移除所有默认处理器
-    logger.remove()
+# 移除所有默认处理器，以便精细控制
+logger.remove()
 
-    # 从环境变量获取调试设置
-    debug_enabled = os.getenv("DEBUG_ENABLED", "False").lower() in ["true", "1", "yes"]
+# --- 常规日志 (Normal Logger) ---
+NORMAL_LOG_FILE = os.path.join(LOGS_DIR, "normal.log")
+logger.add(
+    NORMAL_LOG_FILE,
+    level="INFO", 
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {extra[name]}:{function}:{line} - {message}",
+    rotation="1 day",
+    retention="7 days",
+    enqueue=True,
+    filter=lambda record: record["extra"].get("log_type") == "normal"
+)
+# 常规日志也输出到控制台，便于实时查看
+logger.add(
+    sys.stderr,
+    level="INFO",
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <cyan>常规日志</cyan> | <cyan>{extra[name]}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    filter=lambda record: record["extra"].get("log_type") == "normal"
+)
+normal_logger = logger.bind(log_type="normal")
 
-    # 只在调试模式启用时添加日志处理器
-    if debug_enabled:
-        # 添加控制台处理器
-        logger.add(
-            sys.stderr,
-            format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
-            level=os.getenv("DEBUG_LOG_LEVEL", "DEBUG"),
-            backtrace=True,
-            diagnose=True
-        )
+# --- 异常日志 (Exception Logger) ---
+EXCEPTION_LOG_FILE = os.path.join(LOGS_DIR, "exception.log")
+logger.add(
+    EXCEPTION_LOG_FILE,
+    level="ERROR", 
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {extra[name]}:{function}:{line} - {message}\\n{exception}",
+    rotation="1 day",
+    retention="7 days",
+    enqueue=True,
+    backtrace=True, 
+    diagnose=True,
+    filter=lambda record: record["extra"].get("log_type") == "exception"
+)
+# 异常日志也输出到控制台
+logger.add(
+    sys.stderr,
+    level="ERROR",
+    format="<red>{time:YYYY-MM-DD HH:mm:ss.SSS}</red> | <red>异常日志</red> | <cyan>{extra[name]}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>\\n{exception}",
+    backtrace=True,
+    diagnose=True,
+    filter=lambda record: record["extra"].get("log_type") == "exception"
+)
+exception_logger = logger.bind(log_type="exception")
 
-        # 添加文件处理器
-        logger.add(
-            os.getenv("DEBUG_LOG_FILE", "logs/debug.log"),
-            rotation=os.getenv("DEBUG_LOG_ROTATION", "1 day"),
-            retention=os.getenv("DEBUG_LOG_RETENTION", "7 days"),
-            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}",
-            level=os.getenv("DEBUG_LOG_LEVEL", "DEBUG"),
-            backtrace=True,
-            diagnose=True
-        )
+# --- 测试日志 (Test Logger) ---
+TEST_LOG_FILE = os.path.join(LOGS_DIR, "test.log")
+logger.add(
+    TEST_LOG_FILE,
+    level="INFO", 
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}", 
+    rotation="1 day",
+    retention="7 days",
+    enqueue=True,
+    filter=lambda record: record["extra"].get("log_type") == "test",
+    mode="w"  
+)
+# 测试日志也输出到控制台，以便自动化脚本捕获
+logger.add(
+    sys.stdout, 
+    level="INFO",
+    format="测试日志 | {message}", 
+    filter=lambda record: record["extra"].get("log_type") == "test"
+)
+test_logger = logger.bind(log_type="test")
 
-    return logger.bind(name=name)
+# --- 分析日志 (Analysis Logger) ---
+ANALYSIS_LOG_FILE = os.path.join(LOGS_DIR, "analysis.log")
+logger.add(
+    ANALYSIS_LOG_FILE,
+    level="INFO", 
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {message}", 
+    rotation="1 day",
+    retention="7 days",
+    enqueue=True,
+    filter=lambda record: record["extra"].get("log_type") == "analysis",
+    mode="w"  
+)
+# 分析日志也输出到控制台，以便自动化脚本捕获
+logger.add(
+    sys.stdout, 
+    level="INFO",
+    format="分析日志 | {message}", 
+    filter=lambda record: record["extra"].get("log_type") == "analysis"
+)
+analysis_logger = logger.bind(log_type="analysis")
 
-def setup_stream_error_logger():
-    """设置视频流错误日志处理器
 
-    Returns:
-        配置好的日志记录器
-    """
-    # 确保日志目录存在
-    os.makedirs("logs", exist_ok=True)
+# 提供获取logger的函数
+def get_normal_logger(name: str):
+    # 使用 .patch().bind() 来确保 extra 字段被正确设置，并且 name 能在格式化字符串中通过 record[\"extra\"][\"name\"] 访问
+    return normal_logger.patch(lambda record: record["extra"].update(name=name))
 
-    # 创建专门用于视频流错误的日志处理器
-    stream_error_logger = logger.bind(name="stream_error")
+def get_exception_logger(name: str):
+    return exception_logger.patch(lambda record: record["extra"].update(name=name))
 
-    # 移除默认处理器，确保错误不会输出到控制台
-    stream_error_logger.remove()
+def get_test_logger(): 
+    return test_logger
 
-    # 添加文件处理器，只记录到文件，不输出到控制台
-    stream_error_logger.add(
-        "logs/stream_errors.log",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
-        level="ERROR",  # 只记录错误级别及以上的信息
-        rotation="1 day",
-        retention="7 days",
-        backtrace=False,
-        diagnose=False,
-        enqueue=True  # 使用队列，避免多进程写入冲突
-    )
-
-    return stream_error_logger
-
-def setup_analysis_logger():
-    """设置分析过程日志处理器
-
-    记录分析过程中的详细信息，包括抽帧次数、分析结果、ROI信息等
-
-    Returns:
-        配置好的日志记录器
-    """
-    # 确保日志目录存在
-    os.makedirs("logs", exist_ok=True)
-
-    # 创建专门用于分析过程的日志处理器
-    analysis_logger = logger.bind(name="analysis")
-
-    # 移除默认处理器
-    analysis_logger.remove()
-
-    # 添加文件处理器，记录到专门的分析日志文件
-    analysis_logger.add(
-        "logs/analysis.log",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
-        level="INFO",  # 记录INFO级别及以上的信息
-        rotation="1 day",
-        retention="7 days",
-        backtrace=False,
-        diagnose=False,
-        enqueue=True  # 使用队列，避免多进程写入冲突
-    )
-
-    # 添加控制台处理器，便于调试
-    analysis_logger.add(
-        sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>分析</cyan> - <level>{message}</level>",
-        level="INFO",
-        filter=lambda record: record["name"] == "analysis"
-    )
-
+def get_analysis_logger(): 
     return analysis_logger

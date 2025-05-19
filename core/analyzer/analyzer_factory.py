@@ -4,7 +4,8 @@
 """
 from typing import Dict, Any, Optional, Union, Type
 
-from shared.utils.logger import setup_logger
+# 使用新的日志记录器
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.analyzer.base_analyzer import (
     BaseAnalyzer,
     DetectionAnalyzer,
@@ -15,7 +16,9 @@ from core.analyzer.base_analyzer import (
 )
 from core.analyzer.detection import YOLODetectionAnalyzer
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class AnalyzerFactory:
     """分析器工厂类"""
@@ -70,26 +73,30 @@ class AnalyzerFactory:
         """
         # 如果分析类型是字符串，转换为整数
         if isinstance(analysis_type, str):
-            analysis_type = cls.ANALYSIS_TYPE_MAP.get(analysis_type.lower())
-            if analysis_type is None:
+            type_name_lower = analysis_type.lower()
+            analysis_type_id = cls.ANALYSIS_TYPE_MAP.get(type_name_lower)
+            if analysis_type_id is None:
+                exception_logger.error(f"尝试将字符串分析类型转换为ID失败: 未知类型名称 '{analysis_type}'")
                 raise ValueError(f"不支持的分析类型名称: {analysis_type}")
+            analysis_type = analysis_type_id # 更新为整数ID
 
         # 获取分析器类
         analyzer_class = cls.ANALYZER_CLASS_MAP.get(analysis_type)
         if analyzer_class is None:
+            exception_logger.error(f"获取分析器类失败: 未知类型ID {analysis_type}")
             raise ValueError(f"不支持的分析类型: {analysis_type}")
 
         # 检查是否明确指定了使用YOLOE分析器
         use_yoloe_analyzer = kwargs.get("use_yoloe_analyzer", False)
 
         # 如果明确指定了使用YOLOE分析器，或者根据模型代码判断需要使用YOLOE分析器（向后兼容）
-        if use_yoloe_analyzer or (model_code and "yoloe" in model_code.lower() and use_yoloe_analyzer is not False):
-            logger.info(f"使用YOLOE分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
+        if use_yoloe_analyzer or (model_code and "yoloe" in model_code.lower()):
+            normal_logger.info(f"创建YOLOE分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
                        f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
             return cls._create_yoloe_analyzer(analysis_type, model_code, engine_type, yolo_version, **kwargs)
 
         # 创建标准分析器实例
-        logger.info(f"创建标准分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
+        normal_logger.info(f"创建标准分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
                    f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
 
         return analyzer_class(model_code, engine_type, yolo_version, **kwargs)
@@ -127,13 +134,16 @@ class AnalyzerFactory:
                 return YOLOESegmentationAnalyzer(model_code, engine_type, yolo_version, **kwargs)
             else:
                 # 对于其他分析类型，使用标准分析器
-                logger.warning(f"YOLOE模型不支持分析类型 {analysis_type}，使用标准分析器")
+                normal_logger.warning(f"YOLOE模型不支持分析类型 {analysis_type}，使用标准分析器")
                 analyzer_class = cls.ANALYZER_CLASS_MAP.get(analysis_type)
                 return analyzer_class(model_code, engine_type, yolo_version, **kwargs)
 
         except ImportError:
-            logger.warning("YOLOE分析器模块未找到，使用标准分析器")
+            exception_logger.warning("YOLOE分析器模块未找到或导入失败，将使用标准分析器。可能原因：相关依赖未安装。")
             analyzer_class = cls.ANALYZER_CLASS_MAP.get(analysis_type)
+            if not analyzer_class:
+                 exception_logger.error(f"标准分析器也无法为类型 {analysis_type} 创建。")
+                 raise ValueError(f"无法为类型 {analysis_type} 创建任何分析器。")
             return analyzer_class(model_code, engine_type, yolo_version, **kwargs)
 
     @classmethod
@@ -163,7 +173,11 @@ class AnalyzerFactory:
         Raises:
             ValueError: 当分析类型名称不支持时
         """
-        analysis_type = cls.ANALYSIS_TYPE_MAP.get(analysis_type_name.lower())
-        if analysis_type is None:
+        analysis_type_id = cls.ANALYSIS_TYPE_MAP.get(analysis_type_name.lower())
+        if analysis_type_id is None:
+            exception_logger.error(f"从名称获取分析类型ID失败: 未知类型名称 '{analysis_type_name}'")
             raise ValueError(f"不支持的分析类型名称: {analysis_type_name}")
-        return analysis_type
+        return analysis_type_id
+
+# 创建分析器工厂实例
+analyzer_factory = AnalyzerFactory()

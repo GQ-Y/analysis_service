@@ -12,9 +12,11 @@ from datetime import datetime
 
 from core.analyzer import create_analyzer
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class AnalysisService:
     """分析服务"""
@@ -78,7 +80,7 @@ class AnalysisService:
             }
             
         except Exception as e:
-            logger.error(f"分析图像失败: {str(e)}")
+            exception_logger.exception(f"分析图像失败: {str(e)}")
             return {
                 "success": False,
                 "error": str(e)

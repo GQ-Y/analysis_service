@@ -4,9 +4,11 @@
 import psutil
 import torch
 from typing import Dict
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class ResourceMonitor:
     """资源监控"""
@@ -49,14 +51,14 @@ class ResourceMonitor:
             disk = psutil.disk_usage('/')
             disk_percent = disk.percent / 100
                 
-            logger.debug(f"资源使用情况:")
-            logger.debug(f"  - CPU: {cpu_percent*100:.1f}%")
-            logger.debug(f"  - 内存: {memory_percent*100:.1f}%")
-            logger.debug(f"  - GPU: {gpu_percent*100:.1f}%")
-            logger.debug(f"  - GPU内存: {gpu_memory_percent*100:.1f}%")
-            logger.debug(f"  - 磁盘: {disk_percent*100:.1f}%")
-            logger.debug(f"  - 运行中任务: {self._running_tasks}")
-            logger.debug(f"  - 等待中任务: {self._waiting_tasks}")
+            normal_logger.debug(f"资源使用情况:")
+            normal_logger.debug(f"  - CPU: {cpu_percent*100:.1f}%")
+            normal_logger.debug(f"  - 内存: {memory_percent*100:.1f}%")
+            normal_logger.debug(f"  - GPU: {gpu_percent*100:.1f}%")
+            normal_logger.debug(f"  - GPU内存: {gpu_memory_percent*100:.1f}%")
+            normal_logger.debug(f"  - 磁盘: {disk_percent*100:.1f}%")
+            normal_logger.debug(f"  - 运行中任务: {self._running_tasks}")
+            normal_logger.debug(f"  - 等待中任务: {self._waiting_tasks}")
                 
             return {
                 "cpu_percent": cpu_percent,
@@ -69,7 +71,7 @@ class ResourceMonitor:
             }
             
         except Exception as e:
-            logger.error(f"获取资源使用情况失败: {str(e)}", exc_info=True)
+            exception_logger.exception(f"获取资源使用情况失败: {str(e)}")
             return {
                 "cpu_percent": 1,
                 "memory_percent": 1,
@@ -85,27 +87,27 @@ class ResourceMonitor:
         usage = self.get_resource_usage()
         
         if usage["cpu_percent"] > self.cpu_threshold:
-            logger.warning(f"CPU使用率超过阈值: {usage['cpu_percent']*100:.1f}% > {self.cpu_threshold*100}%")
+            normal_logger.warning(f"CPU使用率超过阈值: {usage['cpu_percent']*100:.1f}% > {self.cpu_threshold*100}%")
             return False
             
         if usage["memory_percent"] > self.memory_threshold:
-            logger.warning(f"内存使用率超过阈值: {usage['memory_percent']*100:.1f}% > {self.memory_threshold*100}%")
+            normal_logger.warning(f"内存使用率超过阈值: {usage['memory_percent']*100:.1f}% > {self.memory_threshold*100}%")
             return False
             
         if torch.cuda.is_available():
             if usage["gpu_memory_percent"] > self.gpu_memory_threshold:
-                logger.warning(f"GPU内存使用率超过阈值: {usage['gpu_memory_percent']*100:.1f}% > {self.gpu_memory_threshold*100}%")
+                normal_logger.warning(f"GPU内存使用率超过阈值: {usage['gpu_memory_percent']*100:.1f}% > {self.gpu_memory_threshold*100}%")
                 return False
                 
         if usage["disk_percent"] > self.disk_threshold:
-            logger.warning(f"磁盘使用率超过阈值: {usage['disk_percent']*100:.1f}% > {self.disk_threshold*100}%")
+            normal_logger.warning(f"磁盘使用率超过阈值: {usage['disk_percent']*100:.1f}% > {self.disk_threshold*100}%")
             return False
             
         if self._running_tasks + self._waiting_tasks >= self.max_tasks:
-            logger.warning(f"任务数超过阈值: {self._running_tasks + self._waiting_tasks} >= {self.max_tasks}")
+            normal_logger.warning(f"任务数超过阈值: {self._running_tasks + self._waiting_tasks} >= {self.max_tasks}")
             return False
             
-        logger.info("资源检查通过")
+        normal_logger.info("资源检查通过")
         return True
         
     def increment_running_tasks(self):

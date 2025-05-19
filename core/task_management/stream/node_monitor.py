@@ -8,13 +8,14 @@ import asyncio
 import json
 import uuid
 from typing import Dict, Any, Optional
-from loguru import logger
 
 from core.redis_manager import RedisManager
 from core.resource import ResourceMonitor
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class NodeHealthMonitor:
     """节点健康监控器"""
@@ -51,18 +52,18 @@ class NodeHealthMonitor:
         self.disk_warning_threshold = 0.85
         self.disk_critical_threshold = 0.95
         
-        logger.info("节点健康监控器初始化完成")
+        normal_logger.info("节点健康监控器初始化完成")
         
     def start(self):
         """启动监控线程"""
         if self._monitor_thread is not None and self._monitor_thread.is_alive():
-            logger.info("节点健康监控线程已在运行")
+            normal_logger.info("节点健康监控线程已在运行")
             return
             
         self._stop_event.clear()
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
-        logger.info("节点健康监控线程已启动")
+        normal_logger.info("节点健康监控线程已启动")
         
     def _monitor_loop(self):
         """监控循环"""
@@ -70,7 +71,7 @@ class NodeHealthMonitor:
             try:
                 self._check_node_health()
             except Exception as e:
-                logger.error(f"节点健康监控异常: {str(e)}")
+                exception_logger.exception(f"节点健康监控异常: {str(e)}")
                 
             time.sleep(self.check_interval)
             
@@ -112,9 +113,9 @@ class NodeHealthMonitor:
             
         # 记录状态
         if health_status != "healthy":
-            logger.warning(f"节点健康状态: {health_status}, 原因: {', '.join(status_reasons)}")
+            normal_logger.warning(f"节点健康状态: {health_status}, 原因: {', '.join(status_reasons)}")
         else:
-            logger.debug("节点健康状态: 正常")
+            normal_logger.debug("节点健康状态: 正常")
             
         # 准备健康数据
         health_data = {
@@ -150,22 +151,22 @@ class NodeHealthMonitor:
             key = f"node:health:{self.node_id}"
             await self._redis.set_value(key, health_data, ex=60)  # 60秒过期
             
-            logger.debug(f"节点健康数据已发布: {health_data['health_status']}")
+            normal_logger.debug(f"节点健康数据已发布: {health_data['health_status']}")
             
         except Exception as e:
-            logger.error(f"发布节点健康数据异常: {str(e)}")
+            exception_logger.exception(f"发布节点健康数据异常: {str(e)}")
             
     def stop(self):
         """停止监控"""
         self._stop_event.set()
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5.0)
-        logger.info("节点健康监控器已停止")
+        normal_logger.info("节点健康监控器已停止")
         
     async def shutdown(self):
         """关闭监控器"""
         self.stop()
-        logger.info("节点健康监控器已关闭")
+        normal_logger.info("节点健康监控器已关闭")
         
     def get_node_health(self) -> Dict[str, Any]:
         """获取节点健康信息

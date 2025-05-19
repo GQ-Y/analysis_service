@@ -12,12 +12,14 @@ import asyncio
 import threading
 from enum import Enum
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from .processor import TaskProcessor
 
 from .utils.status import TaskStatus
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class TaskManager:
     """任务管理器"""
@@ -52,7 +54,7 @@ class TaskManager:
         self.cleanup_thread = None
         self.running = False
 
-        logger.info(f"任务管理器初始化完成，最大任务数: {self.max_tasks}")
+        normal_logger.info(f"任务管理器初始化完成，最大任务数: {self.max_tasks}")
 
     async def initialize(self):
         """初始化任务管理器"""
@@ -65,10 +67,10 @@ class TaskManager:
             self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
             self.cleanup_thread.start()
 
-            logger.info("任务管理器初始化成功")
+            normal_logger.info("任务管理器初始化成功")
             return True
         except Exception as e:
-            logger.error(f"任务管理器初始化失败: {str(e)}")
+            exception_logger.exception(f"任务管理器初始化失败: {str(e)}")
             return False
 
     async def shutdown(self):
@@ -86,10 +88,10 @@ class TaskManager:
             # 关闭处理器
             await self.processor.shutdown()
 
-            logger.info("任务管理器已关闭")
+            normal_logger.info("任务管理器已关闭")
             return True
         except Exception as e:
-            logger.error(f"任务管理器关闭失败: {str(e)}")
+            exception_logger.exception(f"任务管理器关闭失败: {str(e)}")
             return False
 
     def _cleanup_loop(self):
@@ -99,7 +101,7 @@ class TaskManager:
                 self.cleanup_tasks()
                 time.sleep(self.cleanup_interval)
             except Exception as e:
-                logger.error(f"清理任务失败: {str(e)}")
+                exception_logger.exception(f"清理任务失败: {str(e)}")
                 time.sleep(60)  # 出错时等待1分钟再重试
 
     def cleanup_tasks(self):
@@ -120,12 +122,12 @@ class TaskManager:
             # 删除过期任务
             for task_id in expired_tasks:
                 del self.tasks[task_id]
-                logger.info(f"清理过期任务: {task_id}")
+                normal_logger.info(f"清理过期任务: {task_id}")
 
             self.last_cleanup = current_time
 
         except Exception as e:
-            logger.error(f"清理任务失败: {str(e)}")
+            exception_logger.exception(f"清理任务失败: {str(e)}")
 
     def add_task(self, task_id: str, task_data: Dict[str, Any]) -> bool:
         """
@@ -140,11 +142,11 @@ class TaskManager:
         """
         try:
             if len(self.tasks) >= self.max_tasks:
-                logger.warning(f"达到最大任务数限制 ({self.max_tasks})")
+                normal_logger.warning(f"达到最大任务数限制 ({self.max_tasks})")
                 return False
 
             if task_id in self.tasks:
-                logger.warning(f"任务ID已存在: {task_id}")
+                normal_logger.warning(f"任务ID已存在: {task_id}")
                 return False
 
             # 添加任务
@@ -158,11 +160,11 @@ class TaskManager:
                 "error": None
             }
 
-            logger.info(f"添加新任务: {task_id}")
+            normal_logger.info(f"添加新任务: {task_id}")
             return True
 
         except Exception as e:
-            logger.error(f"添加任务失败: {str(e)}")
+            exception_logger.exception(f"添加任务失败: {str(e)}")
             return False
 
     def update_task_status(self, task_id: str, status: TaskStatus, result: Dict = None, error: str = None) -> bool:
@@ -180,7 +182,7 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             self.tasks[task_id].update({
@@ -190,11 +192,11 @@ class TaskManager:
                 "error": error
             })
 
-            # logger.info(f"更新任务状态: {task_id} -> {status}")
+            # normal_logger.info(f"更新任务状态: {task_id} -> {status}")
             return True
 
         except Exception as e:
-            logger.error(f"更新任务状态失败: {str(e)}")
+            exception_logger.exception(f"更新任务状态失败: {str(e)}")
             return False
 
     def get_task_status(self, task_id: str) -> Dict:
@@ -209,13 +211,13 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return None
 
             return self.tasks[task_id]
 
         except Exception as e:
-            logger.error(f"获取任务状态失败: {str(e)}")
+            exception_logger.exception(f"获取任务状态失败: {str(e)}")
             return None
 
     def get_all_tasks(self) -> List[Dict]:
@@ -239,24 +241,24 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             del self.tasks[task_id]
-            logger.info(f"移除任务: {task_id}")
+            normal_logger.info(f"移除任务: {task_id}")
             return True
 
         except Exception as e:
-            logger.error(f"移除任务失败: {str(e)}")
+            exception_logger.exception(f"移除任务失败: {str(e)}")
             return False
 
     def clear_tasks(self):
         """清空所有任务"""
         try:
             self.tasks.clear()
-            logger.info("清空所有任务")
+            normal_logger.info("清空所有任务")
         except Exception as e:
-            logger.error(f"清空任务失败: {str(e)}")
+            exception_logger.exception(f"清空任务失败: {str(e)}")
 
     def get_task_count(self) -> int:
         """
@@ -314,10 +316,10 @@ class TaskManager:
         }
 
         if self.add_task(task_id, task_data):
-            logger.info(f"创建任务成功: {task_id}, 类型: {task_type}")
+            normal_logger.info(f"创建任务成功: {task_id}, 类型: {task_type}")
             return task_id
         else:
-            logger.error(f"创建任务失败: {task_id}, 类型: {task_type}")
+            exception_logger.error(f"创建任务失败: {task_id}, 类型: {task_type}")
             return None
 
     def has_task(self, task_id: str) -> bool:
@@ -344,13 +346,13 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return None
 
             return self.tasks[task_id]
 
         except Exception as e:
-            logger.error(f"获取任务信息失败: {str(e)}")
+            exception_logger.exception(f"获取任务信息失败: {str(e)}")
             return None
 
     def update_task(self, task_id: str, updates: Dict[str, Any]) -> bool:
@@ -366,18 +368,18 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 更新任务信息
             self.tasks[task_id]["data"].update(updates)
             self.tasks[task_id]["updated_at"] = time.time()
 
-            logger.info(f"更新任务信息成功: {task_id}")
+            normal_logger.info(f"更新任务信息成功: {task_id}")
             return True
 
         except Exception as e:
-            logger.error(f"更新任务信息失败: {str(e)}")
+            exception_logger.exception(f"更新任务信息失败: {str(e)}")
             return False
 
     def delete_task(self, task_id: str) -> bool:
@@ -392,17 +394,17 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 删除任务
             del self.tasks[task_id]
 
-            logger.info(f"删除任务成功: {task_id}")
+            normal_logger.info(f"删除任务成功: {task_id}")
             return True
 
         except Exception as e:
-            logger.error(f"删除任务失败: {str(e)}")
+            exception_logger.exception(f"删除任务失败: {str(e)}")
             return False
 
     def get_all_tasks(self, status: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -425,18 +427,24 @@ class TaskManager:
             return tasks
 
         except Exception as e:
-            logger.error(f"获取任务列表失败: {str(e)}")
+            exception_logger.exception(f"获取任务列表失败: {str(e)}")
             return []
 
-    def get_task_count(self) -> int:
+    def get_task_count(self, status: Optional[int] = None) -> int:
         """
         获取任务总数
+
+        Args:
+            status: 可选的任务状态过滤
 
         Returns:
             int: 任务总数
         """
         with self.task_lock:
-            return len(self.tasks)
+            if status is None:
+                return len(self.tasks)
+            else:
+                return sum(1 for task in self.tasks.values() if task.get("status") == status)
 
     def get_active_tasks(self) -> List[Dict[str, Any]]:
         """
@@ -452,7 +460,7 @@ class TaskManager:
                     if task.get("status") in [TaskStatus.WAITING, TaskStatus.PROCESSING]
                 ]
         except Exception as e:
-            logger.error(f"获取活动任务失败: {str(e)}")
+            exception_logger.exception(f"获取活动任务失败: {str(e)}")
             return []
 
     def get_completed_tasks(self) -> List[Dict[str, Any]]:
@@ -469,7 +477,7 @@ class TaskManager:
                     if task.get("status") == TaskStatus.COMPLETED
                 ]
         except Exception as e:
-            logger.error(f"获取已完成任务失败: {str(e)}")
+            exception_logger.exception(f"获取已完成任务失败: {str(e)}")
             return []
 
     def get_failed_tasks(self) -> List[Dict[str, Any]]:
@@ -486,7 +494,7 @@ class TaskManager:
                     if task.get("status") in [TaskStatus.FAILED, TaskStatus.STOPPED]
                 ]
         except Exception as e:
-            logger.error(f"获取失败任务失败: {str(e)}")
+            exception_logger.exception(f"获取失败任务失败: {str(e)}")
             return []
 
     def get_task_output_path(self, task_id: str, filename: str) -> str:
@@ -498,23 +506,14 @@ class TaskManager:
             filename: 文件名
 
         Returns:
-            str: 文件路径
+            str: 输出文件路径
         """
-        try:
-            if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
-                return None
+        # 确保任务目录存在
+        task_dir = os.path.join(self.output_dir, task_id)
+        os.makedirs(task_dir, exist_ok=True)
 
-            # 创建任务输出目录
-            task_output_dir = os.path.join(self.output_dir, task_id)
-            os.makedirs(task_output_dir, exist_ok=True)
-
-            # 返回文件路径
-            return os.path.join(task_output_dir, filename)
-
-        except Exception as e:
-            logger.error(f"获取任务输出路径失败: {str(e)}")
-            return None
+        # 返回完整路径
+        return os.path.join(task_dir, filename)
 
     def cleanup_old_tasks(self, max_age_hours: int = 24):
         """
@@ -536,12 +535,12 @@ class TaskManager:
             # 删除过期任务
             for task_id in expired_tasks:
                 del self.tasks[task_id]
-                logger.info(f"清理过期任务: {task_id}")
+                normal_logger.info(f"清理过期任务: {task_id}")
 
-            logger.info(f"清理完成，已删除 {len(expired_tasks)} 个过期任务")
+            normal_logger.info(f"清理完成，已删除 {len(expired_tasks)} 个过期任务")
 
         except Exception as e:
-            logger.error(f"清理旧任务失败: {str(e)}")
+            exception_logger.exception(f"清理旧任务失败: {str(e)}")
 
     async def start_task(self, task_id: str) -> bool:
         """
@@ -556,7 +555,7 @@ class TaskManager:
         try:
             # 检查任务是否存在
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 获取任务配置
@@ -566,14 +565,14 @@ class TaskManager:
             result = await self.processor.start_stream_analysis(task_id, task_config)
 
             if result:
-                logger.info(f"启动任务成功: {task_id}")
+                normal_logger.info(f"启动任务成功: {task_id}")
                 return True
             else:
-                logger.error(f"启动任务失败: {task_id}")
+                normal_logger.error(f"启动任务失败: {task_id}")
                 return False
 
         except Exception as e:
-            logger.error(f"启动任务异常: {str(e)}")
+            exception_logger.exception(f"启动任务异常: {str(e)}")
             return False
 
     async def start_stream_task(self, task_id: str, task_config: Dict[str, Any]) -> bool:
@@ -590,21 +589,21 @@ class TaskManager:
         try:
             # 检查任务是否存在
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 尝试启动流任务
             result = await self.processor.start_stream_analysis(task_id, task_config)
 
             if result:
-                logger.info(f"启动流任务成功: {task_id}")
+                normal_logger.info(f"启动流任务成功: {task_id}")
                 return True
             else:
-                logger.error(f"启动流任务失败: {task_id}")
+                normal_logger.error(f"启动流任务失败: {task_id}")
                 return False
 
         except Exception as e:
-            logger.error(f"启动流任务异常: {str(e)}")
+            exception_logger.exception(f"启动流任务异常: {str(e)}")
             return False
 
     async def stop_task(self, task_id: str) -> bool:
@@ -620,21 +619,21 @@ class TaskManager:
         try:
             # 检查任务是否存在
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
             # 尝试停止任务
             result = await self.processor.stop_task(task_id)
 
             if result:
-                logger.info(f"停止任务成功: {task_id}")
+                normal_logger.info(f"停止任务成功: {task_id}")
                 return True
             else:
-                logger.error(f"停止任务失败: {task_id}")
+                normal_logger.error(f"停止任务失败: {task_id}")
                 return False
 
         except Exception as e:
-            logger.error(f"停止任务异常: {str(e)}")
+            exception_logger.exception(f"停止任务异常: {str(e)}")
             return False
 
     async def pause_task(self, task_id: str, reason: str = None) -> bool:
@@ -649,11 +648,11 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
                 
             if self.tasks[task_id]["status"] != TaskStatus.PROCESSING:
-                logger.warning(f"只能暂停处理中的任务: {task_id}, 当前状态: {self.tasks[task_id]['status']}")
+                normal_logger.warning(f"只能暂停处理中的任务: {task_id}, 当前状态: {self.tasks[task_id]['status']}")
                 return False
                 
             with self.task_lock:
@@ -666,11 +665,11 @@ class TaskManager:
             # 通知任务处理器
             await self.processor.pause_task(task_id)
             
-            logger.info(f"任务已暂停: {task_id}, 原因: {reason}")
+            normal_logger.info(f"任务已暂停: {task_id}, 原因: {reason}")
             return True
             
         except Exception as e:
-            logger.error(f"暂停任务失败: {str(e)}")
+            exception_logger.exception(f"暂停任务失败: {str(e)}")
             return False
             
     async def resume_task(self, task_id: str) -> bool:
@@ -684,11 +683,11 @@ class TaskManager:
         """
         try:
             if task_id not in self.tasks:
-                logger.warning(f"任务不存在: {task_id}")
+                normal_logger.warning(f"任务不存在: {task_id}")
                 return False
                 
             if self.tasks[task_id]["status"] != TaskStatus.PAUSED:
-                logger.warning(f"只能恢复暂停的任务: {task_id}, 当前状态: {self.tasks[task_id]['status']}")
+                normal_logger.warning(f"只能恢复暂停的任务: {task_id}, 当前状态: {self.tasks[task_id]['status']}")
                 return False
                 
             with self.task_lock:
@@ -701,9 +700,9 @@ class TaskManager:
             # 通知任务处理器
             await self.processor.resume_task(task_id)
             
-            logger.info(f"任务已恢复: {task_id}")
+            normal_logger.info(f"任务已恢复: {task_id}")
             return True
             
         except Exception as e:
-            logger.error(f"恢复任务失败: {str(e)}")
+            exception_logger.exception(f"恢复任务失败: {str(e)}")
             return False

@@ -2,7 +2,6 @@
 系统工具方法
 提供各种系统级工具函数
 """
-import logging
 import uuid
 import random
 import platform
@@ -11,9 +10,11 @@ import psutil
 import os
 import json
 from typing import Dict, Any, Optional, List, Union, Callable
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-# 配置日志
-logger = logging.getLogger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 def get_mac_address() -> str:
     """
@@ -27,7 +28,7 @@ def get_mac_address() -> str:
         mac_str = ':'.join(['{:02X}'.format((mac >> elements) & 0xff) for elements in range(0, 8*6, 8)][::-1])
         return mac_str
     except Exception as e:
-        logger.error(f"获取MAC地址失败: {str(e)}")
+        exception_logger.exception(f"获取MAC地址失败: {str(e)}")
         # 使用随机生成的MAC地址
         mac = [random.randint(0x00, 0xff) for _ in range(6)]
         mac_str = ':'.join(['{:02X}'.format(x) for x in mac])
@@ -48,7 +49,7 @@ def get_local_ip() -> str:
         s.close()
         return ip
     except Exception as e:
-        logger.error(f"获取本地IP地址失败: {e}")
+        exception_logger.exception(f"获取本地IP地址失败: {e}")
         return "127.0.0.1"
 
 def get_hostname() -> str:
@@ -116,7 +117,7 @@ def get_system_info() -> Dict[str, Any]:
             }
         }
     except Exception as e:
-        logger.error(f"获取系统信息失败: {e}")
+        exception_logger.exception(f"获取系统信息失败: {e}")
         return {}
 
 def get_resource_usage() -> Dict[str, Any]:
@@ -155,7 +156,7 @@ def get_resource_usage() -> Dict[str, Any]:
             "net_recv": net_recv
         }
     except Exception as e:
-        logger.error(f"获取资源使用情况失败: {e}")
+        exception_logger.exception(f"获取资源使用情况失败: {e}")
         return {}
 
 def get_local_models(models_dir: str = None) -> List[str]:
@@ -181,7 +182,7 @@ def get_local_models(models_dir: str = None) -> List[str]:
 
         # 检查目录是否存在
         if not os.path.exists(models_dir):
-            logger.warning(f"模型目录不存在: {models_dir}")
+            normal_logger.warning(f"模型目录不存在: {models_dir}")
             return []
 
         # 获取所有子目录名称（model_code）
@@ -194,13 +195,13 @@ def get_local_models(models_dir: str = None) -> List[str]:
                 if os.path.exists(os.path.join(item_path, "best.pt")):
                     model_codes.append(item)
                 else:
-                    logger.warning(f"模型目录 {item} 中未找到模型文件best.pt")
+                    normal_logger.warning(f"模型目录 {item} 中未找到模型文件best.pt")
 
-        logger.debug(f"找到本地模型代码: {model_codes}")
+        normal_logger.debug(f"找到本地模型代码: {model_codes}")
         return model_codes
 
     except Exception as e:
-        logger.error(f"获取本地模型列表失败: {e}")
+        exception_logger.exception(f"获取本地模型列表失败: {e}")
         return []
 
 def pretty_print(

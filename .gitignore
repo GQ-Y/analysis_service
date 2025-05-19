@@ -15,3 +15,5 @@ tests/*
 zlmos/darwin/log/*
 ZLMediaKit/*
 test_stream.log
+test_plan.md
+docs/*

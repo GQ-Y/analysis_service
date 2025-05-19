@@ -10,12 +10,14 @@ from typing import Dict, Any, List, Optional, Union, Tuple
 from datetime import datetime
 from collections import defaultdict
 
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.analyzer.base_analyzer import CrossCameraTrackingAnalyzer
 from core.analyzer.tracking import YOLOTracker
 from core.analyzer.cross_camera.feature_extractor import FeatureExtractor
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class CrossCameraTracker(CrossCameraTrackingAnalyzer):
     """跨摄像头跟踪器实现"""
@@ -49,7 +51,7 @@ class CrossCameraTracker(CrossCameraTrackingAnalyzer):
         # 特征库
         self.feature_database = {}
         
-        logger.info(f"初始化跨摄像头跟踪器: 摄像头ID={self.camera_id}, 关联摄像头={self.related_cameras}")
+        normal_logger.info(f"初始化跨摄像头跟踪器: 摄像头ID={self.camera_id}, 关联摄像头={self.related_cameras}")
     
     async def load_model(self, model_code: str) -> bool:
         """
@@ -116,9 +118,7 @@ class CrossCameraTracker(CrossCameraTrackingAnalyzer):
             return result
             
         except Exception as e:
-            logger.error(f"跨摄像头跟踪失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"跨摄像头跟踪失败: {str(e)}")
             return {
                 "detections": [],
                 "tracked_objects": [],
@@ -144,7 +144,7 @@ class CrossCameraTracker(CrossCameraTrackingAnalyzer):
         """
         # TODO: 实现特征提取
         # 这里是占位代码，实际实现需要根据特征提取器的API进行调整
-        logger.warning("特征提取功能尚未完全实现，使用占位结果")
+        normal_logger.warning("特征提取功能尚未完全实现，使用占位结果")
         
         cross_camera_objects = []
         for obj in tracked_objects:
@@ -173,7 +173,7 @@ class CrossCameraTracker(CrossCameraTrackingAnalyzer):
         """
         # TODO: 实现跨摄像头匹配
         # 这里是占位代码，实际实现需要根据匹配算法进行调整
-        logger.warning("跨摄像头匹配功能尚未完全实现，使用占位结果")
+        normal_logger.warning("跨摄像头匹配功能尚未完全实现，使用占位结果")
         
         # 更新特征库
         for obj in cross_camera_objects:
@@ -246,4 +246,4 @@ class CrossCameraTracker(CrossCameraTrackingAnalyzer):
             
         self.model = None
         self.feature_database = {}
-        logger.info("跨摄像头跟踪器资源已释放")
+        normal_logger.info("跨摄像头跟踪器资源已释放")

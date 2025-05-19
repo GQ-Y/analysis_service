@@ -15,9 +15,11 @@ from services.http.task_service import TaskService
 from services.http.video_encoder_service import VideoEncoderService
 from core.task_management.utils.status import TaskStatus
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 # 创建路由
 router = APIRouter(
@@ -141,9 +143,7 @@ async def toggle_task_video_encoding(
             )
     
     except Exception as e:
-        logger.error(f"处理视频编码请求失败: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
+        exception_logger.exception(f"处理视频编码请求失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/video",
@@ -192,7 +192,5 @@ async def get_video_file(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"获取视频文件失败: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
+        exception_logger.exception(f"获取视频文件失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"获取视频文件失败: {str(e)}")

@@ -7,9 +7,11 @@ import numpy as np
 import cv2
 from typing import Dict, Any, List, Optional, Union, Tuple
 
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class FeatureExtractor:
     """特征提取器"""
@@ -34,12 +36,12 @@ class FeatureExtractor:
         elif feature_type == 2:
             # 深度特征
             # TODO: 加载深度特征提取模型
-            logger.warning("深度特征提取尚未实现")
+            normal_logger.warning("深度特征提取尚未实现")
         else:
-            logger.warning(f"不支持的特征类型: {feature_type}，使用默认颜色直方图特征")
+            normal_logger.warning(f"不支持的特征类型: {feature_type}，使用默认颜色直方图特征")
             self.feature_type = 0
         
-        logger.info(f"初始化特征提取器: 特征类型={self._get_feature_type_name()}")
+        normal_logger.info(f"初始化特征提取器: 特征类型={self._get_feature_type_name()}")
     
     def _get_feature_type_name(self) -> str:
         """获取特征类型名称"""
@@ -68,7 +70,7 @@ class FeatureExtractor:
             
             # 检查ROI是否有效
             if roi.size == 0:
-                logger.warning(f"无效的ROI: {bbox}")
+                normal_logger.warning(f"无效的ROI: {bbox}")
                 return np.zeros(128, dtype=np.float32)
             
             # 根据特征类型提取特征
@@ -86,7 +88,7 @@ class FeatureExtractor:
                 return self._extract_color_histogram(roi)
                 
         except Exception as e:
-            logger.error(f"特征提取失败: {str(e)}")
+            exception_logger.exception(f"特征提取失败: {str(e)}")
             return np.zeros(128, dtype=np.float32)
     
     def _extract_color_histogram(self, roi: np.ndarray) -> np.ndarray:
@@ -157,7 +159,7 @@ class FeatureExtractor:
             np.ndarray: 特征向量
         """
         # TODO: 实现深度特征提取
-        logger.warning("深度特征提取尚未实现，使用占位特征")
+        normal_logger.warning("深度特征提取尚未实现，使用占位特征")
         
         # 返回占位特征
         return np.zeros(128, dtype=np.float32)

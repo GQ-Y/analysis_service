@@ -9,9 +9,12 @@ from typing import Dict, Any, List, Optional, Union, Tuple
 import numpy as np
 from datetime import datetime
 
-from shared.utils.logger import setup_logger
+# 使用新的日志记录器
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class BaseAnalyzer(ABC):
     """基础分析器抽象类"""
@@ -33,24 +36,27 @@ class BaseAnalyzer(ABC):
         self.yolo_version = yolo_version
         self.device = device
 
-        # 记录初始化信息
-        logger.info(f"初始化分析器: 引擎类型={self._get_engine_name()}, YOLO版本={self._get_yolo_version_name()}, 设备={device}")
+        normal_logger.info(f"初始化分析器: 引擎类型={self._get_engine_name()}, YOLO版本={self._get_yolo_version_name()}, 设备={device}")
 
-        # 如果提供了model_code，立即加载模型
         if model_code:
-            # 注意：这里不能直接使用await，因为__init__不是异步方法
-            # 创建一个异步任务来加载模型
             import asyncio
             try:
-                loop = asyncio.get_event_loop()
+                # 尝试获取现有事件循环
+                loop = asyncio.get_running_loop()
+            except RuntimeError:  # 如果没有正在运行的事件循环
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            try:
                 if loop.is_running():
-                    # 如果事件循环已经在运行，创建一个任务
                     asyncio.create_task(self.load_model(model_code))
+                    normal_logger.info(f"已为模型 {model_code} 创建异步加载任务。")
                 else:
-                    # 如果事件循环没有运行，直接运行直到完成
+                    normal_logger.info(f"同步加载模型 {model_code}...")
                     loop.run_until_complete(self.load_model(model_code))
+                    normal_logger.info(f"模型 {model_code} 同步加载完成。")
             except Exception as e:
-                logger.error(f"初始化时加载模型失败: {str(e)}")
+                exception_logger.exception(f"在初始化过程中加载模型 {model_code} 失败")
 
     def _get_engine_name(self) -> str:
         """获取引擎名称"""

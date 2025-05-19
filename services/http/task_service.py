@@ -12,9 +12,11 @@ import aiohttp
 from core.task_management.utils.status import TaskStatus
 from core.task_management.manager import TaskManager
 from models.requests import StreamTask, BatchStreamTask
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class TaskService:
     """HTTP任务服务"""
@@ -78,7 +80,7 @@ class TaskService:
             }
 
         except Exception as e:
-            logger.error(f"创建任务异常: {str(e)}")
+            exception_logger.exception(f"创建任务异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"创建任务异常: {str(e)}",
@@ -120,18 +122,18 @@ class TaskService:
         """
         try:
             # 确保analysis_interval是有效的整数
-            logger.info(f"接收到的分析间隔值: {analysis_interval}, 类型: {type(analysis_interval)}")
+            normal_logger.info(f"接收到的分析间隔值: {analysis_interval}, 类型: {type(analysis_interval)}")
             if analysis_interval is not None:
                 try:
                     analysis_interval = int(analysis_interval)
                     if analysis_interval < 1:
                         analysis_interval = 1
-                        logger.warning(f"无效的分析间隔值: {analysis_interval}，使用默认值1")
+                        normal_logger.warning(f"无效的分析间隔值: {analysis_interval}，使用默认值1")
                     else:
-                        logger.info(f"使用分析间隔值: {analysis_interval}")
+                        normal_logger.info(f"使用分析间隔值: {analysis_interval}")
                 except (ValueError, TypeError):
                     analysis_interval = 1
-                    logger.warning(f"无效的分析间隔值: {analysis_interval}，使用默认值1")
+                    normal_logger.warning(f"无效的分析间隔值: {analysis_interval}，使用默认值1")
 
             # 处理回调间隔值
             if callback_interval is not None:
@@ -139,12 +141,12 @@ class TaskService:
                     callback_interval = int(callback_interval)
                     if callback_interval < 0:
                         callback_interval = 0
-                        logger.warning(f"无效的回调间隔值: {callback_interval}，使用默认值0")
+                        normal_logger.warning(f"无效的回调间隔值: {callback_interval}，使用默认值0")
                     else:
-                        logger.info(f"使用回调间隔值: {callback_interval}秒")
+                        normal_logger.info(f"使用回调间隔值: {callback_interval}秒")
                 except (ValueError, TypeError):
                     callback_interval = 0
-                    logger.warning(f"无效的回调间隔值: {callback_interval}，使用默认值0")
+                    normal_logger.warning(f"无效的回调间隔值: {callback_interval}，使用默认值0")
 
             # 创建StreamTask对象
             task = StreamTask(
@@ -175,9 +177,7 @@ class TaskService:
             return await self.create_task(task)
 
         except Exception as e:
-            logger.error(f"启动任务异常: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"启动任务异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"启动任务异常: {str(e)}",
@@ -238,7 +238,7 @@ class TaskService:
             }
 
         except Exception as e:
-            logger.error(f"批量创建任务异常: {str(e)}")
+            exception_logger.exception(f"批量创建任务异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"批量创建任务异常: {str(e)}",
@@ -273,10 +273,10 @@ class TaskService:
 
             # 删除任务
             if not self.task_manager.delete_task(task_id):
-                logger.warning(f"删除任务失败: {task_id}")
+                normal_logger.warning(f"删除任务失败: {task_id}")
                 # 即使删除失败也返回停止成功，因为任务已经停止
             else:
-                logger.info(f"任务已停止并删除: {task_id}")
+                normal_logger.info(f"任务已停止并删除: {task_id}")
 
             return {
                 "success": True,
@@ -284,7 +284,7 @@ class TaskService:
             }
 
         except Exception as e:
-            logger.error(f"停止任务异常: {str(e)}")
+            exception_logger.exception(f"停止任务异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"停止任务异常: {str(e)}"
@@ -317,7 +317,7 @@ class TaskService:
             }
 
         except Exception as e:
-            logger.error(f"获取任务异常: {str(e)}")
+            exception_logger.exception(f"获取任务异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"获取任务异常: {str(e)}",
@@ -360,7 +360,7 @@ class TaskService:
             }
 
         except Exception as e:
-            logger.error(f"获取任务状态异常: {str(e)}")
+            exception_logger.exception(f"获取任务状态异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"获取任务状态异常: {str(e)}"
@@ -435,9 +435,7 @@ class TaskService:
             }
 
         except Exception as e:
-            logger.error(f"获取任务列表异常: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"获取任务列表异常: {str(e)}")
             return {
                 "success": False,
                 "message": f"获取任务列表异常: {str(e)}",
@@ -498,7 +496,7 @@ class TaskService:
 
             # 检查是否明确指定了使用YOLOE分析器
             if hasattr(task.config, "use_yoloe_analyzer") and task.config.use_yoloe_analyzer:
-                logger.info(f"任务明确指定使用YOLOE分析器")
+                normal_logger.info(f"任务明确指定使用YOLOE分析器")
                 analysis_config["use_yoloe_analyzer"] = True
 
             # 跟踪配置
@@ -540,17 +538,17 @@ class TaskService:
         # 记录分析间隔值
         has_interval = hasattr(task, "analysis_interval")
         interval_value = task.analysis_interval if has_interval else None
-        logger.info(f"构建任务配置 - 是否有analysis_interval属性: {has_interval}, 值: {interval_value}, 类型: {type(interval_value) if interval_value is not None else 'None'}")
+        normal_logger.info(f"构建任务配置 - 是否有analysis_interval属性: {has_interval}, 值: {interval_value}, 类型: {type(interval_value) if interval_value is not None else 'None'}")
 
         # 确定最终使用的分析间隔值
         final_interval = task.analysis_interval if hasattr(task, "analysis_interval") and task.analysis_interval is not None and task.analysis_interval > 0 else 1
-        logger.info(f"最终使用的分析间隔值: {final_interval}")
+        normal_logger.info(f"最终使用的分析间隔值: {final_interval}")
 
         # 获取回调间隔值
         callback_interval = None
         if hasattr(task, "callback_interval") and task.callback_interval is not None:
             callback_interval = task.callback_interval
-            logger.info(f"使用回调间隔值: {callback_interval}秒")
+            normal_logger.info(f"使用回调间隔值: {callback_interval}秒")
 
         # 构建完整配置
         task_config = {

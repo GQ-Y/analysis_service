@@ -12,9 +12,11 @@ from core.task_management import TaskStatus
 from core.task_management.manager import TaskManager
 from core.task_management.processor.task_processor import TaskProcessor
 from services.task_store import TaskStore
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class TaskWorker:
     """任务工作器"""
@@ -36,11 +38,11 @@ class TaskWorker:
     async def start(self):
         """启动任务工作器"""
         if self.running:
-            logger.warning("任务工作器已经在运行中")
+            normal_logger.warning("任务工作器已经在运行中")
             return
 
         self.running = True
-        logger.info("任务工作器已启动")
+        normal_logger.info("任务工作器已启动")
 
         # 启动任务处理循环
         asyncio.create_task(self._process_loop())
@@ -48,11 +50,11 @@ class TaskWorker:
     async def stop(self):
         """停止任务工作器"""
         if not self.running:
-            logger.warning("任务工作器已经停止")
+            normal_logger.warning("任务工作器已经停止")
             return
 
         self.running = False
-        logger.info("任务工作器已停止")
+        normal_logger.info("任务工作器已停止")
 
     async def _process_loop(self):
         """任务处理循环"""
@@ -70,7 +72,7 @@ class TaskWorker:
                 await asyncio.sleep(self.poll_interval)
 
             except Exception as e:
-                logger.error(f"任务处理循环异常: {str(e)}")
+                exception_logger.exception(f"任务处理循环异常: {str(e)}")
                 await asyncio.sleep(self.poll_interval * 2)  # 出错后等待更长时间
 
     async def _get_next_task(self) -> Optional[Dict[str, Any]]:
@@ -110,7 +112,7 @@ class TaskWorker:
             return task
 
         except Exception as e:
-            logger.error(f"获取下一个任务失败: {str(e)}")
+            exception_logger.exception(f"获取下一个任务失败: {str(e)}")
             return None
 
     async def _process_task(self, task: Dict[str, Any]):
@@ -118,7 +120,7 @@ class TaskWorker:
         task_id = task["id"]
 
         try:
-            logger.info(f"开始处理任务: {task_id}")
+            normal_logger.info(f"开始处理任务: {task_id}")
 
             # 记录到运行中的任务
             self.running_tasks[task_id] = task
@@ -130,15 +132,15 @@ class TaskWorker:
             result = await self.processor.start_stream_analysis(task_id, task_config)
 
             if not result:
-                logger.error(f"启动任务失败: {task_id}")
+                exception_logger.error(f"启动任务失败: {task_id}")
                 # 更新任务状态为失败
                 await self._update_task_status(task_id, TaskStatus.FAILED, "启动任务失败")
                 return
 
-            logger.info(f"任务启动成功: {task_id}")
+            normal_logger.info(f"任务启动成功: {task_id}")
 
         except Exception as e:
-            logger.error(f"处理任务异常: {task_id}, {str(e)}")
+            exception_logger.exception(f"处理任务异常: {task_id}, {str(e)}")
             # 更新任务状态为失败
             await self._update_task_status(task_id, TaskStatus.FAILED, f"处理任务异常: {str(e)}")
 
@@ -216,7 +218,7 @@ class TaskWorker:
             # 获取任务
             task_data = await self.task_store._redis.get(f"task:{task_id}")
             if not task_data:
-                logger.warning(f"更新任务状态失败，任务不存在: {task_id}")
+                normal_logger.warning(f"更新任务状态失败，任务不存在: {task_id}")
                 return
 
             # 解析任务数据
@@ -245,7 +247,7 @@ class TaskWorker:
             # 保存更新后的任务
             await self.task_store._redis.set(f"task:{task_id}", json.dumps(task))
 
-            logger.info(f"任务状态已更新: {task_id} -> {status}")
+            normal_logger.info(f"任务状态已更新: {task_id} -> {status}")
 
         except Exception as e:
-            logger.error(f"更新任务状态失败: {task_id}, {str(e)}")
+            exception_logger.exception(f"更新任务状态失败: {task_id}, {str(e)}")

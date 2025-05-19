@@ -6,9 +6,11 @@ from pydantic_settings import BaseSettings
 from typing import Dict, Any, Optional
 import yaml
 import os
-import logging
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = logging.getLogger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class Settings(BaseSettings):
     """基础配置类"""
@@ -47,11 +49,11 @@ class Settings(BaseSettings):
                     config_data = yaml.safe_load(f)
                     return cls(**config_data)
             else:
-                logger.warning(f"配置文件不存在: {config_path}，使用默认配置")
+                normal_logger.warning(f"配置文件不存在: {config_path}，使用默认配置")
                 return cls()
                 
         except Exception as e:
-            logger.error(f"加载配置失败: {str(e)}")
+            exception_logger.exception(f"加载配置失败: {str(e)}")
             return cls()
 
 # 创建默认配置实例

@@ -10,9 +10,11 @@ import time
 from datetime import datetime
 
 from core.config import settings
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class TaskQueue:
     """任务队列"""
@@ -30,12 +32,12 @@ class TaskQueue:
         
     async def initialize(self):
         """初始化任务队列"""
-        logger.info("任务队列初始化完成")
+        normal_logger.info("任务队列初始化完成")
         return True
         
     async def shutdown(self):
         """关闭任务队列"""
-        logger.info("任务队列已关闭")
+        normal_logger.info("任务队列已关闭")
         return True
         
     def put(self, task_id: str, task_data: Dict[str, Any], priority: int = 0) -> bool:
@@ -53,16 +55,16 @@ class TaskQueue:
         try:
             # 检查队列是否已满
             if self.queue.full():
-                logger.warning("任务队列已满")
+                normal_logger.warning("任务队列已满")
                 return False
                 
             # 添加任务到队列
             self.queue.put((priority, task_id, task_data))
-            logger.info(f"任务已添加到队列: {task_id}")
+            normal_logger.info(f"任务已添加到队列: {task_id}")
             return True
             
         except Exception as e:
-            logger.error(f"添加任务到队列失败: {str(e)}")
+            exception_logger.exception(f"添加任务到队列失败: {str(e)}")
             return False
             
     def get(self) -> Optional[Dict[str, Any]]:
@@ -87,7 +89,7 @@ class TaskQueue:
                     "start_time": time.time()
                 }
                 
-            logger.info(f"从队列获取任务: {task_id}")
+            normal_logger.info(f"从队列获取任务: {task_id}")
             return {
                 "task_id": task_id,
                 "data": task_data
@@ -96,7 +98,7 @@ class TaskQueue:
         except queue.Empty:
             return None
         except Exception as e:
-            logger.error(f"从队列获取任务失败: {str(e)}")
+            exception_logger.exception(f"从队列获取任务失败: {str(e)}")
             return None
             
     def complete(self, task_id: str) -> bool:
@@ -113,7 +115,7 @@ class TaskQueue:
             # 检查任务是否在处理中
             with self.lock:
                 if task_id not in self.processing:
-                    logger.warning(f"任务不在处理中: {task_id}")
+                    normal_logger.warning(f"任务不在处理中: {task_id}")
                     return False
                     
                 # 移除任务
@@ -122,11 +124,11 @@ class TaskQueue:
             # 标记队列项为已处理
             self.queue.task_done()
             
-            logger.info(f"任务已完成: {task_id}")
+            normal_logger.info(f"任务已完成: {task_id}")
             return True
             
         except Exception as e:
-            logger.error(f"标记任务为已完成失败: {str(e)}")
+            exception_logger.exception(f"标记任务为已完成失败: {str(e)}")
             return False
             
     def fail(self, task_id: str, error: str) -> bool:
@@ -144,7 +146,7 @@ class TaskQueue:
             # 检查任务是否在处理中
             with self.lock:
                 if task_id not in self.processing:
-                    logger.warning(f"任务不在处理中: {task_id}")
+                    normal_logger.warning(f"任务不在处理中: {task_id}")
                     return False
                     
                 # 移除任务
@@ -153,11 +155,11 @@ class TaskQueue:
             # 标记队列项为已处理
             self.queue.task_done()
             
-            logger.info(f"任务已失败: {task_id}, 错误: {error}")
+            normal_logger.info(f"任务已失败: {task_id}, 错误: {error}")
             return True
             
         except Exception as e:
-            logger.error(f"标记任务为失败失败: {str(e)}")
+            exception_logger.exception(f"标记任务为失败失败: {str(e)}")
             return False
             
     def size(self) -> int:

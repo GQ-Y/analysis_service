@@ -8,9 +8,12 @@ import time
 import uuid
 
 from core.config import settings
-from shared.utils.logger import setup_logger
+# 使用新的日志记录器
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """
@@ -38,16 +41,16 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         try:
             # 只在调试模式下记录请求开始信息
             if settings.DEBUG_ENABLED:
-                logger.info(f"请求开始: {request_id} - {request.method} {request.url.path}")
+                normal_logger.info(f"请求开始: ID={request_id}, 方法={request.method}, 路径={request.url.path}, 客户端={request.client.host}:{request.client.port}")
 
             response = await call_next(request)
 
             # 只在调试模式下记录响应信息
             if settings.DEBUG_ENABLED:
                 process_time = (time.time() - start_time) * 1000
-                logger.info(
-                    f"请求完成: {request_id} - {request.method} {request.url.path} "
-                    f"- 状态: {response.status_code} - 耗时: {process_time:.2f}ms"
+                normal_logger.info(
+                    f"请求完成: ID={request_id}, 方法={request.method}, 路径={request.url.path}, "
+                    f"状态={response.status_code}, 耗时={process_time:.2f}ms"
                 )
 
             # 添加请求ID到响应头
@@ -57,8 +60,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         except Exception as e:
             # 错误日志仍然需要记录，但使用 ERROR 级别
             process_time = (time.time() - start_time) * 1000
-            logger.error(
-                f"请求失败: {request_id} - {request.method} {request.url.path} "
-                f"- 错误: {str(e)} - 耗时: {process_time:.2f}ms"
+            # 记录异常时使用exception_logger
+            exception_logger.exception(
+                f"请求处理异常: ID={request_id}, 方法={request.method}, 路径={request.url.path}, "
+                f"错误详情={str(e)}, 耗时={process_time:.2f}ms"
             )
             raise

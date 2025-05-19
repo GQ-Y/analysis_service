@@ -9,11 +9,13 @@ import cv2
 from typing import Dict, Any, List, Optional, Union, Tuple
 from datetime import datetime
 
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.analyzer.base_analyzer import LineCrossingAnalyzer
 from core.analyzer.tracking import YOLOTracker
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class LineCrossingDetector(LineCrossingAnalyzer):
     """越界检测器实现"""
@@ -47,7 +49,7 @@ class LineCrossingDetector(LineCrossingAnalyzer):
         self.crossing_records = []
         self.last_alarm_time = datetime.now()
         
-        logger.info(f"初始化越界检测器: 越界线={self.counting_line}, 报警阈值={self.alarm_threshold}")
+        normal_logger.info(f"初始化越界检测器: 越界线={self.counting_line}, 报警阈值={self.alarm_threshold}")
     
     async def load_model(self, model_code: str) -> bool:
         """
@@ -115,9 +117,7 @@ class LineCrossingDetector(LineCrossingAnalyzer):
             return result
             
         except Exception as e:
-            logger.error(f"越界检测失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"越界检测失败: {str(e)}")
             return {
                 "detections": [],
                 "tracked_objects": [],
@@ -300,4 +300,4 @@ class LineCrossingDetector(LineCrossingAnalyzer):
             
         self.model = None
         self.crossing_records = []
-        logger.info("越界检测器资源已释放")
+        normal_logger.info("越界检测器资源已释放")

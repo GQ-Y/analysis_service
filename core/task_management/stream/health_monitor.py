@@ -7,13 +7,14 @@ import threading
 import asyncio
 import json
 from typing import Dict, Any, Optional, Set
-from loguru import logger
 
 from core.redis_manager import RedisManager
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from .status import StreamStatus, StreamHealthStatus
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class StreamHealthMonitor:
     """视频流健康监控器"""
@@ -46,7 +47,7 @@ class StreamHealthMonitor:
         # 启动监控线程
         self._start_monitor()
 
-        logger.info("流健康监控器初始化完成")
+        normal_logger.info("流健康监控器初始化完成")
 
     def _start_monitor(self):
         """启动监控线程"""
@@ -56,7 +57,7 @@ class StreamHealthMonitor:
         self._stop_event.clear()
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self._monitor_thread.start()
-        logger.info("流健康监控线程已启动")
+        normal_logger.info("流健康监控线程已启动")
 
     def _monitor_loop(self):
         """监控循环"""
@@ -64,7 +65,7 @@ class StreamHealthMonitor:
             try:
                 self._check_streams_health()
             except Exception as e:
-                logger.error(f"流健康监控异常: {str(e)}")
+                exception_logger.exception(f"流健康监控异常: {str(e)}")
 
             time.sleep(self._check_interval)
 
@@ -87,7 +88,7 @@ class StreamHealthMonitor:
                     # 如果在线状态下长时间未收到帧，标记为离线
                     if current_time - last_frame_time > self._max_offline_time:
                         new_status = StreamStatus.OFFLINE
-                        logger.warning(f"流 {stream_id} 已 {self._max_offline_time} 秒未收到新帧，状态更新为离线")
+                        normal_logger.warning(f"流 {stream_id} 已 {self._max_offline_time} 秒未收到新帧，状态更新为离线")
                         self._update_stream_status(stream_id, new_status)
 
     def _update_stream_status(self, stream_id: str, new_status: StreamStatus):
@@ -137,10 +138,10 @@ class StreamHealthMonitor:
             for subscriber_id in subscribers:
                 channel = f"stream_status:{subscriber_id}"
                 await self._redis.redis.publish(channel, status_json)
-                logger.info(f"已通知订阅者 {subscriber_id} 流 {stream_id} 状态变化: {self._get_status_text(status_data['status'])}")
+                normal_logger.info(f"已通知订阅者 {subscriber_id} 流 {stream_id} 状态变化: {self._get_status_text(status_data['status'])}")
 
         except Exception as e:
-            logger.error(f"通知订阅者流状态变化失败: {str(e)}")
+            exception_logger.exception(f"通知订阅者流状态变化失败: {str(e)}")
 
     def _get_status_text(self, status: StreamStatus) -> str:
         """获取状态文本"""
@@ -172,7 +173,7 @@ class StreamHealthMonitor:
                     "frame_count": 0
                 }
                 self._subscribers[stream_id] = set()
-                logger.info(f"流 {stream_id} 已注册到健康监控器")
+                normal_logger.info(f"流 {stream_id} 已注册到健康监控器")
 
     def unregister_stream(self, stream_id: str):
         """取消流监控"""
@@ -183,7 +184,7 @@ class StreamHealthMonitor:
             if stream_id in self._subscribers:
                 del self._subscribers[stream_id]
 
-            logger.info(f"流 {stream_id} 已从健康监控器中移除")
+            normal_logger.info(f"流 {stream_id} 已从健康监控器中移除")
 
     def add_subscriber(self, stream_id: str, subscriber_id: str):
         """添加订阅者"""
@@ -196,18 +197,18 @@ class StreamHealthMonitor:
                 self._subscribers[stream_id] = set()
 
             self._subscribers[stream_id].add(subscriber_id)
-            logger.info(f"订阅者 {subscriber_id} 已添加到流 {stream_id}")
+            normal_logger.info(f"订阅者 {subscriber_id} 已添加到流 {stream_id}")
 
     def remove_subscriber(self, stream_id: str, subscriber_id: str):
         """移除订阅者"""
         with self._lock:
             if stream_id in self._subscribers and subscriber_id in self._subscribers[stream_id]:
                 self._subscribers[stream_id].remove(subscriber_id)
-                logger.info(f"订阅者 {subscriber_id} 已从流 {stream_id} 中移除")
+                normal_logger.info(f"订阅者 {subscriber_id} 已从流 {stream_id} 中移除")
 
                 # 如果没有订阅者，考虑取消注册流
                 if not self._subscribers[stream_id]:
-                    logger.info(f"流 {stream_id} 没有订阅者，考虑取消注册")
+                    normal_logger.info(f"流 {stream_id} 没有订阅者，考虑取消注册")
 
     def update_frame_received(self, stream_id: str):
         """更新流已接收到新帧"""
@@ -219,7 +220,7 @@ class StreamHealthMonitor:
 
                 # 如果当前状态不是在线，更新为在线
                 if current_status != StreamStatus.ONLINE:
-                    logger.info(f"流 {stream_id} 已接收到新帧，状态更新为在线")
+                    normal_logger.info(f"流 {stream_id} 已接收到新帧，状态更新为在线")
                     self._update_stream_status(stream_id, StreamStatus.ONLINE)
 
                     # 通知流管理器
@@ -251,10 +252,10 @@ class StreamHealthMonitor:
 
                 # 如果错误次数过多，更新状态为错误
                 if error_count >= 5:
-                    logger.error(f"流 {stream_id} 错误次数过多 ({error_count})，状态更新为错误: {error}")
+                    exception_logger.error(f"流 {stream_id} 错误次数过多 ({error_count})，状态更新为错误: {error}")
                     self._update_stream_status(stream_id, StreamStatus.ERROR)
                 else:
-                    logger.warning(f"流 {stream_id} 报告错误: {error}, 错误计数: {error_count}")
+                    normal_logger.warning(f"流 {stream_id} 报告错误: {error}, 错误计数: {error_count}")
 
     def report_recovery(self, stream_id: str):
         """报告流恢复"""
@@ -265,7 +266,7 @@ class StreamHealthMonitor:
 
                 # 如果当前状态是错误或离线，更新为初始化中
                 if current_status in [StreamStatus.ERROR, StreamStatus.OFFLINE]:
-                    logger.info(f"流 {stream_id} 报告恢复，状态更新为初始化中")
+                    normal_logger.info(f"流 {stream_id} 报告恢复，状态更新为初始化中")
                     self._update_stream_status(stream_id, StreamStatus.INITIALIZING)
 
     def stop(self):
@@ -273,7 +274,7 @@ class StreamHealthMonitor:
         self._stop_event.set()
         if self._monitor_thread and self._monitor_thread.is_alive():
             self._monitor_thread.join(timeout=5.0)
-        logger.info("流健康监控器已停止")
+        normal_logger.info("流健康监控器已停止")
 
     async def _notify_stream_manager(self, stream_id: str, status: StreamStatus, health_status: StreamHealthStatus):
         """通知流管理器更新流状态
@@ -290,12 +291,12 @@ class StreamHealthMonitor:
             # 更新流状态
             await stream_manager.update_stream_status(stream_id, status, health_status)
         except Exception as e:
-            logger.error(f"通知流管理器更新流状态失败: {str(e)}")
+            exception_logger.exception(f"通知流管理器更新流状态失败: {str(e)}")
 
     async def shutdown(self):
         """关闭监控器"""
         self.stop()
-        logger.info("流健康监控器已关闭")
+        normal_logger.info("流健康监控器已关闭")
 
 # 创建单例实例
 stream_health_monitor = StreamHealthMonitor()

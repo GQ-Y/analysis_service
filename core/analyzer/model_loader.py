@@ -8,10 +8,13 @@ from pathlib import Path
 from typing import Dict, Any, Optional, Union, Tuple
 import torch
 
-from shared.utils.logger import setup_logger
+# 使用新的日志记录器
+from shared.utils.logger import get_normal_logger, get_exception_logger 
 from core.config import settings
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class ModelLoader:
     """模型加载器基类"""
@@ -105,7 +108,7 @@ class ModelLoader:
             for filename in possible_filenames:
                 model_path = os.path.join(cache_dir, filename)
                 if os.path.exists(model_path):
-                    logger.info(f"找到本地缓存模型: {model_path}")
+                    normal_logger.info(f"找到本地缓存模型: {model_path}")
                     return model_path
 
             # 如果目录存在但没有找到特定文件，尝试查找任何.pt文件
@@ -113,18 +116,18 @@ class ModelLoader:
                 pt_files = [f for f in os.listdir(cache_dir) if f.endswith('.pt')]
                 if pt_files:
                     model_path = os.path.join(cache_dir, pt_files[0])
-                    logger.info(f"找到本地缓存模型: {model_path}")
+                    normal_logger.info(f"找到本地缓存模型: {model_path}")
                     return model_path
 
             # 本地不存在，从模型服务下载
-            logger.info(f"本地未找到模型 {model_code}，准备从模型服务下载...")
+            normal_logger.info(f"本地未找到模型 {model_code}，准备从模型服务下载...")
 
             # 构建API URL
             model_service_url = settings.MODEL_SERVICE.url
             api_prefix = settings.MODEL_SERVICE.api_prefix
             api_url = f"{model_service_url}{api_prefix}/models/download?code={model_code}"
 
-            logger.info(f"开始从模型服务下载: {api_url}")
+            normal_logger.info(f"开始从模型服务下载: {api_url}")
 
             # 创建缓存目录
             os.makedirs(cache_dir, exist_ok=True)
@@ -136,19 +139,23 @@ class ModelLoader:
                             # 保存模型文件
                             with open(model_path, "wb") as f:
                                 f.write(await response.read())
-                            logger.info(f"模型下载成功并保存到: {model_path}")
+                            normal_logger.info(f"模型下载成功并保存到: {model_path}")
                             return model_path
                         else:
                             error_msg = await response.text()
+                            # 使用异常日志记录器
+                            exception_logger.error(f"模型下载失败: HTTP {response.status} - {error_msg}")
                             raise Exception(f"模型下载失败: HTTP {response.status} - {error_msg}")
 
             except aiohttp.ClientError as e:
-                logger.warning(f"请求模型服务失败: {str(e)}")
+                # 使用普通日志记录器
+                normal_logger.warning(f"请求模型服务失败: {str(e)}")
                 # 尝试使用默认模型
                 return await cls._find_default_model(model_code)
 
         except Exception as e:
-            logger.error(f"获取模型路径时出错: {str(e)}")
+            # 使用异常日志记录器
+            exception_logger.error(f"获取模型路径时出错: {str(e)}")
             # 尝试使用默认模型
             return await cls._find_default_model(model_code)
 
@@ -176,7 +183,7 @@ class ModelLoader:
                 pt_files = [f for f in os.listdir(yoloe_dir) if f.endswith('.pt')]
                 if pt_files:
                     model_path = os.path.join(yoloe_dir, pt_files[0])
-                    logger.info(f"使用默认YOLOE模型: {model_path}")
+                    normal_logger.info(f"使用默认YOLOE模型: {model_path}")
                     return model_path
 
         # 尝试使用通用YOLOv8模型
@@ -187,10 +194,12 @@ class ModelLoader:
                 pt_files = [f for f in os.listdir(yolo_path) if f.endswith('.pt')]
                 if pt_files:
                     model_path = os.path.join(yolo_path, pt_files[0])
-                    logger.warning(f"未找到{model_code}模型，使用替代模型: {model_path}")
+                    normal_logger.warning(f"未找到{model_code}模型，使用替代模型: {model_path}")
                     return model_path
 
         # 如果找不到任何模型，抛出异常
+        # 使用异常日志记录器
+        exception_logger.error(f"无法找到任何可用的模型，请确保至少有一个模型文件在data/models目录下")
         raise Exception(f"无法找到任何可用的模型，请确保至少有一个模型文件在data/models目录下")
 
     @classmethod
@@ -209,7 +218,7 @@ class ModelLoader:
         try:
             from ultralytics import YOLO
 
-            logger.info(f"正在加载PyTorch模型: {model_path}")
+            normal_logger.info(f"正在加载PyTorch模型: {model_path}")
 
             # 加载模型
             model = YOLO(model_path)
@@ -230,11 +239,11 @@ class ModelLoader:
             if "max_detections" in kwargs:
                 model.max_det = kwargs["max_detections"]
 
-            logger.info(f"PyTorch模型加载成功: {model_path}")
+            normal_logger.info(f"PyTorch模型加载成功: {model_path}")
             return model
 
         except Exception as e:
-            logger.error(f"加载PyTorch模型失败: {str(e)}")
+            exception_logger.error(f"加载PyTorch模型失败: {str(e)}")
             raise Exception(f"加载PyTorch模型失败: {str(e)}")
 
     @classmethod
@@ -253,7 +262,7 @@ class ModelLoader:
         try:
             import onnxruntime as ort
 
-            logger.info(f"正在加载ONNX模型: {model_path}")
+            normal_logger.info(f"正在加载ONNX模型: {model_path}")
 
             # 设置设备
             if device == "cuda" or (device == "auto" and torch.cuda.is_available()):
@@ -264,11 +273,11 @@ class ModelLoader:
             # 创建推理会话
             session = ort.InferenceSession(model_path, providers=providers)
 
-            logger.info(f"ONNX模型加载成功: {model_path}")
+            normal_logger.info(f"ONNX模型加载成功: {model_path}")
             return session
 
         except Exception as e:
-            logger.error(f"加载ONNX模型失败: {str(e)}")
+            exception_logger.error(f"加载ONNX模型失败: {str(e)}")
             raise Exception(f"加载ONNX模型失败: {str(e)}")
 
     @classmethod
@@ -285,7 +294,7 @@ class ModelLoader:
             Any: 加载的TensorRT模型
         """
         # TODO: 实现TensorRT模型加载
-        logger.warning("TensorRT模型加载尚未实现，使用PyTorch模型代替")
+        normal_logger.warning("TensorRT模型加载尚未实现，使用PyTorch模型代替")
         return await cls._load_pytorch_model(model_path, device, **kwargs)
 
     @classmethod
@@ -302,7 +311,7 @@ class ModelLoader:
             Any: 加载的OpenVINO模型
         """
         # TODO: 实现OpenVINO模型加载
-        logger.warning("OpenVINO模型加载尚未实现，使用PyTorch模型代替")
+        normal_logger.warning("OpenVINO模型加载尚未实现，使用PyTorch模型代替")
         return await cls._load_pytorch_model(model_path, device, **kwargs)
 
     @classmethod
@@ -319,5 +328,5 @@ class ModelLoader:
             Any: 加载的Pytron模型
         """
         # TODO: 实现Pytron模型加载
-        logger.warning("Pytron模型加载尚未实现，使用PyTorch模型代替")
+        normal_logger.warning("Pytron模型加载尚未实现，使用PyTorch模型代替")
         return await cls._load_pytorch_model(model_path, device, **kwargs)

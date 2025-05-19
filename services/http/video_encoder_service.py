@@ -15,9 +15,11 @@ from datetime import datetime
 
 from core.config import settings
 from core.task_management.utils.status import TaskStatus
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class VideoEncoderService:
     """视频编码服务 - 支持MP4和FLV格式"""
@@ -29,7 +31,7 @@ class VideoEncoderService:
         # 创建输出目录结构
         self.output_base_dir = os.path.join(os.getcwd(), "temp", "videos")
         os.makedirs(self.output_base_dir, exist_ok=True)
-        logger.info(f"视频输出基础目录: {self.output_base_dir}")
+        normal_logger.info(f"视频输出基础目录: {self.output_base_dir}")
 
         # 存储FFmpeg进程
         self.ffmpeg_processes = {}
@@ -44,7 +46,7 @@ class VideoEncoderService:
         # 检查FFmpeg是否可用
         self._check_ffmpeg()
 
-        logger.info(f"视频编码服务初始化完成，输出目录: {self.output_base_dir}")
+        normal_logger.info(f"视频编码服务初始化完成，输出目录: {self.output_base_dir}")
 
     def _check_ffmpeg(self):
         """检查FFmpeg是否可用"""
@@ -59,14 +61,14 @@ class VideoEncoderService:
             )
             if result.returncode == 0:
                 ffmpeg_version = result.stdout.split('\n')[0]
-                logger.info(f"FFmpeg可用: {ffmpeg_version}")
+                normal_logger.info(f"FFmpeg可用: {ffmpeg_version}")
                 return True
             else:
-                logger.error(f"FFmpeg不可用，返回码: {result.returncode}")
-                logger.error(f"错误信息: {result.stderr}")
+                exception_logger.error(f"FFmpeg不可用，返回码: {result.returncode}")
+                exception_logger.error(f"错误信息: {result.stderr}")
                 return False
         except Exception as e:
-            logger.error(f"FFmpeg检查失败: {str(e)}")
+            exception_logger.exception(f"FFmpeg检查失败: {str(e)}")
             return False
 
     async def start_encoding(self, task_id: str, task_manager, format: str = "mp4",
@@ -116,7 +118,7 @@ class VideoEncoderService:
             if task_id in self.encoding_tasks:
                 stop_result = await self.stop_encoding(task_id)
                 if not stop_result.get("success", False):
-                    logger.warning(f"停止旧编码任务失败: {stop_result.get('message')}")
+                    normal_logger.warning(f"停止旧编码任务失败: {stop_result.get('message')}")
                 # 等待一小段时间，确保旧的编码任务完全停止
                 await asyncio.sleep(1)
 
@@ -183,9 +185,7 @@ class VideoEncoderService:
             }
 
         except Exception as e:
-            logger.error(f"启动视频编码失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"启动视频编码失败: {str(e)}")
             return {
                 "success": False,
                 "message": f"启动视频编码失败: {str(e)}",
@@ -228,9 +228,9 @@ class VideoEncoderService:
                             # 如果超时，强制终止
                             process.kill()
 
-                    logger.info(f"FFmpeg进程已停止: {task_id}")
+                    normal_logger.info(f"FFmpeg进程已停止: {task_id}")
                 except Exception as e:
-                    logger.error(f"停止FFmpeg进程时出错: {str(e)}")
+                    exception_logger.exception(f"停止FFmpeg进程时出错: {str(e)}")
 
                 # 从字典中移除进程
                 del self.ffmpeg_processes[task_id]
@@ -239,7 +239,7 @@ class VideoEncoderService:
             del self.encoding_tasks[task_id]
 
             # 记录停止信息
-            logger.info(f"编码任务已停止: {task_id}, 编码ID: {encoding_id}")
+            normal_logger.info(f"编码任务已停止: {task_id}, 编码ID: {encoding_id}")
 
             return {
                 "success": True,
@@ -247,9 +247,7 @@ class VideoEncoderService:
             }
 
         except Exception as e:
-            logger.error(f"停止编码任务失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"停止编码任务失败: {str(e)}")
             return {
                 "success": False,
                 "message": f"停止编码任务失败: {str(e)}"
@@ -290,7 +288,7 @@ class VideoEncoderService:
             self.encoding_threads[task_id] = encoding_thread
 
             # 等待一段时间，确保编码进程启动
-            logger.info(f"等待编码进程初始化: {task_id}")
+            normal_logger.info(f"等待编码进程初始化: {task_id}")
             await asyncio.sleep(5)
 
             # 检查进程是否仍在运行
@@ -298,16 +296,16 @@ class VideoEncoderService:
                 process = self.ffmpeg_processes[task_id]
                 if process.poll() is not None:
                     # 进程已退出
-                    logger.error(f"FFmpeg进程已退出，返回码: {process.poll()}")
+                    normal_logger.error(f"FFmpeg进程已退出，返回码: {process.poll()}")
 
                     # 尝试获取错误输出
                     if hasattr(process, 'stderr') and process.stderr:
                         try:
                             stderr_output = process.stderr.read()
                             if stderr_output:
-                                logger.error(f"FFmpeg错误输出: {stderr_output.decode('utf-8', errors='ignore')}")
+                                normal_logger.error(f"FFmpeg错误输出: {stderr_output.decode('utf-8', errors='ignore')}")
                         except Exception as e:
-                            logger.error(f"读取FFmpeg错误输出失败: {str(e)}")
+                            normal_logger.error(f"读取FFmpeg错误输出失败: {str(e)}")
 
                     # 返回错误
                     return None
@@ -321,9 +319,7 @@ class VideoEncoderService:
             return video_url
 
         except Exception as e:
-            logger.error(f"启动编码进程失败: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
+            normal_logger.exception(f"启动编码进程失败: {str(e)}")
             return None
 
     def _encoding_thread(self, task_id: str, encoding_id: str, output_dir: str, output_path: str,
@@ -345,7 +341,7 @@ class VideoEncoderService:
             fps: 视频帧率
         """
         # 记录线程启动
-        logger.info(f"编码线程启动: {task_id}, 编码ID: {encoding_id}, 格式: {format}")
+        normal_logger.info(f"编码线程启动: {task_id}, 编码ID: {encoding_id}, 格式: {format}")
         try:
             # 获取任务处理器
             task_processor = None
@@ -353,10 +349,10 @@ class VideoEncoderService:
                 if task_manager:
                     task_processor = task_manager.processor
             except Exception as e:
-                logger.error(f"获取任务处理器失败: {str(e)}")
+                normal_logger.error(f"获取任务处理器失败: {str(e)}")
 
             if not task_processor:
-                logger.warning(f"无法获取任务处理器，将使用默认帧: {task_id}")
+                normal_logger.warning(f"无法获取任务处理器，将使用默认帧: {task_id}")
                 # 继续执行，使用默认帧
 
             # 获取第一帧以确定分辨率
@@ -366,29 +362,29 @@ class VideoEncoderService:
 
             # 如果有任务处理器，尝试获取预览帧
             if task_processor:
-                logger.info(f"开始获取预览帧: {task_id}")
+                normal_logger.info(f"开始获取预览帧: {task_id}")
                 while frame is None and retry_count < max_retries:
                     try:
                         frame = task_processor.get_preview_frame(task_id)
                         if frame is not None:
-                            logger.info(f"成功获取预览帧: {task_id}, 帧形状: {frame.shape}")
+                            normal_logger.info(f"成功获取预览帧: {task_id}, 帧形状: {frame.shape}")
                     except Exception as e:
-                        logger.error(f"获取预览帧失败: {str(e)}")
+                        normal_logger.error(f"获取预览帧失败: {str(e)}")
                         frame = None
 
                     if frame is None:
                         time.sleep(0.1)
                         retry_count += 1
                         if retry_count % 10 == 0:
-                            logger.info(f"等待预览帧中: {task_id}, 已重试 {retry_count} 次")
+                            normal_logger.info(f"等待预览帧中: {task_id}, 已重试 {retry_count} 次")
                         # 检查任务是否已停止
                         if task_id not in self.encoding_tasks:
-                            logger.info(f"编码任务已停止，编码线程退出: {task_id}")
+                            normal_logger.info(f"编码任务已停止，编码线程退出: {task_id}")
                             return
 
             # 如果仍然没有获取到帧，使用默认帧
             if frame is None:
-                logger.warning(f"无法获取预览帧，使用默认帧: {task_id}")
+                normal_logger.warning(f"无法获取预览帧，使用默认帧: {task_id}")
                 # 创建一个黑色的默认帧 - 使用默认尺寸
                 frame = np.zeros((480, 640, 3), dtype=np.uint8)
 
@@ -408,7 +404,7 @@ class VideoEncoderService:
             final_width = width if width is not None else frame_width
             final_height = height if height is not None else frame_height
 
-            logger.info(f"视频编码参数 - 任务ID: {task_id}, 格式: {format}, 分辨率: {final_width}x{final_height}, 帧率: {fps}, 质量: {quality}")
+            normal_logger.info(f"视频编码参数 - 任务ID: {task_id}, 格式: {format}, 分辨率: {final_width}x{final_height}, 帧率: {fps}, 质量: {quality}")
 
             # 计算比特率 - 基于质量参数
             # 质量范围1-100，映射到比特率范围500k-8000k
@@ -457,7 +453,7 @@ class VideoEncoderService:
             # 添加输出文件路径
             ffmpeg_cmd.append(output_path)
 
-            logger.info(f"FFmpeg命令: {' '.join(ffmpeg_cmd)}")
+            normal_logger.info(f"FFmpeg命令: {' '.join(ffmpeg_cmd)}")
 
             # 启动FFmpeg进程
             try:
@@ -489,23 +485,23 @@ class VideoEncoderService:
                     if process.poll() is not None:
                         # FFmpeg进程已退出
                         ffmpeg_exit_code = process.poll()
-                        logger.error(f"FFmpeg进程意外退出，返回码: {ffmpeg_exit_code}, 任务ID: {task_id}")
+                        normal_logger.error(f"FFmpeg进程意外退出，返回码: {ffmpeg_exit_code}, 任务ID: {task_id}")
 
                         # 尝试获取错误输出
                         if hasattr(process, 'stderr') and process.stderr:
                             try:
                                 stderr_output = process.stderr.read()
                                 if stderr_output:
-                                    logger.error(f"FFmpeg错误输出: {stderr_output.decode('utf-8', errors='ignore')}")
+                                    normal_logger.error(f"FFmpeg错误输出: {stderr_output.decode('utf-8', errors='ignore')}")
                             except Exception as e:
-                                logger.error(f"读取FFmpeg错误输出失败: {str(e)}")
+                                normal_logger.error(f"读取FFmpeg错误输出失败: {str(e)}")
 
                         # 检查是否可以重启FFmpeg
                         current_time = time.time()
                         if (ffmpeg_restart_count < max_ffmpeg_restarts and
                             current_time - last_ffmpeg_restart_time > 10):  # 至少间隔10秒重启
 
-                            logger.info(f"尝试重启FFmpeg进程，重启次数: {ffmpeg_restart_count+1}/{max_ffmpeg_restarts}")
+                            normal_logger.info(f"尝试重启FFmpeg进程，重启次数: {ffmpeg_restart_count+1}/{max_ffmpeg_restarts}")
 
                             try:
                                 # 重新构建FFmpeg命令 - 追加模式
@@ -539,7 +535,7 @@ class VideoEncoderService:
                                 ffmpeg_restart_count += 1
                                 last_ffmpeg_restart_time = time.time()
 
-                                logger.info(f"FFmpeg进程重启成功，任务ID: {task_id}")
+                                normal_logger.info(f"FFmpeg进程重启成功，任务ID: {task_id}")
 
                                 # 如果是MP4并且使用了临时文件，需要在最后合并
                                 if format == "mp4" and os.path.exists(output_path):
@@ -551,12 +547,12 @@ class VideoEncoderService:
                                 continue
 
                             except Exception as e:
-                                logger.error(f"重启FFmpeg进程失败: {str(e)}")
+                                normal_logger.error(f"重启FFmpeg进程失败: {str(e)}")
                                 # 如果重启失败，跳出循环
                                 break
                         else:
                             # 超过最大重启次数或重启间隔太短，退出循环
-                            logger.error(f"FFmpeg进程无法重启，已达到最大重启次数或重启间隔太短，任务ID: {task_id}")
+                            normal_logger.error(f"FFmpeg进程无法重启，已达到最大重启次数或重启间隔太短，任务ID: {task_id}")
                             break
                     # 确保FFmpeg进程正在运行
                     if process.poll() is not None:
@@ -581,25 +577,25 @@ class VideoEncoderService:
                             if current_frame is not None:
                                 # 检查帧是否有效
                                 if not isinstance(current_frame, np.ndarray):
-                                    logger.warning(f"获取到的预览帧类型无效: {type(current_frame)}, 使用上一帧")
+                                    normal_logger.warning(f"获取到的预览帧类型无效: {type(current_frame)}, 使用上一帧")
                                     current_frame = None
                                 elif current_frame.size == 0 or current_frame.shape[0] == 0 or current_frame.shape[1] == 0:
-                                    logger.warning(f"获取到的预览帧尺寸无效: {current_frame.shape}, 使用上一帧")
+                                    normal_logger.warning(f"获取到的预览帧尺寸无效: {current_frame.shape}, 使用上一帧")
                                     current_frame = None
                         except Exception as e:
-                            logger.error(f"获取预览帧失败: {str(e)}")
+                            normal_logger.error(f"获取预览帧失败: {str(e)}")
                             current_frame = None
 
                     # 每100帧记录一次日志
                     frame_count += 1
                     if frame_count % 100 == 0:
-                        logger.info(f"编码线程已处理 {frame_count} 帧: {task_id}")
+                        normal_logger.info(f"编码线程已处理 {frame_count} 帧: {task_id}")
 
                     # 如果没有获取到有效帧，使用上一帧或默认帧
                     if current_frame is None:
                         error_count += 1
                         if error_count > max_errors:
-                            logger.warning(f"连续 {max_errors} 次未获取到有效帧，使用默认帧")
+                            normal_logger.warning(f"连续 {max_errors} 次未获取到有效帧，使用默认帧")
                             # 创建一个黑色的默认帧
                             current_frame = np.zeros((final_height, final_width, 3), dtype=np.uint8)
                             # 在帧上绘制文本
@@ -632,19 +628,19 @@ class VideoEncoderService:
                         try:
                             # 再次检查进程是否仍在运行
                             if process.poll() is not None:
-                                logger.error(f"写入前发现FFmpeg进程已退出: {task_id}")
+                                normal_logger.error(f"写入前发现FFmpeg进程已退出: {task_id}")
                                 break
 
                             process.stdin.write(current_frame.tobytes())
                             write_success = True
                         except BrokenPipeError:
-                            logger.error(f"写入帧数据时管道已断开: {task_id}, 重试次数: {write_retry_count+1}/{max_write_retries}")
+                            normal_logger.error(f"写入帧数据时管道已断开: {task_id}, 重试次数: {write_retry_count+1}/{max_write_retries}")
                             write_retry_count += 1
                             if write_retry_count >= max_write_retries:
                                 break
                             time.sleep(0.1)  # 短暂等待后重试
                         except Exception as e:
-                            logger.error(f"写入帧数据时出错: {str(e)}, 重试次数: {write_retry_count+1}/{max_write_retries}")
+                            normal_logger.error(f"写入帧数据时出错: {str(e)}, 重试次数: {write_retry_count+1}/{max_write_retries}")
                             write_retry_count += 1
                             if write_retry_count >= max_write_retries:
                                 break
@@ -652,7 +648,7 @@ class VideoEncoderService:
 
                     # 如果写入失败，跳出循环
                     if not write_success:
-                        logger.error(f"写入帧数据失败，达到最大重试次数: {task_id}")
+                        normal_logger.error(f"写入帧数据失败，达到最大重试次数: {task_id}")
                         break
 
                 # 关闭FFmpeg输入流
@@ -660,14 +656,14 @@ class VideoEncoderService:
                     try:
                         process.stdin.close()
                     except Exception as e:
-                        logger.error(f"关闭FFmpeg输入流时出错: {str(e)}")
+                        normal_logger.error(f"关闭FFmpeg输入流时出错: {str(e)}")
 
                 # 等待FFmpeg进程完成
                 try:
                     process.wait(timeout=30)  # 增加超时时间到30秒
-                    logger.info(f"FFmpeg进程已完成: {task_id}, 返回码: {process.returncode}")
+                    normal_logger.info(f"FFmpeg进程已完成: {task_id}, 返回码: {process.returncode}")
                 except subprocess.TimeoutExpired:
-                    logger.warning(f"等待FFmpeg进程完成超时: {task_id}")
+                    normal_logger.warning(f"等待FFmpeg进程完成超时: {task_id}")
                     # 尝试终止进程
                     process.terminate()
                     try:
@@ -675,14 +671,14 @@ class VideoEncoderService:
                     except subprocess.TimeoutExpired:
                         # 如果仍然无法终止，强制杀死
                         process.kill()
-                        logger.error(f"FFmpeg进程无法正常终止，已强制杀死: {task_id}")
+                        normal_logger.error(f"FFmpeg进程无法正常终止，已强制杀死: {task_id}")
 
                 # 检查是否需要合并文件（MP4分段录制的情况）
                 if task_id in self.encoding_tasks and self.encoding_tasks[task_id].get("needs_merge", False):
                     temp_output = self.encoding_tasks[task_id].get("temp_output")
                     if temp_output and os.path.exists(temp_output):
                         try:
-                            logger.info(f"开始合并MP4文件: {task_id}")
+                            normal_logger.info(f"开始合并MP4文件: {task_id}")
 
                             # 使用FFmpeg合并文件
                             merge_cmd = [
@@ -716,31 +712,31 @@ class VideoEncoderService:
                                 # 删除临时文件
                                 if os.path.exists(temp_output):
                                     os.remove(temp_output)
-                                logger.info(f"MP4文件合并成功: {task_id}")
+                                normal_logger.info(f"MP4文件合并成功: {task_id}")
                             else:
-                                logger.error(f"MP4文件合并失败: {task_id}, 错误: {stderr}")
+                                normal_logger.error(f"MP4文件合并失败: {task_id}, 错误: {stderr}")
                         except Exception as e:
-                            logger.error(f"合并MP4文件时出错: {str(e)}")
+                            normal_logger.error(f"合并MP4文件时出错: {str(e)}")
 
                 # 检查输出文件是否存在
                 if os.path.exists(output_path):
                     file_size = os.path.getsize(output_path)
-                    logger.info(f"编码完成，输出文件: {output_path}, 大小: {file_size} 字节")
+                    normal_logger.info(f"编码完成，输出文件: {output_path}, 大小: {file_size} 字节")
 
                     # 如果文件太小（可能是空文件或损坏的文件），记录警告
                     if file_size < 1024:  # 小于1KB
-                        logger.warning(f"输出文件可能损坏，文件大小过小: {file_size} 字节")
+                        normal_logger.warning(f"输出文件可能损坏，文件大小过小: {file_size} 字节")
                 else:
-                    logger.error(f"编码失败，输出文件不存在: {output_path}")
+                    normal_logger.error(f"编码失败，输出文件不存在: {output_path}")
 
             except Exception as e:
-                logger.error(f"FFmpeg进程运行时出错: {str(e)}")
+                normal_logger.error(f"FFmpeg进程运行时出错: {str(e)}")
                 import traceback
-                logger.error(traceback.format_exc())
+                normal_logger.error(traceback.format_exc())
 
-            logger.info(f"编码线程正常退出: {task_id}")
+            normal_logger.info(f"编码线程正常退出: {task_id}")
 
         except Exception as e:
-            logger.error(f"编码线程发生错误: {str(e)}")
+            normal_logger.error(f"编码线程发生错误: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            normal_logger.error(traceback.format_exc())

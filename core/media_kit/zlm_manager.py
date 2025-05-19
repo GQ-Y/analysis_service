@@ -9,13 +9,14 @@ import threading
 import ctypes
 import traceback
 from typing import Dict, Any, List, Optional, Callable
-from loguru import logger
 
-from shared.utils.logger import setup_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.config import settings
 from .zlm_config import ZLMConfig, zlm_config
 
-logger = setup_logger(__name__)
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
 
 class ZLMediaKitManager:
     """ZLMediaKit管理器类，负责初始化和管理ZLMediaKit实例"""
@@ -56,7 +57,7 @@ class ZLMediaKitManager:
         self._is_running = False
         self._initialized = True
 
-        logger.info(f"ZLMediaKit管理器初始化完成，API地址: {self._api_url}")
+        normal_logger.info(f"ZLMediaKit管理器初始化完成，API地址: {self._api_url}")
 
     async def initialize(self) -> None:
         """初始化ZLMediaKit
@@ -65,11 +66,11 @@ class ZLMediaKitManager:
             None
         """
         try:
-            logger.info("正在初始化ZLMediaKit...")
+            normal_logger.info("正在初始化ZLMediaKit...")
 
             # 如果已经运行则跳过
             if self._is_running:
-                logger.info("ZLMediaKit已经在运行中")
+                normal_logger.info("ZLMediaKit已经在运行中")
                 return
 
             # 加载ZLMediaKit库
@@ -82,20 +83,19 @@ class ZLMediaKitManager:
             try:
                 api_connected = self._test_api_connection()
                 if not api_connected:
-                    logger.warning("无法连接到ZLMediaKit C API，请检查库是否正确安装")
+                    normal_logger.warning("无法连接到ZLMediaKit C API，请检查库是否正确安装")
             except Exception as api_err:
-                logger.warning(f"测试API连接时发生异常: {str(api_err)}")
-                logger.warning("ZLMediaKit C API不可用")
+                normal_logger.warning(f"测试API连接时发生异常: {str(api_err)}")
+                normal_logger.warning("ZLMediaKit C API不可用")
 
             # 标记为运行中 - 即使API连接失败，库功能仍然可用
             self._is_running = True
 
-            logger.info("ZLMediaKit初始化完成")
+            normal_logger.info("ZLMediaKit初始化完成")
 
         except Exception as e:
-            logger.error(f"ZLMediaKit初始化失败: {str(e)}")
-            logger.error(traceback.format_exc())
-            logger.error("无法初始化ZLMediaKit，请确保C API库正确安装")
+            exception_logger.exception(f"ZLMediaKit初始化失败: {str(e)}")
+            normal_logger.error("无法初始化ZLMediaKit，请确保C API库正确安装")
 
     async def shutdown(self) -> None:
         """关闭ZLMediaKit
@@ -105,10 +105,10 @@ class ZLMediaKitManager:
         """
         try:
             if not self._is_running:
-                logger.info("ZLMediaKit未运行，无需关闭")
+                normal_logger.info("ZLMediaKit未运行，无需关闭")
                 return
 
-            logger.info("正在关闭ZLMediaKit...")
+            normal_logger.info("正在关闭ZLMediaKit...")
 
             # 关闭所有流
             with self._stream_lock:
@@ -120,16 +120,15 @@ class ZLMediaKitManager:
             # 注意：由于在关闭ZLMediaKit时可能出现段错误，我们暂时跳过这一步
             # 只记录日志，不实际调用关闭函数
             if self._lib and hasattr(self._lib, 'mk_stop_all_server'):
-                logger.info("跳过ZLMediaKit关闭函数调用，避免段错误")
+                normal_logger.info("跳过ZLMediaKit关闭函数调用，避免段错误")
                 # self._lib.mk_stop_all_server()
 
             # 标记为未运行
             self._is_running = False
 
-            logger.info("ZLMediaKit已关闭")
+            normal_logger.info("ZLMediaKit已关闭")
         except Exception as e:
-            logger.error(f"关闭ZLMediaKit时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"关闭ZLMediaKit时出错: {str(e)}")
 
     def _load_library(self) -> None:
         """加载ZLMediaKit库"""
@@ -151,39 +150,55 @@ class ZLMediaKitManager:
                 platform_dir = 'win32'
             else:
                 raise RuntimeError(f"不支持的操作系统: {sys.platform}")
-
-            # 首先尝试从项目中的zlmos目录加载库
+                
+            # 首先尝试从项目中的lib/zlm目录加载库
+            lib_zlm_path = os.path.join(project_root, "lib", "zlm")
+            if os.path.exists(lib_zlm_path):
+                lib_file = os.path.join(lib_zlm_path, lib_name)
+                if os.path.exists(lib_file):
+                    normal_logger.info(f"在lib/zlm目录中找到ZLMediaKit库: {lib_file}")
+                    # 设置环境变量，确保库可以被正确加载
+                    os.environ['LD_LIBRARY_PATH'] = lib_zlm_path
+                    os.environ['DYLD_LIBRARY_PATH'] = lib_zlm_path
+                    os.environ['ZLM_LIB_PATH'] = lib_zlm_path
+                    # 加载库
+                    self._lib = ctypes.CDLL(lib_file)
+                    normal_logger.info(f"成功从lib/zlm目录加载ZLMediaKit库: {lib_file}")
+                    return
+            
+            # 如果lib/zlm目录不存在或没有库文件，尝试从zlmos目录加载
             zlmos_lib_path = os.path.join(project_root, "zlmos", platform_dir)
             if os.path.exists(zlmos_lib_path):
                 zlmos_lib_file = os.path.join(zlmos_lib_path, lib_name)
                 if os.path.exists(zlmos_lib_file):
-                    logger.info(f"在zlmos目录中找到ZLMediaKit库: {zlmos_lib_file}")
+                    normal_logger.info(f"在zlmos目录中找到ZLMediaKit库: {zlmos_lib_file}")
                     # 设置环境变量，确保库可以被正确加载
                     os.environ['LD_LIBRARY_PATH'] = zlmos_lib_path
+                    os.environ['DYLD_LIBRARY_PATH'] = zlmos_lib_path
                     os.environ['ZLM_LIB_PATH'] = zlmos_lib_path
                     # 加载库
                     self._lib = ctypes.CDLL(zlmos_lib_file)
-                    logger.info(f"成功从zlmos目录加载ZLMediaKit库: {zlmos_lib_file}")
+                    normal_logger.info(f"成功从zlmos目录加载ZLMediaKit库: {zlmos_lib_file}")
                     return
-
+                    
             # 如果zlmos目录不存在，尝试从lib目录加载
             lib_dir_path = os.path.join(project_root, "lib")
             if os.path.exists(lib_dir_path):
                 lib_file = os.path.join(lib_dir_path, lib_name)
                 if os.path.exists(lib_file):
-                    logger.info(f"在lib目录中找到ZLMediaKit库: {lib_file}")
+                    normal_logger.info(f"在lib目录中找到ZLMediaKit库: {lib_file}")
                     # 设置环境变量，确保库可以被正确加载
                     os.environ['LD_LIBRARY_PATH'] = lib_dir_path
                     os.environ['ZLM_LIB_PATH'] = lib_dir_path
                     # 加载库
                     self._lib = ctypes.CDLL(lib_file)
-                    logger.info(f"成功从lib目录加载ZLMediaKit库: {lib_file}")
+                    normal_logger.info(f"成功从lib目录加载ZLMediaKit库: {lib_file}")
                     return
 
             # 尝试从ZLMediaKit项目目录加载库
             zlm_project_dir = os.path.join(project_root, "ZLMediaKit")
             if os.path.exists(zlm_project_dir):
-                logger.info(f"找到ZLMediaKit项目目录: {zlm_project_dir}")
+                normal_logger.info(f"找到ZLMediaKit项目目录: {zlm_project_dir}")
 
                 # 尝试在项目目录中查找库
                 possible_lib_paths = [
@@ -195,17 +210,17 @@ class ZLMediaKitManager:
 
                 for lib_path in possible_lib_paths:
                     if os.path.exists(lib_path):
-                        logger.info(f"在ZLMediaKit项目目录中找到库: {lib_path}")
+                        normal_logger.info(f"在ZLMediaKit项目目录中找到库: {lib_path}")
                         # 设置环境变量，确保库可以被正确加载
                         os.environ['LD_LIBRARY_PATH'] = os.path.dirname(lib_path)
                         os.environ['ZLM_LIB_PATH'] = os.path.dirname(lib_path)
                         # 加载库
                         self._lib = ctypes.CDLL(lib_path)
-                        logger.info(f"成功从ZLMediaKit项目目录加载库: {lib_path}")
+                        normal_logger.info(f"成功从ZLMediaKit项目目录加载库: {lib_path}")
                         return
 
             # 如果以上都失败，尝试从环境变量或系统路径加载
-            logger.warning("在项目目录中未找到ZLMediaKit库，尝试从环境变量或系统路径加载")
+            normal_logger.warning("在项目目录中未找到ZLMediaKit库，尝试从环境变量或系统路径加载")
 
             # 检查环境变量中是否指定了ZLMediaKit库路径
             zlm_lib_path = os.environ.get('ZLM_LIB_PATH', '')
@@ -213,31 +228,30 @@ class ZLMediaKitManager:
             if zlm_lib_path and os.path.exists(zlm_lib_path):
                 lib_file = os.path.join(zlm_lib_path, lib_name)
                 if os.path.exists(lib_file):
-                    logger.info(f"从环境变量指定的路径加载ZLMediaKit库: {lib_file}")
+                    normal_logger.info(f"从环境变量指定的路径加载ZLMediaKit库: {lib_file}")
                     self._lib = ctypes.CDLL(lib_file)
-                    logger.info(f"成功从环境变量指定的路径加载ZLMediaKit库: {lib_file}")
+                    normal_logger.info(f"成功从环境变量指定的路径加载ZLMediaKit库: {lib_file}")
                     return
 
             # 最后尝试直接加载库（依赖系统路径）
-            logger.warning("尝试从系统路径加载ZLMediaKit库")
+            normal_logger.warning("尝试从系统路径加载ZLMediaKit库")
             try:
                 self._lib = ctypes.CDLL(lib_name)
-                logger.info(f"成功从系统路径加载ZLMediaKit库: {lib_name}")
+                normal_logger.info(f"成功从系统路径加载ZLMediaKit库: {lib_name}")
                 return
             except Exception as e:
-                logger.error(f"从系统路径加载ZLMediaKit库失败: {str(e)}")
+                exception_logger.exception(f"从系统路径加载ZLMediaKit库失败: {str(e)}")
                 raise RuntimeError(f"无法加载ZLMediaKit库: {str(e)}")
 
         except Exception as e:
-            logger.error(f"加载ZLMediaKit库失败: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"加载ZLMediaKit库失败: {str(e)}")
             raise
 
     def _init_zlmediakit(self) -> None:
         """初始化ZLMediaKit"""
         try:
             if not self._lib:
-                logger.error("ZLMediaKit库未加载，无法初始化")
+                normal_logger.error("ZLMediaKit库未加载，无法初始化")
                 return
 
             # 创建配置
@@ -255,18 +269,18 @@ class ZLMediaKitManager:
                     try:
                         content_str = content.decode('utf-8') if content else ""
                         if level <= 1:  # ERROR
-                            logger.error(f"ZLM: {content_str}")
+                            normal_logger.error(f"ZLM: {content_str}")
                         elif level == 2:  # WARN
-                            logger.warning(f"ZLM: {content_str}")
+                            normal_logger.warning(f"ZLM: {content_str}")
                         elif level == 3:  # INFO
-                            logger.info(f"ZLM: {content_str}")
+                            normal_logger.info(f"ZLM: {content_str}")
                         else:  # DEBUG or TRACE
-                            logger.debug(f"ZLM: {content_str}")
+                            normal_logger.debug(f"ZLM: {content_str}")
                     except Exception as e:
-                        logger.error(f"处理ZLM日志回调异常: {str(e)}")
+                        exception_logger.exception(f"处理ZLM日志回调异常: {str(e)}")
 
                 self._lib.mk_set_log_callback(on_log)
-                logger.info("已注册ZLMediaKit日志回调")
+                normal_logger.info("已注册ZLMediaKit日志回调")
 
             # 调用初始化函数
             if hasattr(self._lib, 'mk_env_init2'):
@@ -285,12 +299,12 @@ class ZLMediaKitManager:
             elif hasattr(self._lib, 'mk_env_init'):
                 # 创建mk_config结构体
                 # 这里需要根据实际的ZLMediaKit API进行适配
-                logger.warning("使用mk_env_init函数初始化，可能需要根据ZLMediaKit版本进行适配")
+                normal_logger.warning("使用mk_env_init函数初始化，可能需要根据ZLMediaKit版本进行适配")
                 # 示例代码，实际中需要根据ZLMediaKit的mk_config结构进行调整
                 # mk_config = ctypes.Structure(...)
                 # self._lib.mk_env_init(ctypes.byref(mk_config))
             else:
-                logger.error("未找到ZLMediaKit初始化函数")
+                normal_logger.error("未找到ZLMediaKit初始化函数")
                 return
 
             # 注册事件回调
@@ -313,21 +327,20 @@ class ZLMediaKitManager:
                             self.trigger_event("flow_report", event_data)
                         elif event_type == "on_server_started":
                             # 服务器启动事件
-                            logger.info("ZLMediaKit服务器已启动")
+                            normal_logger.info("ZLMediaKit服务器已启动")
                         elif event_type == "on_server_exited":
                             # 服务器退出事件
-                            logger.warning("ZLMediaKit服务器已退出")
+                            normal_logger.warning("ZLMediaKit服务器已退出")
 
                     except Exception as e:
-                        logger.error(f"处理ZLM事件回调异常: {str(e)}")
+                        exception_logger.exception(f"处理ZLM事件回调异常: {str(e)}")
 
                 self._lib.mk_set_event_callback(on_event, None)
-                logger.info("已注册ZLMediaKit事件回调")
+                normal_logger.info("已注册ZLMediaKit事件回调")
 
-            logger.info("ZLMediaKit初始化成功")
+            normal_logger.info("ZLMediaKit初始化成功")
         except Exception as e:
-            logger.error(f"初始化ZLMediaKit失败: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"初始化ZLMediaKit失败: {str(e)}")
             raise
 
     def _test_api_connection(self) -> bool:
@@ -347,28 +360,28 @@ class ZLMediaKitManager:
                     # 尝试获取一个基本配置项
                     val = self._lib.mk_get_option("api.secret".encode('utf-8'))
                     if val:
-                        logger.info(f"ZLMediaKit C API 连接正常，API密钥: {val.decode('utf-8')}")
+                        normal_logger.info(f"ZLMediaKit C API 连接正常，API密钥: {val.decode('utf-8')}")
                         return True
 
                 # 检查是否有mk_set_option函数
                 if hasattr(self._lib, 'mk_set_option'):
-                    logger.info("ZLMediaKit C API 连接正常 (mk_set_option可用)")
+                    normal_logger.info("ZLMediaKit C API 连接正常 (mk_set_option可用)")
                     return True
 
                 # 检查是否有其他基本函数
                 basic_functions = ['mk_env_init', 'mk_stop_all_server']
                 for func_name in basic_functions:
                     if hasattr(self._lib, func_name):
-                        logger.info(f"ZLMediaKit C API 连接正常 ({func_name}可用)")
+                        normal_logger.info(f"ZLMediaKit C API 连接正常 ({func_name}可用)")
                         return True
 
-                logger.warning("ZLMediaKit C API 不可用，未找到可用的API函数")
+                normal_logger.warning("ZLMediaKit C API 不可用，未找到可用的API函数")
                 return False
             else:
-                logger.warning("ZLMediaKit 库未加载")
+                normal_logger.warning("ZLMediaKit 库未加载")
                 return False
         except Exception as e:
-            logger.error(f"测试API连接失败: {str(e)}")
+            exception_logger.exception(f"测试API连接失败: {str(e)}")
             return False
 
     async def create_stream(self, stream_id: str, stream_config: Dict[str, Any]) -> bool:
@@ -385,7 +398,7 @@ class ZLMediaKitManager:
             # 如果流已存在则返回
             with self._stream_lock:
                 if stream_id in self._streams:
-                    logger.info(f"流 {stream_id} 已存在")
+                    normal_logger.info(f"流 {stream_id} 已存在")
                     return True
 
             # 获取流类型和地址
@@ -393,7 +406,7 @@ class ZLMediaKitManager:
             stream_url = stream_config.get("url", "")
 
             if not stream_url:
-                logger.error(f"创建流 {stream_id} 失败: 未提供URL")
+                normal_logger.error(f"创建流 {stream_id} 失败: 未提供URL")
                 return False
 
             # 尝试使用C API创建流代理
@@ -411,13 +424,13 @@ class ZLMediaKitManager:
                     stream_name_c = ctypes.c_char_p(stream_name.encode('utf-8'))
 
                     # 创建代理播放器
-                    logger.info(f"使用C API创建流代理: {stream_url} -> {app}/{stream_name}")
+                    normal_logger.info(f"使用C API创建流代理: {stream_url} -> {app}/{stream_name}")
                     player_handle = self._lib.mk_proxy_player_create(url_c, vhost_c, app_c, stream_name_c)
 
                     if player_handle:
                         # 保存播放器句柄
                         self._players[player_handle] = stream_id
-                        logger.info(f"成功创建流代理: {stream_id}, 句柄: {player_handle}")
+                        normal_logger.info(f"成功创建流代理: {stream_id}, 句柄: {player_handle}")
 
                         # 创建ZLM流对象
                         from .zlm_stream import ZLMVideoStream
@@ -426,7 +439,7 @@ class ZLMediaKitManager:
                         # 启动流
                         success = await stream.start()
                         if not success:
-                            logger.error(f"启动流 {stream_id} 失败")
+                            normal_logger.error(f"启动流 {stream_id} 失败")
                             # 清理资源
                             self._lib.mk_proxy_player_release(player_handle)
                             if player_handle in self._players:
@@ -437,14 +450,13 @@ class ZLMediaKitManager:
                         with self._stream_lock:
                             self._streams[stream_id] = stream
 
-                        logger.info(f"成功创建并启动流 {stream_id} (使用C API)")
+                        normal_logger.info(f"成功创建并启动流 {stream_id} (使用C API)")
                         return True
                     else:
-                        logger.warning(f"C API创建流代理失败，回退到HTTP API: {stream_id}")
+                        normal_logger.warning(f"C API创建流代理失败，回退到HTTP API: {stream_id}")
                 except Exception as e:
-                    logger.error(f"使用C API创建流代理时出错: {str(e)}")
-                    logger.error(traceback.format_exc())
-                    logger.warning(f"回退到HTTP API创建流: {stream_id}")
+                    exception_logger.exception(f"使用C API创建流代理时出错: {str(e)}")
+                    normal_logger.warning(f"回退到HTTP API创建流: {stream_id}")
 
             # 如果C API不可用或创建失败，使用HTTP API或直接创建ZLM流
             from .zlm_stream import ZLMVideoStream
@@ -453,18 +465,17 @@ class ZLMediaKitManager:
             # 启动流
             success = await stream.start()
             if not success:
-                logger.error(f"启动流 {stream_id} 失败")
+                normal_logger.error(f"启动流 {stream_id} 失败")
                 return False
 
             # 保存流对象
             with self._stream_lock:
                 self._streams[stream_id] = stream
 
-            logger.info(f"成功创建并启动流 {stream_id}")
+            normal_logger.info(f"成功创建并启动流 {stream_id}")
             return True
         except Exception as e:
-            logger.error(f"创建流 {stream_id} 时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"创建流 {stream_id} 时出错: {str(e)}")
             return False
 
     async def stop_stream(self, stream_id: str) -> bool:
@@ -494,7 +505,7 @@ class ZLMediaKitManager:
                             break
 
             if not stream:
-                logger.warning(f"流 {stream_id} 不存在，无需停止")
+                normal_logger.warning(f"流 {stream_id} 不存在，无需停止")
                 return True
 
             # 停止流
@@ -503,24 +514,23 @@ class ZLMediaKitManager:
             # 注意：由于在释放播放器时遇到段错误，我们暂时跳过播放器释放步骤
             # 只记录日志，不实际释放播放器
             if player_handle:
-                logger.info(f"跳过播放器释放步骤，只清除引用: {stream_id}, 句柄: {player_handle}")
+                normal_logger.info(f"跳过播放器释放步骤，只清除引用: {stream_id}, 句柄: {player_handle}")
 
             # 如果在未来需要重新启用播放器释放，可以取消注释以下代码
             """
             # 如果有播放器句柄，使用C API释放
             if player_handle and self._lib and hasattr(self._lib, 'mk_proxy_player_release'):
                 try:
-                    logger.info(f"使用C API释放播放器: {stream_id}, 句柄: {player_handle}")
+                    normal_logger.info(f"使用C API释放播放器: {stream_id}, 句柄: {player_handle}")
                     self._lib.mk_proxy_player_release(player_handle)
                 except Exception as e:
-                    logger.error(f"释放播放器句柄时出错: {str(e)}")
+                    exception_logger.exception(f"释放播放器句柄时出错: {str(e)}")
             """
 
-            logger.info(f"成功停止流 {stream_id}")
+            normal_logger.info(f"成功停止流 {stream_id}")
             return True
         except Exception as e:
-            logger.error(f"停止流 {stream_id} 时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"停止流 {stream_id} 时出错: {str(e)}")
             return False
 
     async def get_stream_info(self, stream_id: str) -> Optional[Dict[str, Any]]:
@@ -536,7 +546,7 @@ class ZLMediaKitManager:
             # 检查流是否存在
             with self._stream_lock:
                 if stream_id not in self._streams:
-                    logger.warning(f"流 {stream_id} 不存在")
+                    normal_logger.warning(f"流 {stream_id} 不存在")
                     return None
 
                 stream = self._streams[stream_id]
@@ -544,8 +554,7 @@ class ZLMediaKitManager:
             # 获取流信息
             return await stream.get_info()
         except Exception as e:
-            logger.error(f"获取流 {stream_id} 信息时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"获取流 {stream_id} 信息时出错: {str(e)}")
             return None
 
     async def get_all_streams(self) -> List[Dict[str, Any]]:
@@ -568,8 +577,7 @@ class ZLMediaKitManager:
 
             return streams_info
         except Exception as e:
-            logger.error(f"获取所有流信息时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"获取所有流信息时出错: {str(e)}")
             return []
 
     def call_api(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -583,12 +591,11 @@ class ZLMediaKitManager:
             Dict[str, Any]: API响应
         """
         try:
-            logger.warning(f"HTTP API已禁用，请使用C API: {method}")
+            normal_logger.warning(f"HTTP API已禁用，请使用C API: {method}")
             # 返回错误响应
             return {"code": -1, "msg": "HTTP API已禁用，请使用C API"}
         except Exception as e:
-            logger.error(f"调用API {method} 时出错: {str(e)}")
-            logger.error(traceback.format_exc())
+            exception_logger.exception(f"调用API {method} 时出错: {str(e)}")
             return {"code": -1, "msg": str(e)}
 
     def register_event_callback(self, event_name: str, callback: Callable) -> None:
@@ -602,7 +609,7 @@ class ZLMediaKitManager:
             self._event_callbacks[event_name] = set()
 
         self._event_callbacks[event_name].add(callback)
-        logger.debug(f"注册事件回调: {event_name}")
+        normal_logger.debug(f"注册事件回调: {event_name}")
 
     def unregister_event_callback(self, event_name: str, callback: Callable) -> None:
         """取消注册事件回调函数
@@ -614,7 +621,7 @@ class ZLMediaKitManager:
         if event_name in self._event_callbacks:
             if callback in self._event_callbacks[event_name]:
                 self._event_callbacks[event_name].remove(callback)
-                logger.debug(f"取消注册事件回调: {event_name}")
+                normal_logger.debug(f"取消注册事件回调: {event_name}")
 
     def trigger_event(self, event_name: str, data: Dict[str, Any]) -> None:
         """触发事件
@@ -628,8 +635,7 @@ class ZLMediaKitManager:
                 try:
                     callback(data)
                 except Exception as e:
-                    logger.error(f"执行事件回调 {event_name} 时出错: {str(e)}")
-                    logger.error(traceback.format_exc())
+                    exception_logger.exception(f"执行事件回调 {event_name} 时出错: {str(e)}")
 
 # 单例实例
 zlm_manager = ZLMediaKitManager()
