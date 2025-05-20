@@ -837,9 +837,9 @@ class ZLMVideoStream(BaseVideoStream):
     async def _pull_stream_task(self) -> None:
         """拉流任务，负责从ZLMediaKit获取视频帧"""
         try:
-            # 配置重连参数
-            max_retry = self.config.get("max_retry", 3)
-            retry_interval = self.config.get("retry_interval", 5)
+            # 配置重连参数 - 增加重试次数和时间
+            max_retry = self.config.get("max_retry", 10)  # 从3增加到10
+            retry_interval = self.config.get("retry_interval", 10)  # 从5增加到10秒
             retry_count = 0
 
             # 创建OpenCV捕获对象
@@ -855,8 +855,14 @@ class ZLMVideoStream(BaseVideoStream):
             while not self._stop_event.is_set():
                 try:
                     normal_logger.info(f"开始拉流 {proxied_url}")
+                    
+                    # 设置较长的读取超时
                     cap = cv2.VideoCapture(proxied_url)
-
+                    
+                    # 尝试设置OpenCV属性增加连接超时时间
+                    cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 30000)  # 增加到30秒
+                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 30000)  # 增加到30秒
+                    
                     if not cap.isOpened():
                         normal_logger.error(f"无法打开流: {proxied_url}")
                         self._status = StreamStatus.ERROR

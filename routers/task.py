@@ -524,8 +524,7 @@ async def get_task_status(
                 data=None
             )
 
-        # 构建任务信息
-        task_info = result["task_info"]
+        task_info = result["data"]
         status_map = {
             TaskStatus.WAITING: "等待中",
             TaskStatus.PROCESSING: "处理中",

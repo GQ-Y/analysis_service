@@ -10,11 +10,12 @@ from datetime import datetime
 
 from core.config import settings
 from core.models import StandardResponse
-from shared.utils.logger import get_normal_logger, get_exception_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
+test_logger = get_test_logger()
 
 # 创建路由
 router = APIRouter(
@@ -42,6 +43,8 @@ async def health_check(request: Request) -> StandardResponse:
     request_id = str(uuid.uuid4())
     
     try:
+        test_logger.info("TEST_LOG_MARKER: API_HEALTH_CHECK_SUCCESS")
+        
         # 获取CPU使用率
         cpu_percent = psutil.cpu_percent(interval=1)
         

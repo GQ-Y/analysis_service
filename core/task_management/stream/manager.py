@@ -6,7 +6,7 @@ from typing import Dict, Optional, Tuple, Any, List
 import traceback
 
 # 导入共享工具
-from shared.utils.logger import get_normal_logger, get_exception_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 
 # 导入状态定义
 from .status import StreamStatus, StreamHealthStatus
@@ -20,6 +20,7 @@ from core.media_kit.zlm_stream import ZLMVideoStream
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
+test_logger = get_test_logger()
 
 
 class StreamManager:
@@ -105,6 +106,26 @@ class StreamManager:
             # 启动流
             try:
                 await stream.start()
+                # 添加测试标记
+                url = config.get("url", "")
+                protocol = "UNKNOWN"
+                if url:
+                    if url.startswith("rtsp://"):
+                        protocol = "RTSP"
+                    elif url.startswith("rtmp://"):
+                        protocol = "RTMP"
+                    elif url.startswith("http://") and url.endswith(".m3u8"):
+                        protocol = "HLS"
+                    elif url.startswith("http://") and url.endswith(".flv"):
+                        protocol = "HTTP-FLV"
+                    elif "webrtc" in url.lower():
+                        protocol = "WEBRTC"
+                    elif "gb28181" in url.lower():
+                        protocol = "GB28181"
+                
+                test_logger.info(f"TEST_LOG_MARKER: {protocol}_STREAM_CONNECTED")
+                test_logger.info(f"TEST_LOG_MARKER: STREAM_CONNECTED")
+                
             except Exception as e:
                 exception_logger.exception(f"启动流失败: {str(e)}")
                 # 从管理器中移除失败的流

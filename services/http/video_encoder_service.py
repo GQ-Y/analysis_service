@@ -15,11 +15,12 @@ from datetime import datetime
 
 from core.config import settings
 from core.task_management.utils.status import TaskStatus
-from shared.utils.logger import get_normal_logger, get_exception_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
+test_logger = get_test_logger()
 
 class VideoEncoderService:
     """视频编码服务 - 支持MP4和FLV格式"""
@@ -177,6 +178,9 @@ class VideoEncoderService:
                     "message": f"启动视频编码失败: {task_id}",
                     "video_url": None
                 }
+                
+            # 添加测试日志
+            test_logger.info("TEST_LOG_MARKER: VIDEO_ENCODE_START_SUCCESS")
 
             return {
                 "success": True,
@@ -240,6 +244,9 @@ class VideoEncoderService:
 
             # 记录停止信息
             normal_logger.info(f"编码任务已停止: {task_id}, 编码ID: {encoding_id}")
+            
+            # 添加测试日志
+            test_logger.info("TEST_LOG_MARKER: VIDEO_ENCODE_STOP_SUCCESS")
 
             return {
                 "success": True,

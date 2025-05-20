@@ -8,15 +8,17 @@ import asyncio
 from datetime import datetime
 import json
 import aiohttp
+import logging
 
 from core.task_management.utils.status import TaskStatus
 from core.task_management.manager import TaskManager
 from models.requests import StreamTask, BatchStreamTask
-from shared.utils.logger import get_normal_logger, get_exception_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
+test_logger = get_test_logger()
 
 class TaskService:
     """HTTP任务服务"""
@@ -73,6 +75,7 @@ class TaskService:
                     "task_id": task_id
                 }
 
+            test_logger.info("TEST_LOG_MARKER: TASK_CREATE_SUCCESS")
             return {
                 "success": True,
                 "message": "任务创建并启动成功",
@@ -174,7 +177,12 @@ class TaskService:
                 task.config = DetectionConfig(**config)
 
             # 创建任务
-            return await self.create_task(task)
+            result = await self.create_task(task)
+            
+            if result["success"]:
+                test_logger.info("TEST_LOG_MARKER: TASK_CREATE_SUCCESS")
+                
+            return result
 
         except Exception as e:
             exception_logger.exception(f"启动任务异常: {str(e)}")
@@ -229,6 +237,9 @@ class TaskService:
             # 统计成功和失败数量
             success_count = sum(1 for r in results if r.get("success", False))
             failed_count = len(results) - success_count
+            
+            if success_count > 0:
+                test_logger.info("TEST_LOG_MARKER: BATCH_TASK_CREATE_SUCCESS")
 
             return {
                 "success": success_count > 0,
@@ -277,6 +288,8 @@ class TaskService:
                 # 即使删除失败也返回停止成功，因为任务已经停止
             else:
                 normal_logger.info(f"任务已停止并删除: {task_id}")
+            
+            test_logger.info("TEST_LOG_MARKER: TASK_STOP_SUCCESS")
 
             return {
                 "success": True,
@@ -352,11 +365,13 @@ class TaskService:
                 "duration": task.get("duration"),
                 "error_message": task.get("error_message")
             }
+            
+            test_logger.info("TEST_LOG_MARKER: TASK_STATUS_CHECK_SUCCESS")
 
             return {
                 "success": True,
                 "message": "获取任务状态成功",
-                "task_info": task_info
+                "data": task_info
             }
 
         except Exception as e:
@@ -426,6 +441,8 @@ class TaskService:
                 serializable_task["error_message"] = task.get("error", None)
 
                 serializable_tasks.append(serializable_task)
+            
+            test_logger.info("TEST_LOG_MARKER: TASK_LIST_SUCCESS")
 
             return {
                 "success": True,
