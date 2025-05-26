@@ -107,249 +107,258 @@ def create_app() -> FastAPI:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时执行
-    show_service_banner("analysis_service") # Banner会通过normal_logger打印
-    normal_logger.info("开始分析服务生命周期管理...")
-
-    # 设置信号处理器
-    signal_handler.setup_signal_handlers()
-
-    # 记录启动时间
-    app.state.start_time = time.time()
-
-    if settings.DEBUG_ENABLED:
-        normal_logger.info("分析服务以调试模式启动。")
-        normal_logger.info(f"环境: {settings.ENVIRONMENT}")
-        normal_logger.info(f"版本: {settings.VERSION}")
-        normal_logger.info(f"注册的路由: {[route.path for route in app.routes]}")
-    
-    # 检查并自动安装ZLMediaKit
-    from run.middlewares import init_zlm_environment, start_zlm_service
-    normal_logger.info("正在检查ZLMediaKit环境...")
-    if init_zlm_environment():
-        normal_logger.info("ZLMediaKit环境检查完成，库文件已就绪。")
-        
-        # 直接启动ZLMediaKit服务，不需要检查
-        normal_logger.info("正在启动ZLMediaKit服务进程...")
-        try:
-            if start_zlm_service():
-                normal_logger.info("ZLMediaKit服务进程已成功启动")
-            else:
-                normal_logger.warning("ZLMediaKit服务进程启动失败，将尝试使用现有配置继续")
-        except Exception as e:
-            exception_logger.exception("启动ZLMediaKit服务进程时出错")
-    else:
-        normal_logger.warning("ZLMediaKit环境检查失败，将尝试使用现有配置继续。")
-        
-    # 初始化ZLMediaKit
-    normal_logger.info("正在初始化ZLMediaKit...")
     try:
-        from core.media_kit.zlm_manager import zlm_manager
-        await zlm_manager.initialize()
-        app.state.zlm_manager = zlm_manager
-        
-        # 将 ZLMediaKit 管理器注册到信号处理器
-        signal_handler.set_zlm_manager(zlm_manager)
-        
-        # 注册到退出处理器
-        zlm_exit_handler.register_zlm_manager(zlm_manager)
-        
-        normal_logger.info("ZLMediaKit初始化成功。")
-    except Exception as e:
-        exception_logger.exception("ZLMediaKit初始化失败。将继续使用OpenCV进行视频处理。")
+        # 启动时执行
+        show_service_banner("analysis_service") # Banner会通过normal_logger打印
+        normal_logger.info("开始分析服务生命周期管理...")
 
-    # 初始化任务管理器
-    normal_logger.info("正在初始化任务管理器...")
-    try:
-        from core.task_management.manager import TaskManager
-        from core.task_management.stream import StreamManager
+        # 设置信号处理器
+        signal_handler.setup_signal_handlers()
 
-        normal_logger.info("正在初始化流管理器...")
-        stream_manager = StreamManager()
-        await stream_manager.initialize()
-        normal_logger.info("流管理器初始化完成。")
+        # 记录启动时间
+        app.state.start_time = time.time()
 
-        task_manager = TaskManager()
-        await task_manager.initialize()
-        
-        app.state.task_manager = task_manager
-        app.state.stream_manager = stream_manager
-        
-        from core.task_management.stream import StreamTaskBridge
-        normal_logger.info("正在初始化流任务桥接器...")
-        stream_task_bridge = StreamTaskBridge()
-        await stream_task_bridge.initialize(task_manager)
-        app.state.stream_task_bridge = stream_task_bridge
-        normal_logger.info("流任务桥接器初始化完成。")
+        if settings.DEBUG_ENABLED:
+            normal_logger.info("分析服务以调试模式启动。")
+            normal_logger.info(f"环境: {settings.ENVIRONMENT}")
+            normal_logger.info(f"版本: {settings.VERSION}")
+            normal_logger.info(f"注册的路由: {[route.path for route in app.routes]}")
 
-        from services.http.task_service import TaskService
-        from services.analysis_service import AnalysisService
-        from core.task_management.callback_service import CallbackService
-        from services.http.video_encoder_service import VideoEncoderService
-        from core.task_management.callback_service import callback_service
+        # 检查并自动安装ZLMediaKit
+        from run.middlewares import init_zlm_environment, start_zlm_service
+        normal_logger.info("正在检查ZLMediaKit环境...")
+        if init_zlm_environment():
+            normal_logger.info("ZLMediaKit环境检查完成，库文件已就绪。")
 
-        app.state.task_service = TaskService(task_manager)
-        app.state.analysis_service = AnalysisService()
-        await callback_service.start()
-        app.state.callback_service = callback_service
-        app.state.video_encoder_service = VideoEncoderService()
+            # 直接启动ZLMediaKit服务，不需要检查
+            normal_logger.info("正在启动ZLMediaKit服务进程...")
+            try:
+                if start_zlm_service():
+                    normal_logger.info("ZLMediaKit服务进程已成功启动")
+                else:
+                    normal_logger.warning("ZLMediaKit服务进程启动失败，将尝试使用现有配置继续")
+            except Exception as e:
+                exception_logger.exception("启动ZLMediaKit服务进程时出错")
+        else:
+            normal_logger.warning("ZLMediaKit环境检查失败，将尝试使用现有配置继续。")
 
-        normal_logger.info("任务管理器和服务初始化成功。")
-
-    except Exception as e:
-        exception_logger.exception("服务初始化失败。")
-
-    yield  # 这里是应用运行期间
-
-    # 关闭时执行
-    normal_logger.info("正在关闭分析服务...")
-    sys.stdout.flush(); sys.stderr.flush()
-
-    # 1. CallbackService
-    if hasattr(app.state, "callback_service") and app.state.callback_service:
+        # 初始化ZLMediaKit
+        normal_logger.info("正在初始化ZLMediaKit...")
         try:
-            normal_logger.info("RUN.PY LIFESPAN: ====> [START] 正在停止回调服务...")
-            sys.stdout.flush(); sys.stderr.flush()
-            await app.state.callback_service.stop()
-            normal_logger.info("RUN.PY LIFESPAN: ====> [END] 回调服务已停止。")
-            sys.stdout.flush(); sys.stderr.flush()
+            from core.media_kit.zlm_manager import zlm_manager
+            await zlm_manager.initialize()
+            app.state.zlm_manager = zlm_manager
+
+            # 将 ZLMediaKit 管理器注册到信号处理器
+            signal_handler.set_zlm_manager(zlm_manager)
+
+            # 注册到退出处理器
+            zlm_exit_handler.register_zlm_manager(zlm_manager)
+
+            normal_logger.info("ZLMediaKit初始化成功。")
         except Exception as e:
-            exception_logger.exception("停止回调服务时出错。")
-            sys.stdout.flush(); sys.stderr.flush()
-    else:
-        normal_logger.warning("RUN.PY LIFESPAN: CallbackService not found in app.state or not active.")
+            exception_logger.exception("ZLMediaKit初始化失败。将继续使用OpenCV进行视频处理。")
+
+        # 初始化任务管理器
+        normal_logger.info("正在初始化任务管理器...")
+        try:
+            from core.task_management.manager import TaskManager
+            from core.task_management.stream import StreamManager
+
+            normal_logger.info("正在初始化流管理器...")
+            stream_manager = StreamManager()
+            await stream_manager.initialize()
+            normal_logger.info("流管理器初始化完成。")
+
+            task_manager = TaskManager()
+            await task_manager.initialize()
+
+            app.state.task_manager = task_manager
+            app.state.stream_manager = stream_manager
+
+            from core.task_management.stream import StreamTaskBridge
+            normal_logger.info("正在初始化流任务桥接器...")
+            stream_task_bridge = StreamTaskBridge()
+            await stream_task_bridge.initialize(task_manager)
+            app.state.stream_task_bridge = stream_task_bridge
+            normal_logger.info("流任务桥接器初始化完成。")
+
+            from services.http.task_service import TaskService
+            from services.analysis_service import AnalysisService
+            from core.task_management.callback_service import CallbackService
+            from services.http.video_encoder_service import VideoEncoderService
+            from core.task_management.callback_service import callback_service
+
+            app.state.task_service = TaskService(task_manager)
+            app.state.analysis_service = AnalysisService()
+            await callback_service.start()
+            app.state.callback_service = callback_service
+            app.state.video_encoder_service = VideoEncoderService()
+
+            normal_logger.info("任务管理器和服务初始化成功。")
+
+        except Exception as e:
+            exception_logger.exception("服务初始化失败。")
+
+        yield  # 这里是应用运行期间
+
+    except asyncio.CancelledError:
+        # 生命周期被取消，直接退出
+        normal_logger.info("应用生命周期被取消，正在退出...")
+        raise
+    except Exception as e:
+        exception_logger.exception(f"应用生命周期管理出错: {e}")
+        raise
+    finally:
+        # 关闭时执行
+        normal_logger.info("正在关闭分析服务...")
         sys.stdout.flush(); sys.stderr.flush()
 
-    # 2. TaskManager
-    if hasattr(app.state, "task_manager") and app.state.task_manager:
-        try:
-            normal_logger.info("正在停止任务管理器...")
+        # 1. CallbackService
+        if hasattr(app.state, "callback_service") and app.state.callback_service:
             try:
-                await asyncio.wait_for(app.state.task_manager.shutdown(), timeout=10.0)
-                normal_logger.info("任务管理器已正常停止。")
-            except asyncio.TimeoutError:
-                exception_logger.warning("等待任务管理器关闭超时。")
-            except Exception as inner_e:
-                exception_logger.exception("任务管理器关闭过程中出错。")
-        except Exception as e:
-             exception_logger.exception("停止任务管理器时出错。")
-        finally:
-            normal_logger.info("任务管理器关闭流程已完成。")
-    else:
-        normal_logger.info("没有活动的任务管理器需要关闭。")
-        
-    if hasattr(app.state, "stream_manager") and app.state.stream_manager:
-        try:
-            normal_logger.info("正在关闭流管理器...")
-            try:
-                await asyncio.wait_for(app.state.stream_manager.shutdown(), timeout=10.0)
-                normal_logger.info("流管理器已正常关闭。")
-            except asyncio.TimeoutError:
-                exception_logger.warning("等待流管理器关闭超时。")
-            except Exception as inner_e:
-                exception_logger.exception("流管理器关闭过程中出错。")
-        except Exception as e:
-            exception_logger.exception("关闭流管理器时出错。")
-        finally:
-            normal_logger.info("流管理器关闭流程已完成。")
-    else:
-        normal_logger.info("没有活动的流管理器需要关闭。")
-        
-    if hasattr(app.state, "stream_task_bridge") and app.state.stream_task_bridge:
-        try:
-            normal_logger.info("正在关闭流任务桥接器...")
-            try:
-                await asyncio.wait_for(app.state.stream_task_bridge.shutdown(), timeout=5.0)
-                normal_logger.info("流任务桥接器已正常关闭。")
-            except asyncio.TimeoutError:
-                exception_logger.warning("等待流任务桥接器关闭超时。")
-            except Exception as inner_e:
-                exception_logger.exception("流任务桥接器关闭过程中出错。")
-        except Exception as e:
-            exception_logger.exception("关闭流任务桥接器时出错。")
-        finally:
-            normal_logger.info("流任务桥接器关闭流程已完成。")
-        
-    if hasattr(app.state, "zlm_manager") and app.state.zlm_manager:
-        try:
-            normal_logger.info("正在关闭ZLMediaKit...")
-            try:
-                await asyncio.wait_for(app.state.zlm_manager.shutdown(), timeout=10.0)
-                normal_logger.info("ZLMediaKit已正常关闭。")
-            except asyncio.TimeoutError:
-                exception_logger.warning("等待ZLMediaKit关闭超时。")
-                # 强制标记为关闭状态
-                if hasattr(app.state.zlm_manager, '_is_shutting_down'):
-                    app.state.zlm_manager._is_shutting_down = True
-            except Exception as inner_e:
-                exception_logger.exception("ZLMediaKit关闭过程中出错。")
-        except Exception as e:
-            exception_logger.exception("关闭ZLMediaKit时出错。")
-        finally:
-            # 确保清理库引用
-            try:
-                if hasattr(app.state.zlm_manager, '_lib'):
-                    app.state.zlm_manager._lib = None
-                # 强制垃圾回收
-                import gc
-                gc.collect()
-            except:
-                pass
-            normal_logger.info("ZLMediaKit关闭流程已完成。")
-    else:
-        normal_logger.info("没有ZLMediaKit管理器需要关闭。")
-    
-    # 确保ZLMediaKit服务已停止
-    try:
-        from run.middlewares import stop_zlm_service
-        normal_logger.info("正在停止ZLMediaKit服务进程...")
-        if stop_zlm_service():
-            normal_logger.info("ZLMediaKit服务进程已成功停止")
+                normal_logger.info("RUN.PY LIFESPAN: ====> [START] 正在停止回调服务...")
+                sys.stdout.flush(); sys.stderr.flush()
+                await app.state.callback_service.stop()
+                normal_logger.info("RUN.PY LIFESPAN: ====> [END] 回调服务已停止。")
+                sys.stdout.flush(); sys.stderr.flush()
+            except Exception as e:
+                exception_logger.exception("停止回调服务时出错。")
+                sys.stdout.flush(); sys.stderr.flush()
         else:
-            normal_logger.warning("ZLMediaKit服务进程停止失败，请检查进程状态")
-    except Exception as e:
-        exception_logger.exception("停止ZLMediaKit服务进程时出错")
+            normal_logger.warning("RUN.PY LIFESPAN: CallbackService not found in app.state or not active.")
+            sys.stdout.flush(); sys.stderr.flush()
 
-    # 清理信号处理器
-    signal_handler.cleanup()
-
-    normal_logger.info("分析服务已停止。")
-    
-    # 强制退出进程以避免 ZLMediaKit 析构错误
-    # 这是解决 recursive_mutex lock failed 错误的最有效方法
-    normal_logger.info("强制退出进程以避免 ZLMediaKit C++ 析构错误")
-    
-    # 给多进程资源一些时间进行正常清理
-    time.sleep(0.1)
-    
-    # 尝试手动触发多进程资源清理
-    try:
-        import multiprocessing.util
-        # 先让现有的清理器运行
-        for finalizer in list(multiprocessing.util._finalizer_registry.values()):
+        # 2. TaskManager
+        if hasattr(app.state, "task_manager") and app.state.task_manager:
             try:
-                if finalizer.still_active():
-                    finalizer()
-            except:
-                pass
-        # 然后清空注册表
-        multiprocessing.util._finalizer_registry.clear()
-    except:
-        pass
-    
-    # 禁用 atexit 处理器以避免额外的清理
-    try:
-        import atexit
-        atexit._clear()
-    except:
-        pass
-    
-    # 给一点时间让日志输出
-    time.sleep(0.02)
-    sys.stdout.flush(); sys.stderr.flush()
-    
-    # 强制退出，跳过所有析构函数和清理过程
-    os._exit(0) # <--- 恢复 os._exit(0)
+                normal_logger.info("正在停止任务管理器...")
+                try:
+                    await asyncio.wait_for(app.state.task_manager.shutdown(), timeout=10.0)
+                    normal_logger.info("任务管理器已正常停止。")
+                except asyncio.TimeoutError:
+                    exception_logger.warning("等待任务管理器关闭超时。")
+                except Exception as inner_e:
+                    exception_logger.exception("任务管理器关闭过程中出错。")
+            except Exception as e:
+                 exception_logger.exception("停止任务管理器时出错。")
+            finally:
+                normal_logger.info("任务管理器关闭流程已完成。")
+        else:
+            normal_logger.info("没有活动的任务管理器需要关闭。")
+
+        if hasattr(app.state, "stream_manager") and app.state.stream_manager:
+            try:
+                normal_logger.info("正在关闭流管理器...")
+                try:
+                    await asyncio.wait_for(app.state.stream_manager.shutdown(), timeout=10.0)
+                    normal_logger.info("流管理器已正常关闭。")
+                except asyncio.TimeoutError:
+                    exception_logger.warning("等待流管理器关闭超时。")
+                except Exception as inner_e:
+                    exception_logger.exception("流管理器关闭过程中出错。")
+            except Exception as e:
+                exception_logger.exception("关闭流管理器时出错。")
+            finally:
+                normal_logger.info("流管理器关闭流程已完成。")
+        else:
+            normal_logger.info("没有活动的流管理器需要关闭。")
+
+        if hasattr(app.state, "stream_task_bridge") and app.state.stream_task_bridge:
+            try:
+                normal_logger.info("正在关闭流任务桥接器...")
+                try:
+                    await asyncio.wait_for(app.state.stream_task_bridge.shutdown(), timeout=5.0)
+                    normal_logger.info("流任务桥接器已正常关闭。")
+                except asyncio.TimeoutError:
+                    exception_logger.warning("等待流任务桥接器关闭超时。")
+                except Exception as inner_e:
+                    exception_logger.exception("流任务桥接器关闭过程中出错。")
+            except Exception as e:
+                exception_logger.exception("关闭流任务桥接器时出错。")
+            finally:
+                normal_logger.info("流任务桥接器关闭流程已完成。")
+
+        if hasattr(app.state, "zlm_manager") and app.state.zlm_manager:
+            try:
+                normal_logger.info("正在关闭ZLMediaKit...")
+                try:
+                    await asyncio.wait_for(app.state.zlm_manager.shutdown(), timeout=10.0)
+                    normal_logger.info("ZLMediaKit已正常关闭。")
+                except asyncio.TimeoutError:
+                    exception_logger.warning("等待ZLMediaKit关闭超时。")
+                    # 强制标记为关闭状态
+                    if hasattr(app.state.zlm_manager, '_is_shutting_down'):
+                        app.state.zlm_manager._is_shutting_down = True
+                except Exception as inner_e:
+                    exception_logger.exception("ZLMediaKit关闭过程中出错。")
+            except Exception as e:
+                exception_logger.exception("关闭ZLMediaKit时出错。")
+            finally:
+                # 确保清理库引用
+                try:
+                    if hasattr(app.state.zlm_manager, '_lib'):
+                        app.state.zlm_manager._lib = None
+                    # 强制垃圾回收
+                    import gc
+                    gc.collect()
+                except:
+                    pass
+                normal_logger.info("ZLMediaKit关闭流程已完成。")
+        else:
+            normal_logger.info("没有ZLMediaKit管理器需要关闭。")
+
+        # 确保ZLMediaKit服务已停止
+        try:
+            from run.middlewares import stop_zlm_service
+            normal_logger.info("正在停止ZLMediaKit服务进程...")
+            if stop_zlm_service():
+                normal_logger.info("ZLMediaKit服务进程已成功停止")
+            else:
+                normal_logger.warning("ZLMediaKit服务进程停止失败，请检查进程状态")
+        except Exception as e:
+            exception_logger.exception("停止ZLMediaKit服务进程时出错")
+
+        # 清理信号处理器
+        signal_handler.cleanup()
+
+        normal_logger.info("分析服务已停止。")
+
+        # 强制退出进程以避免 ZLMediaKit 析构错误
+        # 这是解决 recursive_mutex lock failed 错误的最有效方法
+        normal_logger.info("强制退出进程以避免 ZLMediaKit C++ 析构错误")
+
+        # 给多进程资源一些时间进行正常清理
+        time.sleep(0.1)
+
+        # 尝试手动触发多进程资源清理
+        try:
+            import multiprocessing.util
+            # 先让现有的清理器运行
+            for finalizer in list(multiprocessing.util._finalizer_registry.values()):
+                try:
+                    if finalizer.still_active():
+                        finalizer()
+                except:
+                    pass
+            # 然后清空注册表
+            multiprocessing.util._finalizer_registry.clear()
+        except:
+            pass
+
+        # 禁用 atexit 处理器以避免额外的清理
+        try:
+            import atexit
+            atexit._clear()
+        except:
+            pass
+
+        # 给一点时间让日志输出
+        time.sleep(0.02)
+        sys.stdout.flush(); sys.stderr.flush()
+
+        # 强制退出，跳过所有析构函数和清理过程
+        os._exit(0) # <--- 恢复 os._exit(0)
 
 def parse_args():
     """解析命令行参数"""

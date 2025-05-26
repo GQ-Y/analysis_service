@@ -24,25 +24,29 @@ exception_logger = get_exception_logger(__name__)
 class ZLMVideoStream(BaseVideoStream):
     """ZLMediaKit视频流类，负责管理单个流的生命周期和帧处理"""
 
-    def __init__(self, stream_id: str, config: Dict[str, Any], manager, player_handle=None):
+    def __init__(self, stream_key_from_manager: str, config: Dict[str, Any], manager, player_handle=None):
         """初始化ZLMediaKit流
 
         Args:
-            stream_id: 流ID
+            stream_key_from_manager: 由StreamManager根据URL哈希生成的唯一流密钥.
             config: 流配置
             manager: ZLMediaKit管理器实例
             player_handle: 不再使用，保留参数兼容性
         """
-        # 调用基类初始化
-        super().__init__(stream_id, config)
-        self.manager = manager
-        self.stream_type = config.get("type", "rtsp")
+        # 调用基类初始化. BaseVideoStream的stream_id现在将是stream_key_from_manager
+        super().__init__(stream_key_from_manager, config)
+        self.manager = manager # ZLMediaKitManager实例
+        self.stream_type = config.get("type", "rtsp") # rtsp, rtmp, hls, http etc.
+        self._url = config.get("url", "")  # 源流URL
 
-        # 移除C API相关属性，使用HTTP API
-        self._url = config.get("url", "")  # 修改为直接使用实例属性，避免访问父类的只读属性
-        self.app = config.get("app", "live")
-        self.vhost = config.get("vhost", "__defaultVhost__")
-        self.stream_name = config.get("stream_name", stream_id)
+        # ZLM相关配置
+        self.vhost = config.get("vhost", "__defaultVhost__") # 新逻辑：直接使用ZLM的默认vhost标识
+        self.app = config.get("app", "live") # 应用名
+        self.stream_name = self.stream_id # 使用从manager传入的stream_key作为ZLM中的stream名
+        self._zlm_stream_key: Optional[str] = config.get("stream_key") # 由ZLM API调用返回的key, 在addStreamProxy后设置
+
+        # ZLM API调用返回的内部key，用于后续操作如delStreamProxy
+        self._zlm_internal_api_key: Optional[str] = None 
 
         # 帧缓存 - 增加缓冲区大小提高稳定性
         self._frame_buffer = []
@@ -73,12 +77,12 @@ class ZLMVideoStream(BaseVideoStream):
         # 移除C API回调相关属性
         self._frame_callback_registered = False
 
-        # 代理URL（由ZLM HTTP API创建的流地址）
-        self._proxy_url = ""
-        # 流密钥（由ZLM HTTP API返回，用于后续操作）
-        self._stream_key = config.get("stream_key", "")
+        # 代理URL（由ZLM HTTP API创建的流地址） - 这个可能由 _start_stream_with_http_api 设置
+        # self._proxy_url = "" # 移除，因为它会在 _start_stream_with_http_api 中从API响应获取
+        
+        # self._stream_key = config.get("stream_key", "") # 移除，因为我们现在传入 stream_key_from_manager
 
-        normal_logger.info(f"创建ZLM流: {stream_id}, URL: {self._url}, 类型: {self.stream_type}, 使用HTTP API")
+        normal_logger.info(f"创建ZLM共享流 (key/stream_id: {self.stream_id}), 源URL: {self._url}, ZLM App: {self.app}, ZLM Stream Name: {self.stream_name}, 类型: {self.stream_type}")
 
     # 重写url属性，确保能够正确获取和设置url值
     @property
@@ -174,7 +178,7 @@ class ZLMVideoStream(BaseVideoStream):
                 try:
                     await self._pull_task
                 except asyncio.CancelledError:
-                    pass
+                    normal_logger.debug(f"拉流任务已取消: {self.stream_id}") # 使用 debug 级别
                 except Exception as e:
                     normal_logger.error(f"取消拉流任务时出错: {str(e)}")
 
@@ -183,56 +187,34 @@ class ZLMVideoStream(BaseVideoStream):
                 try:
                     await self._frame_task
                 except asyncio.CancelledError:
-                    pass
+                    normal_logger.debug(f"帧处理任务已取消: {self.stream_id}") # 使用 debug 级别
                 except Exception as e:
                     normal_logger.error(f"取消帧处理任务时出错: {str(e)}")
 
             # 3. 使用HTTP API关闭流
-            stream_key = self.config.get("stream_key", self._stream_key)
-            if stream_key:
+            # stream_key = self.config.get("stream_key", self._stream_key) # 旧逻辑
+            # 使用 self._zlm_internal_api_key (addStreamProxy返回的key)
+            if self._zlm_internal_api_key:
                 try:
                     # 使用delStreamProxy关闭流代理
-                    normal_logger.info(f"使用HTTP API关闭流代理: {self.stream_id}, key: {stream_key}")
-                    result = self.manager.call_api("delStreamProxy", {"key": stream_key})
+                    normal_logger.info(f"使用HTTP API (delStreamProxy) 关闭流代理 (ZLM internal key: {self._zlm_internal_api_key}), stream_id: {self.stream_id}")
+                    result = self.manager.call_api("delStreamProxy", {"key": self._zlm_internal_api_key})
                     
                     if result.get("code") == 0:
-                        normal_logger.info(f"HTTP API关闭流代理成功: {self.stream_id}")
+                        normal_logger.info(f"HTTP API (delStreamProxy) 关闭流代理成功, stream_id: {self.stream_id}")
                     else:
                         error_msg = result.get("msg", "未知错误")
-                        normal_logger.warning(f"HTTP API关闭流代理失败: {error_msg}")
+                        normal_logger.warning(f"HTTP API (delStreamProxy) 关闭流代理失败: {error_msg}, stream_id: {self.stream_id}")
                         
-                        # 尝试使用close_streams API
-                        close_params = {
-                            "vhost": self.vhost,
-                            "app": self.app,
-                            "stream": self.stream_name,
-                            "force": 1
-                        }
-                        normal_logger.info(f"尝试使用close_streams API关闭流: {self.stream_id}")
-                        result = self.manager.call_api("close_streams", close_params)
-                        if result.get("code") == 0:
-                            normal_logger.info(f"close_streams API关闭流成功: {self.stream_id}")
-                        else:
-                            normal_logger.warning(f"close_streams API关闭流失败: {result}")
+                        # 备用：尝试使用close_streams API (如果delStreamProxy失败或key未知)
+                        await self._fallback_close_stream_api()
                 except Exception as e:
-                    normal_logger.error(f"关闭流代理时出错: {str(e)}")
+                    normal_logger.error(f"通过 delStreamProxy 关闭流代理 (ZLM internal key: {self._zlm_internal_api_key}) 时出错: {str(e)}, stream_id: {self.stream_id}")
+                    await self._fallback_close_stream_api() # 尝试备用关闭
             else:
-                # 如果没有stream_key，尝试使用close_streams API
-                try:
-                    close_params = {
-                        "vhost": self.vhost,
-                        "app": self.app,
-                        "stream": self.stream_name,
-                        "force": 1
-                    }
-                    normal_logger.info(f"使用close_streams API关闭流: {self.stream_id}")
-                    result = self.manager.call_api("close_streams", close_params)
-                    if result.get("code") == 0:
-                        normal_logger.info(f"close_streams API关闭流成功: {self.stream_id}")
-                    else:
-                        normal_logger.warning(f"close_streams API关闭流失败: {result}")
-                except Exception as e:
-                    normal_logger.error(f"关闭流时出错: {str(e)}")
+                # 如果没有 _zlm_internal_api_key (例如，addStreamProxy未成功或未返回key)
+                normal_logger.warning(f"停止流 {self.stream_id} 时 _zlm_internal_api_key 未知，尝试使用 close_streams API。")
+                await self._fallback_close_stream_api()
 
             # 4. 清理订阅者
             async with self._subscriber_lock:
@@ -248,7 +230,7 @@ class ZLMVideoStream(BaseVideoStream):
             self._is_running = False
             self._is_stopping = False
 
-            normal_logger.info(f"流 {self.stream_id} 停止成功")
+            normal_logger.info(f"流 {self.stream_id} 已成功停止")
             return True
 
         except Exception as e:
@@ -537,15 +519,15 @@ class ZLMVideoStream(BaseVideoStream):
             if result.get("code") == 0:
                 normal_logger.info(f"HTTP API创建流代理成功: {self.stream_id}")
                 # 保存流密钥，用于后续操作
-                self._stream_key = result.get("data", {}).get("key", "")
-                self.config["stream_key"] = self._stream_key
+                self._zlm_internal_api_key = result.get("data", {}).get("key", "")
+                self.config["stream_key"] = self._zlm_internal_api_key
                 
                 # 构建代理URL
                 self._proxy_url = self._get_zlm_proxy_url()
                 
                 # 更新统计信息
                 self._stats["proxy_url"] = self._proxy_url
-                self._stats["stream_key"] = self._stream_key
+                self._stats["stream_key"] = self._zlm_internal_api_key
                 self._stats["using_proxy"] = True
                 self._stats["connected_url"] = self.url
                 
@@ -654,19 +636,59 @@ class ZLMVideoStream(BaseVideoStream):
         
         使用OpenCV从ZLM代理URL拉取视频流
         """
+        cap = None # Initialize cap here to ensure it's defined in finally/except blocks
+        zlm_pull_url_for_opencv = None
         try:
-            # 构建代理URL
-            proxied_url = self._proxy_url or self._get_zlm_proxy_url()
-            original_url = self.url
+            normal_logger.info(f"OpenCV拉流任务开始 for stream_id: {self.stream_id}")
             
-            normal_logger.info(f"OpenCV拉流任务开始")
-            normal_logger.info(f"原始URL: {original_url}")
-            normal_logger.info(f"ZLM代理URL: {proxied_url}")
+            # 步骤 1: 检查配置中是否直接指定了 OpenCV 拉流地址 (最高优先级)
+            if self.config.get("opencv_pull_url"):
+                zlm_pull_url_for_opencv = self.config["opencv_pull_url"]
+                normal_logger.info(f"流 {self.stream_id}: 使用配置中指定的 OpenCV 拉流地址: {zlm_pull_url_for_opencv}")
+            else:
+                # 步骤 2: 调用 get_zlm_player_proxy_info 主要用于确认流状态和获取元数据
+                # 但我们不再期望它提供 player_urls 列表
+                try:
+                    normal_logger.info(f"流 {self.stream_id}: 尝试从 ZLM API 获取播放信息 (元数据检查)...")
+                    proxy_info = await self.get_zlm_player_proxy_info() # This calls the modified get_proxy_url_info
+                    if proxy_info and proxy_info.get("success"):
+                        normal_logger.info(f"流 {self.stream_id}: ZLM API元数据检查成功. Online: {proxy_info.get('online_status_from_zlm')}. Raw info: {proxy_info.get('raw_media_info')}")
+                        # 这里可以根据 proxy_info 中的其他信息做一些判断，但不再从中取URL
+                    elif proxy_info: # API 调用本身可能失败，或者 success 为 False
+                        normal_logger.warning(f"流 {self.stream_id}: ZLM API元数据检查失败或未返回成功。Response: {proxy_info}")
+                    else: # proxy_info is None
+                        normal_logger.warning(f"流 {self.stream_id}: ZLM API元数据检查返回 None.")
+                except Exception as e_player_info:
+                    exception_logger.error(f"流 {self.stream_id}: ZLM API元数据检查时发生异常: {e_player_info}")
+
+                # 步骤 3: 使用备用方法 (get_opencv_pull_url) 构建拉流地址
+                # 这是获取 OpenCV 拉流地址的主要方式（如果未在配置中覆盖）
+                normal_logger.info(f"流 {self.stream_id}: 使用 get_opencv_pull_url() 构建 OpenCV 拉流地址...")
+                zlm_pull_url_for_opencv = self.get_opencv_pull_url() # 同步方法
+            
+            if not zlm_pull_url_for_opencv: # 如果最终还是没有URL
+                error_message = f"流 {self.stream_id}: 无法确定有效的 OpenCV 拉流地址。原始URL: {self.url}"
+                normal_logger.error(error_message)
+                self._status = StreamStatus.ERROR
+                self._health_status = StreamHealthStatus.UNHEALTHY
+                self._last_error = error_message
+                # 考虑是否触发重连或彻底失败
+                return
+
+            normal_logger.info(f"流 {self.stream_id}: 最终选定 OpenCV 拉流地址: {zlm_pull_url_for_opencv}")
+
+            # 构建代理URL (此处的proxied_url更像是最终选定的拉流URL)
+            # proxied_url = self._proxy_url or self._get_zlm_proxy_url() # 旧逻辑
+            # original_url = self.url # 旧逻辑，但 self.url 就是原始URL
+            
+            # normal_logger.info(f"OpenCV拉流任务开始") # 日志已提前
+            # normal_logger.info(f"原始URL: {original_url}")
+            # normal_logger.info(f"ZLM代理URL: {proxied_url}")
             
             # 记录使用的是OpenCV方式
-            self._stats["using_proxy"] = True
-            self._stats["proxy_url"] = proxied_url
-            self._stats["original_url"] = original_url
+            self._stats["using_proxy"] = True # 这个标记可能需要重新审视其含义，因为我们总是通过ZLM拉流
+            self._stats["proxy_url"] = zlm_pull_url_for_opencv # 记录实际使用的URL
+            self._stats["original_url"] = self.url # 记录原始输入URL
             
             # 添加日志标记，用于测试检测
             from shared.utils.logger import TEST_LOG_MARKER
@@ -681,10 +703,10 @@ class ZLMVideoStream(BaseVideoStream):
             while open_retry_count < max_open_retries and not self._stop_event.is_set():
                 try:
                     # 使用OpenCV打开视频流
-                    cap = cv2.VideoCapture(proxied_url)
+                    cap = cv2.VideoCapture(zlm_pull_url_for_opencv) # 使用最终确定的URL
                     if not cap.isOpened():
                         open_retry_count += 1
-                        normal_logger.warning(f"无法打开代理URL (尝试 {open_retry_count}/{max_open_retries}): {proxied_url}")
+                        normal_logger.warning(f"无法打开最终确定的拉流URL (尝试 {open_retry_count}/{max_open_retries}): {zlm_pull_url_for_opencv}")
                         
                         # 关闭失败的cap
                         if cap:
@@ -711,10 +733,10 @@ class ZLMVideoStream(BaseVideoStream):
             
             # 检查是否成功打开
             if not cap or not cap.isOpened():
-                normal_logger.error(f"多次尝试后仍无法打开代理URL: {proxied_url}")
+                normal_logger.error(f"多次尝试后仍无法打开最终确定的拉流URL: {zlm_pull_url_for_opencv}")
                 self._status = StreamStatus.ERROR
                 self._health_status = StreamHealthStatus.UNHEALTHY
-                self._last_error = f"无法打开代理URL: {proxied_url}"
+                self._last_error = f"无法打开最终确定的拉流URL: {zlm_pull_url_for_opencv}"
                 return
                 
             # 设置OpenCV参数
@@ -818,9 +840,9 @@ class ZLMVideoStream(BaseVideoStream):
                             await asyncio.sleep(1.0)
                             
                             # 重新连接
-                            cap = cv2.VideoCapture(proxied_url)
+                            cap = cv2.VideoCapture(zlm_pull_url_for_opencv) # 使用相同的最终URL
                             if not cap.isOpened():
-                                normal_logger.error(f"重新连接失败: {proxied_url}")
+                                normal_logger.error(f"重新连接失败: {zlm_pull_url_for_opencv}")
                                 self._stats["errors"] += 1
                                 self._status = StreamStatus.ERROR
                                 self._health_status = StreamHealthStatus.UNHEALTHY
@@ -833,7 +855,7 @@ class ZLMVideoStream(BaseVideoStream):
                             # 重新设置缓冲区
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                             
-                            normal_logger.info(f"重新连接成功: {proxied_url}")
+                            normal_logger.info(f"重新连接成功: {zlm_pull_url_for_opencv}")
                         else:
                             # 短暂休眠，避免立即重试
                             await asyncio.sleep(0.1)
@@ -851,9 +873,9 @@ class ZLMVideoStream(BaseVideoStream):
                             await asyncio.sleep(1.0)
                             
                             # 重新连接
-                            cap = cv2.VideoCapture(proxied_url)
+                            cap = cv2.VideoCapture(zlm_pull_url_for_opencv) # 使用相同的最终URL
                             if not cap.isOpened():
-                                normal_logger.error(f"重新连接失败: {proxied_url}")
+                                normal_logger.error(f"重新连接失败: {zlm_pull_url_for_opencv}")
                                 self._stats["errors"] += 1
                                 break
                             
@@ -864,7 +886,7 @@ class ZLMVideoStream(BaseVideoStream):
                             # 重新设置缓冲区
                             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                             
-                            normal_logger.info(f"重新连接成功: {proxied_url}")
+                            normal_logger.info(f"重新连接成功: {zlm_pull_url_for_opencv}")
                         except Exception as reconnect_err:
                             normal_logger.error(f"重连过程中出错: {str(reconnect_err)}")
                             self._stats["errors"] += 1
@@ -876,7 +898,7 @@ class ZLMVideoStream(BaseVideoStream):
             # 关闭OpenCV连接
             if cap:
                 cap.release()
-            normal_logger.info(f"OpenCV拉流任务结束")
+            normal_logger.info(f"OpenCV拉流任务结束 for stream_id: {self.stream_id}")
             
         except Exception as e:
             self._stats["errors"] += 1
@@ -884,9 +906,11 @@ class ZLMVideoStream(BaseVideoStream):
             self._health_status = StreamHealthStatus.UNHEALTHY
             self._last_error = f"拉流任务异常: {str(e)}"
             
-            exception_logger.exception(f"拉流任务异常: {str(e)}")
+            if cap: # 确保在异常情况下也释放cap
+                cap.release()
+            exception_logger.exception(f"拉流任务异常 for stream_id {self.stream_id}: {str(e)}")
         
-        normal_logger.info(f"拉流任务退出: {self.url}")
+        normal_logger.info(f"拉流任务退出: {self.url}, stream_id: {self.stream_id}")
 
     async def _process_frames_task(self) -> None:
         """帧处理任务，负责将帧分发给订阅者"""
@@ -1034,50 +1058,169 @@ class ZLMVideoStream(BaseVideoStream):
             self._last_error = str(e)
 
     async def get_proxy_url_info(self) -> Dict[str, Any]:
-        """获取代理URL相关信息
-        
-        Returns:
-            Dict[str, Any]: 代理URL相关信息
+        """获取此流在ZLMediaKit中的代理播放地址信息 (如果已通过addStreamProxy创建)
+        返回包含各种协议播放地址的字典。
+        主要用于确认流是否存在于ZLM以及获取其元数据。
         """
-        proxy_url = self._get_zlm_proxy_url()
-        result = {
-            "proxy_url": proxy_url,
-            "original_url": self.url,
-            "server_address": self.manager._config.server_address,
-            "rtsp_port": self.manager._config.rtsp_port,
-            "app": self.app,
-            "stream_name": self.stream_name,
-            "stream_id": self.stream_id,
-            "status": self._status.name,
-            "health_status": self._health_status.name,
-            "frame_received": self._stats.get("frames_received", 0) > 0,
-            "last_frame_time": self._stats.get("last_frame_time", 0),
-            "time_since_last_frame": time.time() - self._stats.get("last_frame_time", time.time()),
-            "using_http_api": True
-        }
-        
-        # 提供ZLM服务器配置的相关信息
+        if not self.manager:
+            return {"success": False, "error": "ZLMediaKit管理器未初始化"} # 添加 success: False
+
         try:
-            zlm_config = {
-                "api_url": f"http://{self.manager._config.server_address}:{self.manager._config.http_port}/index/api/",
-                "secret": self.manager._config.api_secret[:4] + "****" if self.manager._config.api_secret else None,
-                "media_server_id": self.manager._config.media_server_id,
-                "hook_enable": self.manager._config.hook_enable,
-                "hook_url": self.manager._config.hook_url if self.manager._config.hook_enable else None
+            params = {
+                "vhost": self.vhost,
+                "app": self.app,
+                "schema": "rtmp", # ZLM 要求 schema 参数。rtmp 或 rtsp 都可以。
+                "stream": self.stream_name
             }
-            result["zlm_config"] = zlm_config
+            media_info = self.manager.call_api("getMediaInfo", params)
+            normal_logger.debug(f"getMediaInfo for {self.vhost}/{self.app}/{self.stream_name} response: {media_info}")
+
+            if media_info and media_info.get("code") == 0:
+                is_online = media_info.get("online")
+                if is_online is None:
+                    normal_logger.info(f"ZLM getMediaInfo (code 0) for {self.stream_id} did not return 'online' status, assuming stream info is available.")
+                elif not is_online:
+                    normal_logger.warning(f"ZLM getMediaInfo表示流 {self.vhost}/{self.app}/{self.stream_name} (key: {self.stream_id}) 当前不在线 (online: {is_online})。")
+                
+                # 不再尝试构建 player_urls 字典，因为 ZLM API 不直接提供这些。
+                # ZLM 的播放地址需要客户端根据规则自行构建。
+                return {
+                    "success": True,
+                    "stream_id": self.stream_id,
+                    "vhost": self.vhost,
+                    "app": self.app,
+                    "stream_name": self.stream_name,
+                    "zlm_internal_api_key": self._zlm_internal_api_key,
+                    "online_status_from_zlm": is_online,
+                    "origin_url": media_info.get("originUrl"),
+                    "origin_type": media_info.get("originTypeStr"),
+                    "tracks": media_info.get("tracks", []),
+                    "raw_media_info": media_info # 返回原始的media_info
+                }
+            elif media_info and media_info.get("code") == -2: # Stream not found
+                normal_logger.warning(f"ZLM中未找到流 {self.vhost}/{self.app}/{self.stream_name} (getMediaInfo code -2). stream_id(key): {self.stream_id}")
+                return {"success": False, "error": f"ZLM中未找到流 {self.vhost}/{self.app}/{self.stream_name}", "code": -2, "response": media_info}
+            else:
+                error_msg = media_info.get("msg", "获取媒体信息失败") if media_info else "API无响应"
+                normal_logger.error(f"调用getMediaInfo获取播放地址失败 for {self.vhost}/{self.app}/{self.stream_name}: {error_msg}. Response: {media_info}")
+                return {"success": False, "error": error_msg, "response": media_info}
+
         except Exception as e:
-            result["zlm_config_error"] = str(e)
+            exception_logger.exception(f"获取流 {self.stream_id} 的代理播放地址信息时出错: {str(e)}")
+            return {"success": False, "error": str(e)} # 添加 success: False
+
+    async def get_zlm_player_proxy_info(self) -> Optional[Dict[str, Any]]:
+        """公共方法，调用 get_proxy_url_info 获取播放地址信息。"""
+        return await self.get_proxy_url_info()
+
+    async def reconnect(self) -> bool:
+        """重新连接流（先停止，再启动）"""
+        normal_logger.info(f"请求重新连接流: {self.stream_id} (URL: {self._url})")
+        if self._is_stopping:
+            normal_logger.warning(f"流 {self.stream_id} 正在停止中，无法执行重连。")
+            return False
+
+        # 确保同一时间只有一个重连操作
+        # if self._reconnect_lock.locked():
+        #     normal_logger.warning(f"流 {self.stream_id} 的重连操作已在进行中，跳过此次请求。")
+        #     return False # Or wait for the lock
+
+        # async with self._reconnect_lock:
+        normal_logger.info(f"开始执行流 {self.stream_id} 的重连逻辑。")
+        # 停止当前流（如果正在运行）
+        if self._is_running:
+            normal_logger.info(f"重连流 {self.stream_id}: 先停止当前活动。")
+            # 调用 stop 但不希望它再次触发重连
+            # 这里的 stop 应该是一个彻底的清理，以便 start 可以重新开始
+            # 需要确保 stop 内部的重连逻辑不会被这里的调用触发
+            # current_reconnect_attempts = self.config.get("reconnect_attempts", 3)
+            # self.config["reconnect_attempts"] = 0 # 临时禁用stop内部的重连
+            await self.stop() # stop 应该处理任务取消和资源清理
+            # self.config["reconnect_attempts"] = current_reconnect_attempts # 恢复
+            await asyncio.sleep(1)  # 等待资源完全释放
+
+        # 重置状态以准备重新启动
+        self._status = StreamStatus.INITIALIZING
+        self._health_status = StreamHealthStatus.UNHEALTHY
+        self._last_error = "发起重连"
+        self._is_running = False # 确保标记为未运行
+        self._zlm_internal_api_key = None # 清除旧的API key
+        # self._reconnect_attempts_done = 0 # start 会重置
+
+        normal_logger.info(f"流 {self.stream_id}: 状态已重置，准备重新启动以进行重连。")
+        # 重新启动流
+        success = await self.start()
+        if success:
+            normal_logger.info(f"流 {self.stream_id} 重新连接成功 (通过stop/start)。")
+            return True
+        else:
+            normal_logger.error(f"流 {self.stream_id} 重新连接失败 (start调用失败)。")
+            self._status = StreamStatus.ERROR # 确保标记为错误
+            return False
+
+    def get_opencv_pull_url(self) -> Optional[str]:
+        """获取供OpenCV直接拉流的URL (通常是RTMP或RTSP)
+           优先使用ZLM getMediaInfo API返回的内网播放地址
+        """
+        if not (self._status == StreamStatus.ONLINE or self._status == StreamStatus.CONNECTING or self._zlm_internal_api_key):
+            normal_logger.warning(f"尝试获取OpenCV拉流地址时，流 {self.stream_id} (app:{self.app}, stream:{self.stream_name}) 可能未成功添加到ZLM或状态不佳。Status: {self._status.name}")
+            # return None # 不应立即返回None，因为get_proxy_url_info可能会在首次连接时被调用
+
+        # 尝试从ZLM获取最新的播放地址信息
+        # 注意：get_proxy_url_info 是异步的，但此方法是同步的。这是一个潜在问题。
+        # 为了解决这个问题，_pull_stream_task 中应该异步调用 get_proxy_url_info。
+        # 此方法可以保留一个简化的、基于已知配置的备用URL构造。
         
-        # 提供代理URL访问建议
-        suggestions = [
-            "确保ZLMediaKit服务正常运行",
-            "检查ZLMediaKit配置中的RTSP代理设置是否正确",
-            "确认防火墙未阻止RTSP端口",
-            "尝试使用播放器(如VLC)手动访问代理URL",
-            "检查ZLMediaKit的hook配置是否正确",
-            "查看ZLMediaKit日志中是否有相关错误信息"
-        ]
-        result["suggestions"] = suggestions
+        # 优先的逻辑应该是 _pull_stream_task 内部异步调用 get_proxy_url_info
+        # 并从其结果中选择合适的 internal URL。
+        # 这里提供一个基于配置的备用，但不推荐作为主要方式。
+
+        # 构造一个可能的内网播放地址 (如果ZLM和分析服务在同一网络)
+        # 这部分逻辑需要 ZLMManager 提供 ZLM 的 host 和 port
+        zlm_host = self.manager.zlm_internal_host if self.manager else "127.0.0.1"
         
-        return result
+        # 尝试从config获取覆盖的OpenCV拉流地址
+        opencv_pull_url_override = self.config.get("opencv_pull_url")
+        if opencv_pull_url_override:
+            normal_logger.info(f"使用配置中提供的OpenCV拉流地址: {opencv_pull_url_override} for stream {self.stream_id}")
+            return opencv_pull_url_override
+
+        # 默认尝试RTMP，然后RTSP
+        # 这些端口应该是ZLM实际监听的端口
+        rtmp_port = self.manager.rtmp_port if self.manager else 1935
+        rtsp_port = self.manager.rtsp_port if self.manager else 554
+
+        # 优先使用 self.stream_name (即 stream_key_from_manager)
+        stream_identifier = self.stream_name 
+
+        # 尝试RTMP内网地址
+        # ZLM的播放地址通常是 vhost/app/stream_identifier
+        # 如果vhost是__defaultVhost__，实际播放时通常可以省略vhost
+        # 但如果OpenCV需要完整的路径，且ZLM配置了多vhost，则需要精确
+        # 假设单vhost或__defaultVhost__可以省略
+        pull_url_rtmp = f"rtmp://{zlm_host}:{rtmp_port}/{self.app}/{stream_identifier}"
+        # 尝试RTSP内网地址
+        pull_url_rtsp = f"rtsp://{zlm_host}:{rtsp_port}/{self.app}/{stream_identifier}"
+
+        # 默认返回RTMP，因为OpenCV对RTMP支持较好
+        # 调用者（_pull_stream_task）应尝试从 get_proxy_url_info 获取更准确的地址
+        normal_logger.info(f"为流 {self.stream_id} 生成的备用OpenCV拉流地址 (RTMP): {pull_url_rtmp}")
+        return pull_url_rtmp
+
+    async def _fallback_close_stream_api(self):
+        """使用 close_streams API 作为备用关闭方法。"""
+        try:
+            close_params = {
+                "vhost": self.vhost,
+                "app": self.app,
+                "stream": self.stream_name, # self.stream_name 就是 self.stream_id (即 stream_key_from_manager)
+                "force": 1 # 强制关闭
+            }
+            normal_logger.info(f"尝试使用 close_streams API 关闭流: vhost={self.vhost}, app={self.app}, stream={self.stream_name}, stream_id(key): {self.stream_id}")
+            result = self.manager.call_api("close_streams", close_params)
+            if result.get("code") == 0:
+                normal_logger.info(f"close_streams API 关闭流成功: stream_id(key): {self.stream_id}")
+            else:
+                normal_logger.warning(f"close_streams API 关闭流失败: {result}, stream_id(key): {self.stream_id}")
+        except Exception as e:
+            normal_logger.error(f"通过 close_streams API 关闭流时出错: {str(e)}, stream_id(key): {self.stream_id}")

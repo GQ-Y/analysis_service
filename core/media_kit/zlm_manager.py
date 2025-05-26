@@ -62,6 +62,21 @@ class ZLMediaKitManager:
 
         normal_logger.info(f"ZLMediaKit HTTP API管理器初始化完成，API地址: {self._api_url}")
 
+    @property
+    def zlm_internal_host(self) -> str:
+        """获取ZLM内部主机地址，通常是server_address"""
+        return self._config.server_address
+
+    @property
+    def rtmp_port(self) -> int:
+        """获取ZLM配置的RTMP端口"""
+        return self._config.rtmp_port
+
+    @property
+    def rtsp_port(self) -> int:
+        """获取ZLM配置的RTSP端口"""
+        return self._config.rtsp_port
+
     async def initialize(self) -> None:
         """初始化ZLMediaKit HTTP API连接
 
