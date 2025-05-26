@@ -101,8 +101,6 @@ def create_app() -> FastAPI:
     if not static_dir.exists():
         static_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-    normal_logger.info("FastAPI 应用已创建并配置完成。")
     return app
 
 @asynccontextmanager
