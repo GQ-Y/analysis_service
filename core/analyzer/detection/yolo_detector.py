@@ -186,202 +186,296 @@ class YOLODetector:
 
     async def detect(self, image: np.ndarray, **kwargs) -> Dict[str, Any]:
         """
-        检测图像中的目标
+        检测图像中的目标, 返回更详细的结果结构。
         
         Args:
-            image: 输入图像
+            image: 输入图像 (H, W, C)
             **kwargs: 其他参数，包括：
                 - confidence: 置信度阈值
                 - iou_threshold: IoU阈值
                 - max_detections: 最大检测目标数
-                - classes: 类别列表
-                - return_image: 是否返回标注后的图像
+                - classes: 类别名称列表用于过滤
+                - return_image: 是否返回标注后的图像 (base64)
+                - imgsz: 推理图像尺寸 (例如 640 或 [640, 480])
                 
         Returns:
-            Dict[str, Any]: 检测结果
+            Dict[str, Any]: 检测结果, 结构如下:
+            {
+                "success": bool,
+                "error": Optional[str],
+                "detections": Optional[List[Dict]],
+                "applied_config": {
+                    "confidence_threshold": float,
+                    "iou_threshold": float,
+                    "max_detections": int,
+                    "imgsz": Union[int, List[int]],
+                    "filtered_classes": Optional[List[str]], // 实际用于过滤的类别名称
+                    "half_precision": bool
+                },
+                "image_info": {
+                    "original_height": int,
+                    "original_width": int,
+                    "processed_height": Optional[int], // 模型实际推理的图像高度
+                    "processed_width": Optional[int]   // 模型实际推理的图像宽度
+                },
+                "timing_stats": { // 所有时间单位为毫秒
+                    "analyzer_total_time_ms": float, 
+                    "model_predict_time_ms": Optional[float], // ultralytics predict()耗时
+                    "pre_processing_time_ms": Optional[float], 
+                    "inference_time_ms": Optional[float], 
+                    "post_processing_time_ms": Optional[float],
+                    "nms_time_ms": Optional[float]
+                },
+                "annotated_image_base64": Optional[str]
+            }
         """
+        analyzer_start_time = time.perf_counter()
+
         if self.model is None:
             normal_logger.warning("YOLO检测器模型未加载，无法进行检测")
-            return {"success": False, "error": "模型未加载", "detections": []}
+            return {
+                "success": False, 
+                "error": "模型未加载", 
+                "detections": [],
+                "applied_config": {},
+                "image_info": {"original_height": image.shape[0], "original_width": image.shape[1]},
+                "timing_stats": {"analyzer_total_time_ms": (time.perf_counter() - analyzer_start_time) * 1000},
+                "annotated_image_base64": None
+            }
+
+        original_height, original_width = image.shape[:2]
             
-        # 获取参数
+        # 获取和记录应用的参数
         confidence = kwargs.get("confidence", 0.25)
         iou_threshold = kwargs.get("iou_threshold", 0.45)
         max_detections = kwargs.get("max_detections", 100)
-        class_names_to_filter = kwargs.get("classes") # 这是字符串列表，如 ['person', 'car'] 或 []
-        return_image = kwargs.get("return_image", False)
-        
-        class_indices_to_filter = None # 默认为 None，表示检测所有类别
+        class_names_to_filter_input = kwargs.get("classes") 
+        return_image_flag = kwargs.get("return_image", False)
+        imgsz_arg = kwargs.get("imgsz", self.kwargs.get("image_size", {}).get("width", 640)) # 尝试从 kwargs 或初始化参数获取
+        if isinstance(imgsz_arg, dict) and 'width' in imgsz_arg : # Handle cases where it might come as {'width': W, 'height': H}
+            imgsz_arg = imgsz_arg['width'] # Default to width for single int value, model handles aspect ratio or specific H,W
 
-        # 检查 class_names_to_filter 是否明确地是一个空列表，如果是，则意图是检测所有
-        if class_names_to_filter == []: # 用户明确传入空列表
+
+        applied_config_log = {
+            "confidence_threshold": confidence,
+            "iou_threshold": iou_threshold,
+            "max_detections": max_detections,
+            "imgsz_arg": imgsz_arg, # Log the argument passed to predict
+            "input_classes_filter": class_names_to_filter_input,
+            "half_precision_enabled": self.half_precision
+        }
+        normal_logger.info(f"YOLO detect called with applied_config_log: {applied_config_log}")
+
+        class_indices_to_filter = None
+        actual_filtered_class_names = None
+
+        if class_names_to_filter_input == []:
             normal_logger.info("请求中的 'classes' 为空列表，将检测所有类别。")
-            class_indices_to_filter = None # 显式设置为None
-        elif class_names_to_filter and self.model and hasattr(self.model, 'names') and self.model.names:
-            # 处理非空的 class_names_to_filter
-            model_class_names_list = []
-            # self.model.names 可以是 list [name1, name2, ...] 或 dict {id1: name1, id2: name2, ...}
-            if isinstance(self.model.names, list):
-                model_class_names_list = self.model.names
-            elif isinstance(self.model.names, dict):
-                try:
-                    max_idx = -1
-                    valid_keys = [k for k in self.model.names.keys() if isinstance(k, int)]
-                    if valid_keys:
-                        max_idx = max(valid_keys)
-                    
-                    if max_idx != -1:
-                        model_class_names_list = [""] * (max_idx + 1) 
-                        for idx, name in self.model.names.items():
-                            if isinstance(idx, int) and 0 <= idx <= max_idx:
-                                model_class_names_list[idx] = name
-                    else: 
-                        normal_logger.warning(f"模型类别名称字典 (self.model.names) 键不符合预期: {self.model.names}，尝试直接从值构建查找。")
-                        # 如果字典的键不是预期的整数索引，尝试直接使用值的列表进行查找，但顺序不保证
-                        # model_class_names_list = list(self.model.names.values()) # 这可能不是最佳选择
-                except Exception as e_names:
-                    normal_logger.warning(f"处理 self.model.names (字典类型) 时出错: {e_names}。类别过滤可能不准确。")
-            
+            class_indices_to_filter = None
+        elif class_names_to_filter_input and self.model and hasattr(self.model, 'names') and self.model.names:
+            model_class_names_map = self.model.names # 这是 {index: name} 格式
+            actual_filtered_class_names = []
             temp_indices_list = []
-            processed_indices_set = set()
-
-            if model_class_names_list: # 如果成功从列表转换 (或字典成功转为有序列表)
-                for name_to_filter in class_names_to_filter:
-                    try:
-                        idx = model_class_names_list.index(name_to_filter)
-                        if idx not in processed_indices_set:
-                           temp_indices_list.append(idx)
-                           processed_indices_set.add(idx)
-                    except ValueError:
-                        normal_logger.warning(f"类别 '{name_to_filter}' 在模型类别列表 {model_class_names_list} 中未找到，将被忽略。")
-            elif isinstance(self.model.names, dict): # 如果是字典且列表转换不理想/未发生，尝试直接从字典查找
-                name_to_index_map = {name: idx for idx, name in self.model.names.items() if isinstance(idx, int)} # 确保键是整数
-                if not name_to_index_map and self.model.names: # 如果上面的构建失败（例如键不是整数），尝试更通用的反向查找
-                     name_to_index_map = {v: k for k, v in self.model.names.items()}
-
-                for name_to_filter in class_names_to_filter:
-                    if name_to_filter in name_to_index_map:
-                        idx = name_to_index_map[name_to_filter]
-                        if isinstance(idx, int) and idx not in processed_indices_set: # 确保索引是整数
-                           temp_indices_list.append(idx)
-                           processed_indices_set.add(idx)
-                        elif not isinstance(idx, int):
-                            normal_logger.warning(f"类别 '{name_to_filter}' 对应的索引 '{idx}' 不是整数，将被忽略。")
-                    else:
-                        normal_logger.warning(f"类别 '{name_to_filter}' 在模型类别字典 {self.model.names} 中未找到，将被忽略。")
+            for name_to_filter in class_names_to_filter_input:
+                found = False
+                for index, model_class_name in model_class_names_map.items():
+                    if model_class_name.lower() == name_to_filter.lower():
+                        temp_indices_list.append(index)
+                        actual_filtered_class_names.append(model_class_name) # Store the actual name from model
+                        found = True
+                        break
+                if not found:
+                    normal_logger.warning(f"请求过滤的类别 '{name_to_filter}' 在模型类别中未找到，将被忽略。")
             
-            if temp_indices_list: # 如果找到任何有效的类别索引
-                class_indices_to_filter = temp_indices_list
-                normal_logger.info(f"将过滤以下类别索引: {class_indices_to_filter} (来自名称: {class_names_to_filter})")
-            else: # 如果没有找到任何有效类别索引 (class_names_to_filter 非空但所有名称都无效)
-                normal_logger.warning(f"提供的所有类别名称 {class_names_to_filter} 均无效或未在模型中找到。将检测所有类别。")
-                class_indices_to_filter = None # 设置为None以检测所有
-
-        elif class_names_to_filter: # class_names_to_filter 非空，但模型信息不足 (self.model is None or self.model.names is empty/None)
-             normal_logger.warning(f"提供了类别名称 {class_names_to_filter} 用于过滤，但无法访问模型类别信息。将检测所有类别。")
-             class_indices_to_filter = None # 设置为None以检测所有
-        # 如果 class_names_to_filter 原本就是 None (kwargs.get返回None), class_indices_to_filter 保持为 None
-
-        # 记录时间
-        start_time = time.time()
+            if temp_indices_list:
+                class_indices_to_filter = sorted(list(set(temp_indices_list)))
+                normal_logger.info(f"将过滤以下类别索引: {class_indices_to_filter} (来自名称: {actual_filtered_class_names})")
+            else:
+                # 如果提供的所有类别名称都无效，则不进行过滤 (或者根据需求可以报错或返回空)
+                normal_logger.warning(f"提供的所有类别名称 {class_names_to_filter_input} 在模型中均未找到，实际不过滤任何类别。")
+                class_indices_to_filter = None 
+                actual_filtered_class_names = None # Reset if no valid classes found
         
-        # Log model names and the actual class indices being used for filtering
+        # 记录模型类别名称和最终传递给 predict 的过滤器
         if self.model and hasattr(self.model, 'names'):
             normal_logger.info(f"模型类别名称 (self.model.names): {self.model.names}")
-        else:
-            normal_logger.warning("无法访问 self.model.names")
-        normal_logger.info(f"传递给 model.predict 的 confidence: {confidence}, iou: {iou_threshold}, max_det: {max_detections}")
-        # 修改：始终传递 classes=None 给 predict，后续手动过滤
-        normal_logger.info(f"内部调用 model.predict 时将传递 classes=None，agnostic_nms=True。原始请求的类别过滤将在之后应用。原始 class_indices_to_filter: {class_indices_to_filter}")
-
-        normal_logger.info(f"开始执行YOLO检测，图像大小：{image.shape}，参数：conf={confidence}, iou={iou_threshold}, max_det={max_detections}")
+        normal_logger.info(f"传递给 model.predict 的 class_indices_to_filter: {class_indices_to_filter} (如果为None则不过滤)")
+        normal_logger.info(f"传递给 model.predict 的 confidence: {confidence}, iou: {iou_threshold}, max_det: {max_detections}, imgsz: {imgsz_arg}")
         
+        detections_output = []
+        annotated_image_b64 = None
+        processed_img_h, processed_img_w = None, None # 模型实际推理尺寸
+
+        timing_stats = {
+            "analyzer_total_time_ms": 0.0, # Will be set at the end
+            "model_predict_time_ms": None,
+            "pre_processing_time_ms": None,
+            "inference_time_ms": None,
+            "post_processing_time_ms": None,
+            "nms_time_ms": None
+        }
+
         try:
-            # 进行推理
+            # --- 开始推理 ---
+            predict_start_time = time.perf_counter()
+            # Ultralytics YOLOv8 predict()
+            # classes=None 表示不过滤，由后续手动完成
+            # verbose=False 减少不必要的日志输出
             results = self.model.predict(
-                image, 
-                conf=confidence, 
+                source=image,
+                conf=confidence,
                 iou=iou_threshold,
                 max_det=max_detections,
-                classes=None,  # 修改：始终传递 None，避免内部 buggy 过滤
-                agnostic_nms=True, # 保持类别无关的NMS
-                verbose=False
+                classes=None, # 我们总是先获取所有结果，然后手动过滤
+                agnostic_nms=True, # 使用类别无关的NMS，因为类别过滤是后置的
+                imgsz=imgsz_arg,
+                half=self.half_precision,
+                verbose=False 
             )
-            
-            # 处理结果
-            result = results[0]  # 只处理第一个结果
-            
-            # 构建检测结果
-            detections = []
-            for i in range(len(result.boxes)):
-                box = result.boxes[i]
-                
-                # 获取类别
-                class_id = int(box.cls.item())
-                
-                # 手动应用类别过滤
-                if class_indices_to_filter is not None and class_id not in class_indices_to_filter:
-                    continue # 跳过不符合指定类别的检测
+            predict_end_time = time.perf_counter()
+            timing_stats["model_predict_time_ms"] = (predict_end_time - predict_start_time) * 1000
+            # --- 推理结束 ---
 
-                # 获取置信度
-                conf = float(box.conf.item())
+            # results 是一个列表，通常只包含一个结果对象 (对应单张输入图像)
+            if results and len(results) > 0:
+                result = results[0] # 获取第一个结果对象
                 
-                # 获取边界框 (x1, y1, x2, y2)
-                x1, y1, x2, y2 = map(float, box.xyxy[0])
+                # 获取模型实际推理的图像尺寸 (如果有)
+                if hasattr(result, 'orig_shape') and result.orig_shape is not None: # orig_shape 是输入给模型的尺寸
+                     # Note: result.orig_shape might be the original image shape *before* letterboxing/resizing by predict
+                     # We need the shape the model *actually* saw.
+                     # result.speed gives timings, and result.im.shape could be the processed image shape
+                    if hasattr(result, 'im') and result.im is not None:
+                        processed_img_h, processed_img_w = result.im.shape[:2]
+                    elif hasattr(result, 'ims') and result.ims and len(result.ims) > 0 and result.ims[0] is not None: # For some cases like segmentation
+                        processed_img_h, processed_img_w = result.ims[0].shape[:2]
+
+
+                # 尝试从 result.speed 获取更详细的时间 (如果可用)
+                # result.speed 的格式 {'preprocess': ms, 'inference': ms, 'postprocess': ms} 或 {'preprocess': ms, 'inference': ms, 'NMS': ms}
+                if hasattr(result, 'speed') and isinstance(result.speed, dict):
+                    timing_stats["pre_processing_time_ms"] = result.speed.get('preprocess')
+                    timing_stats["inference_time_ms"] = result.speed.get('inference')
+                    timing_stats["post_processing_time_ms"] = result.speed.get('postprocess') # for older ultralytics versions
+                    timing_stats["nms_time_ms"] = result.speed.get('NMS') # for newer ultralytics versions
+                    if timing_stats["post_processing_time_ms"] is None and timing_stats["nms_time_ms"] is not None:
+                        # Newer versions might only have NMS time as part of postprocessing
+                        timing_stats["post_processing_time_ms"] = timing_stats["nms_time_ms"] 
+                    elif timing_stats["post_processing_time_ms"] is not None and timing_stats["nms_time_ms"] is None:
+                         # if postprocess includes NMS, we can consider them combined or try to estimate if needed.
+                         # For now, just report what's available.
+                         pass
+
+
+                boxes = result.boxes  # Boxes object for bbox outputs
+                if boxes is not None and len(boxes) > 0:
+                    det_id_counter = 0
+                    for i in range(len(boxes)):
+                        box_data = boxes[i]
+                        class_id = int(box_data.cls.item())
+                        conf = float(box_data.conf.item())
+                        
+                        # 手动应用类别过滤
+                        if class_indices_to_filter is not None and class_id not in class_indices_to_filter:
+                            continue
+
+                        xyxy_pixels = box_data.xyxy.cpu().numpy().squeeze().tolist() # [xmin, ymin, xmax, ymax]
+                        
+                        # 确保坐标是浮点数
+                        x1p, y1p, x2p, y2p = map(float, xyxy_pixels)
+
+                        width_p = x2p - x1p
+                        height_p = y2p - y1p
+                        center_x_p = x1p + width_p / 2
+                        center_y_p = y1p + height_p / 2
+                        area_p = width_p * height_p
+
+                        # 计算归一化坐标
+                        x1n = x1p / original_width
+                        y1n = y1p / original_height
+                        x2n = x2p / original_width
+                        y2n = y2p / original_height
+                        
+                        detection = {
+                            "id": det_id_counter,
+                            "class_id": class_id,
+                            "class_name": self.model.names[class_id] if self.model.names and class_id in self.model.names else "unknown",
+                            "confidence": conf,
+                            "bbox_pixels": [x1p, y1p, x2p, y2p],
+                            "bbox_normalized": [x1n, y1n, x2n, y2n],
+                            "center_x_pixels": center_x_p,
+                            "center_y_pixels": center_y_p,
+                            "width_pixels": width_p,
+                            "height_pixels": height_p,
+                            "area_pixels": area_p
+                        }
+                        detections_output.append(detection)
+                        det_id_counter += 1
                 
-                # 获取类别名称
-                class_name = result.names[class_id]
-                
-                # 添加检测结果
-                detections.append({
-                    "id": i,
-                    "class_id": class_id,
-                    "class_name": class_name,
-                    "confidence": conf,
-                    "bbox": [x1, y1, x2, y2],
-                    "width": x2 - x1,
-                    "height": y2 - y1,
-                    "center_x": (x1 + x2) / 2,
-                    "center_y": (y1 + y2) / 2,
-                    "area": (x2 - x1) * (y2 - y1)
-                })
-                
-            # 计算总时间
-            total_time = time.time() - start_time
-            
-            normal_logger.info(f"YOLO检测完成，耗时：{total_time:.4f}秒，检测到{len(detections)}个目标")
-            
-            # 构建返回结果
-            result_dict = {
-                "success": True,
-                "detections": detections,
-                "stats": {
-                    "total_time": total_time,
-                    "objects_count": len(detections)
-                }
-            }
-            
-            # 如果需要返回标注图像
-            if return_image:
-                # 绘制结果
-                plotted_img = results[0].plot()
-                
-                # 转换为base64
-                _, buffer = cv2.imencode('.jpg', plotted_img)
-                img_base64 = base64.b64encode(buffer).decode('utf-8')
-                
-                # 添加到结果
-                result_dict["annotated_image"] = img_base64
-                
-            return result_dict
-            
+                normal_logger.info(f"YOLO检测完成，原始检测到 {len(boxes) if boxes else 0} 个目标, 过滤后输出 {len(detections_output)} 个目标。")
+
+                # 如果需要返回标注图像
+                if return_image_flag:
+                    annotated_frame = result.plot()  # BGR numpy array with annotations
+                    try:
+                        # 将BGR图像编码为JPG并转换为Base64
+                        is_success, buffer = cv2.imencode(".jpg", annotated_frame)
+                        if is_success:
+                            annotated_image_b64 = base64.b64encode(buffer).decode("utf-8")
+                        else:
+                            normal_logger.warning("无法将标注帧编码为JPG。")
+                    except Exception as e_img:
+                        exception_logger.error(f"转换标注图像到Base64时出错: {e_img}")
+            else:
+                normal_logger.info("YOLO模型 predict() 未返回任何结果。")
+
         except Exception as e:
-            exception_logger.exception(f"YOLO检测失败: {e}")
+            exception_logger.exception(f"YOLO检测过程中发生严重错误: {e}")
+            analyzer_end_time = time.perf_counter()
+            timing_stats["analyzer_total_time_ms"] = (analyzer_end_time - analyzer_start_time) * 1000
             return {
                 "success": False,
-                "error": str(e),
-                "detections": []
+                "error": f"检测失败: {str(e)}",
+                "detections": [],
+                "applied_config": {
+                    "confidence_threshold": confidence, "iou_threshold": iou_threshold, 
+                    "max_detections": max_detections, "imgsz": imgsz_arg,
+                    "filtered_classes": actual_filtered_class_names, "half_precision": self.half_precision
+                },
+                "image_info": {
+                    "original_height": original_height, "original_width": original_width,
+                    "processed_height": processed_img_h, "processed_width": processed_img_w
+                },
+                "timing_stats": timing_stats,
+                "annotated_image_base64": None
             }
+
+        analyzer_end_time = time.perf_counter()
+        timing_stats["analyzer_total_time_ms"] = (analyzer_end_time - analyzer_start_time) * 1000
+        
+        # 最终返回结构
+        final_result = {
+            "success": True,
+            "error": None,
+            "detections": detections_output,
+            "applied_config": {
+                "confidence_threshold": confidence,
+                "iou_threshold": iou_threshold,
+                "max_detections": max_detections,
+                "imgsz": imgsz_arg, 
+                "filtered_classes": actual_filtered_class_names, # 使用实际应用过滤的类别名称
+                "half_precision": self.half_precision
+            },
+            "image_info": {
+                "original_height": original_height,
+                "original_width": original_width,
+                "processed_height": processed_img_h, 
+                "processed_width": processed_img_w
+            },
+            "timing_stats": timing_stats,
+            "annotated_image_base64": annotated_image_b64
+        }
+        return final_result
 
     @property
     def model_info(self) -> Dict[str, Any]:

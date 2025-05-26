@@ -90,109 +90,136 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
 
     async def detect(self, frame: np.ndarray, **kwargs) -> Dict[str, Any]:
         """
-        检测图像中的目标
+        检测图像中的目标，并整合来自 YOLODetector 的详细结果。
 
         Args:
             frame: 输入图像
-            **kwargs: 其他参数，包括：
-                - confidence: 置信度阈值，覆盖初始化时设置的值
-                - iou_threshold: IoU阈值，覆盖初始化时设置的值
-                - max_detections: 最大检测目标数，覆盖初始化时设置的值
-                - classes: 类别列表，限制只检测特定类别
+            **kwargs: 其他参数，传递给 YOLODetector.detect，包括：
+                - confidence: 置信度阈值
+                - iou_threshold: IoU阈值
+                - max_detections: 最大检测目标数
+                - classes: 类别列表
                 - return_image: 是否返回标注后的图像
+                - imgsz: 推理图像尺寸
 
         Returns:
-            Dict[str, Any]: 检测结果
+            Dict[str, Any]: 来自 YOLODetector.detect 的完整结果，可能包含额外的分析器级别统计。
+                           预期结构见 YOLODetector.detect 文档字符串。
         """
-        # 记录开始时间，用于性能统计
-        start_time = time.time()
-        frame_count = self._frame_count + 1
+        analyzer_level_start_time = time.perf_counter()
+        frame_count_for_log = self._frame_count + 1 # 用于日志，_frame_count 在 process_video_frame 中更新
         
-        # 输出更详细的日志
-        normal_logger.info(f"开始检测第{frame_count}帧，帧大小: {frame.shape}")
+        normal_logger.info(f"YOLODetectionAnalyzer: 开始检测第 {frame_count_for_log} 帧 (粗略计数), 帧大小: {frame.shape}")
         
-        # 检查模型是否已加载
         if not self.loaded:
-            normal_logger.warning(f"模型未加载，无法执行检测")
+            normal_logger.warning(f"YOLODetectionAnalyzer: 模型 {self.current_model_code or '未指定'} 未加载，无法执行检测。")
+            analyzer_level_end_time = time.perf_counter()
             return {
                 "success": False,
-                "error": "模型未加载",
+                "error": f"模型 {self.current_model_code or '未指定'} 未加载",
                 "detections": [],
-                "stats": {
-                    "detection_time": time.time() - start_time,
-                    "average_time": time.time() - start_time,
-                    "detection_count": frame_count
-                }
+                "applied_config": {},
+                "image_info": {"original_height": frame.shape[0], "original_width": frame.shape[1]},
+                "timing_stats": {
+                    "analyzer_detect_call_time_ms": (analyzer_level_end_time - analyzer_level_start_time) * 1000
+                },
+                "annotated_image_base64": None
             }
         
-        # 使用检测器进行检测
         try:
-            # 调用YOLO检测器的detect方法
-            detect_result = await self.detector.detect(
+            # 调用底层 YOLO 检测器的 detect 方法
+            # 它会返回包含 "success", "detections", "applied_config", "image_info", "timing_stats", "annotated_image_base64"
+            detector_result = await self.detector.detect(
                 frame,
-                **kwargs
+                **kwargs  # 将所有相关参数传递下去
             )
             
-            # 检查检测结果
-            if not detect_result["success"]:
-                normal_logger.warning(f"检测失败: {detect_result.get('error', '未知错误')}")
-                return detect_result
-                
-            # 获取检测结果
-            detections = detect_result["detections"]
+            analyzer_level_end_time = time.perf_counter()
+            analyzer_detect_call_duration_ms = (analyzer_level_end_time - analyzer_level_start_time) * 1000
+
+            if not detector_result.get("success", False):
+                normal_logger.warning(f"YOLODetectionAnalyzer: 底层检测器报告失败: {detector_result.get('error', '未知错误')}")
+                # 即使失败，也尝试添加 analyzer 级别的计时
+                if "timing_stats" not in detector_result or detector_result["timing_stats"] is None:
+                    detector_result["timing_stats"] = {}
+                detector_result["timing_stats"]["analyzer_detect_call_time_ms"] = analyzer_detect_call_duration_ms
+                return detector_result
             
-            # 添加检测结果到统计信息
-            self._detection_count = frame_count
-            self._total_detection_time += time.time() - start_time
+            # 更新分析器级别的统计 (如果需要的话，但现在 detector_result["timing_stats"] 已经很详细了)
+            # self._detection_count 在 process_video_frame 中处理
+            # self._total_detection_time 也可以在 process_video_frame 中累加 analyzer_detect_call_duration_ms
             
-            # 记录检测统计信息
-            detect_result["stats"]["detection_time"] = time.time() - start_time
-            detect_result["stats"]["average_time"] = self._total_detection_time / self._detection_count
-            detect_result["stats"]["detection_count"] = self._detection_count
+            # 将 analyzer_detect_call_time_ms 添加到底层检测器的 timing_stats 中
+            # 这是 YOLODetectionAnalyzer.detect 方法本身的开销，不包括YOLODetector.detect内部的计时
+            if "timing_stats" not in detector_result or detector_result["timing_stats"] is None:
+                 detector_result["timing_stats"] = {}
+            detector_result["timing_stats"]["analyzer_detect_call_time_ms"] = analyzer_detect_call_duration_ms
+
+            num_detections = len(detector_result.get("detections", []))
+            normal_logger.info(f"YOLODetectionAnalyzer: 成功处理第 {frame_count_for_log} 帧 (粗略计数)。耗时 (detect call): {analyzer_detect_call_duration_ms:.2f} ms。检测到 {num_detections} 个目标。")
+            if num_detections > 0:
+                # 日志截断，避免过长的输出
+                log_dets = detector_result["detections"][:3]
+                normal_logger.info(f"YOLODetectionAnalyzer: 部分检测结果: {log_dets}")
             
-            # 输出检测结果
-            normal_logger.info(f"成功检测第{frame_count}帧，耗时: {time.time() - start_time:.4f}秒，检测到{len(detections)}个目标")
-            if len(detections) > 0:
-                normal_logger.info(f"检测结果: {detections[:3] if len(detections) > 3 else detections}")
-            
-            return detect_result
+            # 直接返回从 YOLODetector 获得的完整结果，其中已包含详细信息
+            return detector_result
             
         except Exception as e:
-            exception_logger.exception(f"YOLO检测分析器执行检测时出错: {e}")
+            exception_logger.exception(f"YOLODetectionAnalyzer 在执行 detect 时发生严重错误: {e}")
+            analyzer_level_end_time = time.perf_counter()
             return {
                 "success": False,
-                "error": str(e),
+                "error": f"YOLODetectionAnalyzer 内部错误: {str(e)}",
                 "detections": [],
-                "stats": {
-                    "detection_time": time.time() - start_time,
-                    "average_time": self._total_detection_time / (self._detection_count or 1),
-                    "detection_count": self._detection_count
-                }
+                "applied_config": kwargs, # 返回传入的配置作为参考
+                "image_info": {"original_height": frame.shape[0], "original_width": frame.shape[1]},
+                "timing_stats": {
+                    "analyzer_detect_call_time_ms": (analyzer_level_end_time - analyzer_level_start_time) * 1000
+                },
+                "annotated_image_base64": None
             }
 
     async def process_video_frame(self, frame: np.ndarray, frame_index: int, **kwargs) -> Dict[str, Any]:
         """
-        处理视频帧
+        处理视频帧，调用 detect 方法，并添加帧特定信息和分析器处理总耗时。
         
         Args:
             frame: 视频帧
             frame_index: 帧索引
-            **kwargs: 其他参数
+            **kwargs: 其他参数，传递给 detect 方法
             
         Returns:
-            Dict[str, Any]: 处理结果
+            Dict[str, Any]: 包含完整检测结果以及帧信息的字典。
+                           新增 timing_stats.analyzer_process_video_frame_time_ms
         """
-        # 更新帧计数
-        self._frame_count += 1
+        process_frame_start_time = time.perf_counter()
+        self._frame_count += 1 # 实际的帧计数器
         
-        # 执行检测
-        result = await self.detect(frame, **kwargs)
+        # 执行核心检测逻辑
+        # kwargs 包含了如 confidence, iou_threshold, classes, return_image, imgsz 等
+        # 这些参数应该从任务配置中传递下来
+        detection_result = await self.detect(frame, **kwargs)
         
-        # 添加帧信息
-        result["frame_index"] = frame_index
-        result["frame_count"] = self._frame_count
+        # 添加帧相关的固定信息到结果中
+        detection_result["frame_info"] = {
+            "frame_index_in_stream": frame_index, # 原始帧序号
+            "analyzer_frame_counter": self._frame_count # 分析器处理的第几帧
+        }
+
+        # 添加 YOLODetectionAnalyzer.process_video_frame 本身的耗时
+        process_frame_end_time = time.perf_counter()
+        process_video_frame_duration_ms = (process_frame_end_time - process_frame_start_time) * 1000
         
-        return result
+        if "timing_stats" not in detection_result or detection_result["timing_stats"] is None:
+            detection_result["timing_stats"] = {}
+        detection_result["timing_stats"]["analyzer_process_video_frame_time_ms"] = process_video_frame_duration_ms
+
+        # 更新分析器级别的累计总耗时 (可选)
+        # self._total_detection_time += process_video_frame_duration_ms 
+        # (如果需要计算平均值等，现在 detector_result["timing_stats"] 已经很详细了)
+        
+        return detection_result
 
     def _process_nested_detections(self, detections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """

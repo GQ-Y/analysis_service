@@ -92,10 +92,14 @@ class TaskProcessor:
         Returns:
             bool: 是否启动成功
         """
+        method_start_time = time.perf_counter()
+        normal_logger.info(f"TaskProcessor.start_stream_analysis CALLED: task_id={task_id}")
         try:
             # 检查任务是否已存在
             if task_id in self.running_tasks:
                 normal_logger.warning(f"任务已存在: {task_id}")
+                method_end_time = time.perf_counter()
+                normal_logger.info(f"TaskProcessor.start_stream_analysis RETURNED (already running): task_id={task_id}, 耗时: {(method_end_time - method_start_time) * 1000:.2f} ms")
                 return False
 
             # 创建停止和暂停事件
@@ -139,10 +143,14 @@ class TaskProcessor:
             self.result_handlers[task_id] = result_handler
 
             normal_logger.info(f"流处理进程已启动: {task_id}")
+            method_end_time = time.perf_counter()
+            normal_logger.info(f"TaskProcessor.start_stream_analysis RETURNED (success): task_id={task_id}, 耗时: {(method_end_time - method_start_time) * 1000:.2f} ms")
             return True
 
         except Exception as e:
-            normal_logger.error(f"启动流分析任务失败: {str(e)}")
+            exception_logger.exception(f"启动流分析任务失败 (详细错误): {task_id}") # Log with traceback
+            method_end_time = time.perf_counter()
+            normal_logger.error(f"TaskProcessor.start_stream_analysis RETURNED (exception): task_id={task_id}, 耗时: {(method_end_time - method_start_time) * 1000:.2f} ms. Error: {str(e)}")
             return False
 
     async def stop_task(self, task_id: str) -> bool:
@@ -364,9 +372,10 @@ class TaskProcessor:
                 if "return_base64" in result_config:
                     analyzer_kwargs["return_image"] = result_config.get("return_base64", False)
                 else:
-                    # 如果 task_config.result 中没有，尝试从顶层 task_config 获取 (作为后备)
-                    # 这取决于 task_config 的具体结构，但原始请求中 return_base64 在顶层
                     analyzer_kwargs["return_image"] = task_config.get("return_base64", False)
+
+                # DIAGNOSTIC LOG:
+                normal_logger.info(f"任务 {task_id} [DIAGNOSTIC]: 准备创建分析器. Type: {analyzer_type}, Args: {json.dumps(analyzer_kwargs, indent=2)}")
 
                 try:
                     normal_logger.info(f"任务 {task_id}: 准备创建分析器, 类型: {analyzer_type}, 收集到的参数: {analyzer_kwargs}")
@@ -374,6 +383,11 @@ class TaskProcessor:
                         analyzer_type,
                         **analyzer_kwargs
                     )
+                    # DIAGNOSTIC LOG:
+                    if analyzer:
+                        normal_logger.info(f"任务 {task_id} [DIAGNOSTIC]: 分析器创建成功. Analyzer object: {analyzer}")
+                    else:
+                        normal_logger.error(f"任务 {task_id} [DIAGNOSTIC]: 分析器创建失败 (AnalyzerFactory.create_analyzer 返回 None).")
     
                     if analyzer:
                         # 等待模型加载完成
@@ -541,10 +555,8 @@ class TaskProcessor:
                             "message": "成功获取帧 (分析器未配置或初始化失败)"
                         }
                     
-                    # 将结果包装后放入结果队列
-                    # _handle_results 方法期望的格式是 {"type": "result", "data": ...}
-                    result_for_queue = {"type": "result", "data": analysis_data}
-                    result_queue.put(result_for_queue)
+
+                    result_queue.put(analysis_data) # 直接放入分析结果
 
                 except asyncio.TimeoutError:
                     normal_logger.warning(f"任务 {task_id}: 获取帧超时")
@@ -839,236 +851,227 @@ class TaskProcessor:
 
     async def _handle_results(self, task_id: str, result_queue: queue.Queue):
         """
-        处理结果队列
-
-        Args:
-            task_id: 任务ID
-            result_queue: 结果队列
+        处理分析结果，包括保存、发送回调等。
+        现在构建更详细的JSON输出。
         """
-        normal_logger.info(f"启动结果处理器: {task_id}")
+        if task_id not in self.running_tasks:
+            normal_logger.error(f"处理结果时任务 {task_id} 已不存在或未运行。")
+            return
 
-        # 获取任务配置
-        task_config = self.running_tasks.get(task_id, {}).get("config", {})
+        task_full_config = self.running_tasks[task_id].get("config", {})
+        
+        
+        result_config = task_full_config.get("result", {}) 
+        storage_config = result_config.get("storage", {}) 
+        
+        # 回调URL
+        callback_url = result_config.get("callback_url")
+        
+        # 保存JSON结果的标志和路径
+        save_json_enabled = result_config.get("save_result", False)
+        json_base_save_path = storage_config.get("save_path", "results") 
+        
+        # 保存图像的标志和路径
+        save_images_enabled = result_config.get("save_images", False)
+        image_format = storage_config.get("image_format", "jpg")
 
-        # 获取回调配置
-        callback_enabled = task_config.get("subtask", {}).get("callback", {}).get("enabled", False)
-        callback_url = task_config.get("subtask", {}).get("callback", {}).get("url")
+        normal_logger.info(f"任务 {task_id}: _handle_results 启动。save_json_enabled={save_json_enabled}, save_images_enabled={save_images_enabled}, callback_url={callback_url}")
+        normal_logger.info(f"任务 {task_id}: JSON保存路径基址: {json_base_save_path}, 图像格式: {image_format}")
+        normal_logger.debug(f"任务 {task_id}: 完整 task_full_config['result']: {result_config}")
 
-        # 获取回调间隔
-        callback_interval = task_config.get("callback_interval", 0)
+        loop = asyncio.get_running_loop() # 获取当前事件循环
 
-        # 获取回调服务
-        callback_service = None
-        try:
-            # 尝试从应用状态获取回调服务
-            from fastapi import FastAPI
-            import inspect
+        while True:
+            try:
+                # 从队列中异步获取结果，设置超时以允许检查停止事件
+                raw_result = await loop.run_in_executor(None, result_queue.get, 1.0) # timeout 作为第三个参数
 
-            # 获取当前应用实例
-            app = None
-            for frame_info in inspect.stack():
-                if 'app' in frame_info.frame.f_locals and isinstance(frame_info.frame.f_locals['app'], FastAPI):
-                    app = frame_info.frame.f_locals['app']
+                if raw_result is None:  # 任务结束信号
+                    normal_logger.info(f"任务 {task_id} 结果处理器收到结束信号。")
                     break
 
-            if app and hasattr(app.state, "callback_service"):
-                callback_service = app.state.callback_service
+              
+                event_id = str(uuid.uuid4())
+                event_timestamp_utc = datetime.utcnow().isoformat() + "Z"
 
-                # 注册任务回调
-                if callback_enabled and callback_url:
-                    callback_service.register_task(
-                        task_id=task_id,
-                        callback_url=callback_url,
-                        enable_callback=callback_enabled,
-                        callback_interval=callback_interval
-                    )
-                    normal_logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
-            else:
-                # 如果无法从应用状态获取，创建新的回调服务实例
-                from services.http.callback_service import CallbackService
-                callback_service = CallbackService()
+                # 1. 提取 task_info
+                task_info = {
+                    "task_id": task_id,
+                    "task_name": task_full_config.get("name"), # 来自请求的 task_name
+                    "stream_url": task_full_config.get("stream_url"), # 直接从顶层获取
+                    "model_code": task_full_config.get("model", {}).get("code"), # 从 model 子字典获取
+                    "device": task_full_config.get("device", "auto"), # 直接从顶层获取
+                    "frame_rate_setting": { 
+                        "fps": task_full_config.get("frame_processing_fps"), # 更新键名
+                        "skip_frames": task_full_config.get("frame_skip_interval") # 更新键名
+                    },
+                    "analysis_interval_seconds": task_full_config.get("analysis_interval"), # 直接从顶层获取
+                    "output_destination_base": json_base_save_path 
+                }
 
-                # 注册任务回调
-                if callback_enabled and callback_url:
-                    callback_service.register_task(
-                        task_id=task_id,
-                        callback_url=callback_url,
-                        enable_callback=callback_enabled,
-                        callback_interval=callback_interval
-                    )
-                    normal_logger.info(f"任务 {task_id} 已注册回调: URL={callback_url}, 间隔={callback_interval}秒")
-        except Exception as e:
-            normal_logger.warning(f"回调服务初始化失败，任务 {task_id} 将不会发送回调: {str(e)}")
-            callback_service = None
+                # 2. 提取 frame_info (来自分析器结果)
+                frame_info = raw_result.get("frame_info", {})
 
-        try:
-            while True:
-                # 检查任务是否已停止
-                if task_id not in self.running_tasks:
-                    normal_logger.info(f"任务已停止，结束结果处理: {task_id}")
-                    break
+                # 3. 提取 analysis_result
+                detections_list = raw_result.get("detections", [])
+                analysis_result_payload = {
+                    "detections": detections_list,
+                    "detection_count": len(detections_list)
+                }
+                
+                # 4. 提取 analysis_config_applied (来自分析器结果)
+                analysis_config_applied = raw_result.get("applied_config", {})
 
-                # 尝试从队列获取结果
-                try:
-                    result = result_queue.get(block=False)
-                except queue.Empty:
-                    # 队列为空，等待一段时间后重试
-                    await asyncio.sleep(0.1)
-                    continue
+                # 5. 提取 image_dimensions (来自分析器结果 image_info)
+                image_dimensions = raw_result.get("image_info", {})
 
-                # 处理结果
-                result_type = result.get("type")
+                # 6. 提取 performance_stats (来自分析器结果 timing_stats)
+                # 可能需要计算一个此处的总处理时间
+                handler_received_time = time.perf_counter() # 假设这是结果被此handler拿到的时间点
+                # 这个时间点不太精确，因为队列可能有延迟。更准确的端到端时间应从帧进入系统开始算。
+                # 此处暂时只用分析器提供的详细计时。
+                performance_stats = raw_result.get("timing_stats", {})
 
-                if result_type == "error":
-                    # 处理错误
-                    error_message = result.get("message", "未知错误")
-                    normal_logger.error(f"任务 {task_id} 发生错误: {error_message}")
+                # 7. 提取 annotated_image_base64 (来自分析器结果)
+                annotated_image_b64_data = raw_result.get("annotated_image_base64")
 
-                    # 更新任务状态
-                    self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_message)
+                # 8. 准备 storage_info
+                storage_info_payload = {
+                    "json_result_path": None,
+                    "annotated_image_path": None
+                }
 
-                    # 发送错误通知
-                    normal_logger.info(f"任务 {task_id} 发送错误通知: {error_message}")
+                # 构建最终的回调JSON对象
+                callback_json = {
+                    "event_id": event_id,
+                    "event_timestamp_utc": event_timestamp_utc,
+                    "task_info": task_info,
+                    "frame_info": frame_info,
+                    "analysis_result": analysis_result_payload,
+                    "analysis_config_applied": analysis_config_applied,
+                    "image_dimensions": image_dimensions,
+                    "performance_stats": performance_stats,
+                    "storage_info": storage_info_payload # 先初始化，后续填充
+                }
 
-                    # 发送错误回调
-                    if callback_service and callback_enabled and callback_url:
-                        error_data = {
-                            "success": False,
-                            "error": error_message
-                        }
-                        await callback_service.send_callback(task_id, error_data)
-
-                elif result_type == "result":
-                    # 处理分析结果
-                    result_data = result.get("data", {})
-
-                    # 新增：处理结果保存
-                    save_images = task_config.get("result", {}).get("save_images", False)
-                    # save_result 通常指保存JSON, 但原始请求参数是 save_result, 指的是总的结果保存开关
-                    # 我们需要确认 task_config 中是否有更细致的控制，例如 save_json_result
-                    # 暂时我们假设 task_config.save_result 控制JSON的保存
-                    save_json_result = task_config.get("save_result", False) 
-                    base_save_path = task_config.get("result", {}).get("storage", {}).get("save_path", "results")
-
-                    if save_images or save_json_result:
-                        # 确保基础保存目录存在
-                        os.makedirs(base_save_path, exist_ok=True)
+                # --- 保存JSON结果 ---
+                if save_json_enabled:
+                    try:
+                        # 确保保存目录存在 (按日期分子目录，再按 task_id)
+                        date_str = datetime.now().strftime("%Y-%m-%d")
+                        current_save_dir = os.path.join(json_base_save_path, date_str, task_id)
+                        os.makedirs(current_save_dir, exist_ok=True)
                         
-                        # 创建任务特定的保存目录
-                        task_save_path = os.path.join(base_save_path, task_id)
-                        os.makedirs(task_save_path, exist_ok=True)
-
-                        # 使用 frame_id 或 timestamp 生成唯一文件名
-                        # 优先使用 frame_index (如果存在于result_data中，这通常由分析器提供)
-                        frame_identifier_from_data = result_data.get("frame_index", result_data.get("frame_id"))
+                        # 文件名：frame_analyzer_counter_eventid.json
+                        frame_counter = frame_info.get("analyzer_frame_counter", "unknown_frame")
+                        json_filename = f"frame_{frame_counter}_{event_id}.json"
+                        full_json_path = os.path.join(current_save_dir, json_filename)
                         
-                        # 如果分析结果中没有帧标识，则尝试从任务的帧计数器获取 (尽管这可能不完全同步)
-                        # 或者最后回退到时间戳。更可靠的是确保分析器将帧标识放入结果。
-                        if frame_identifier_from_data is None:
-                             # 尝试从 self._frame_counts 获取，但这可能不准确或不存在
-                             # 更好的方法是确保 frame_index 或 frame_id 在 result_data 中
-                             # 这里我们暂时使用时间戳作为备选
-                             frame_identifier = int(time.time() * 1000)
-                        else:
-                             frame_identifier = frame_identifier_from_data
-
-                        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] # 年月日_时分秒_毫秒
+                        json_to_save = callback_json.copy() 
                         
-                        filename_base = f"frame_{frame_identifier}_{timestamp_str}"
+                        # BUG FIX: Update json_result_path in the copy that will be saved
+                        if json_to_save.get("storage_info") is None: json_to_save["storage_info"] = {}
+                        json_to_save["storage_info"]["json_result_path"] = full_json_path
 
-                    # 保存标注图像
-                    if save_images:
-                        image_to_save = None
-                        # 优先从 result_data 中获取 "annotated_image" (如果分析器直接提供了 base64 编码的图像)
-                        if "annotated_image" in result_data and isinstance(result_data["annotated_image"], str):
-                            images_dir = os.path.join(task_save_path, "images")
-                            os.makedirs(images_dir, exist_ok=True)
-                            image_filename = os.path.join(images_dir, f"{filename_base}.jpg")
-                            try:
-                                img_bytes = base64.b64decode(result_data["annotated_image"])
-                                img_array = np.frombuffer(img_bytes, dtype=np.uint8)
-                                image_to_save = cv2.imdecode(img_array, cv2.IMREAD_COLOR) # 解码图像以备后续保存
-                                if image_to_save is not None:
-                                   cv2.imwrite(image_filename, image_to_save)
-                                   normal_logger.info(f"任务 {task_id}: 已保存base64标注图像到 {image_filename}")
-                                else:
-                                   normal_logger.warning(f"任务 {task_id}: 解码base64图像失败，无法保存。")
-                            except Exception as b64_save_exc:
-                                exception_logger.error(f"任务 {task_id}: 保存base64标注图像失败: {b64_save_exc}")
-                        else:
-                            # 其次尝试从 preview_frames 获取 (这是 _process_detection_results 更新的)
-                            preview_image = self.get_preview_frame(task_id)
-                            if preview_image is not None and isinstance(preview_image, np.ndarray):
-                                image_to_save = preview_image
-                                images_dir = os.path.join(task_save_path, "images")
-                                os.makedirs(images_dir, exist_ok=True)
-                                image_filename = os.path.join(images_dir, f"{filename_base}.jpg")
-                                try:
-                                    cv2.imwrite(image_filename, image_to_save)
-                                    normal_logger.info(f"任务 {task_id}: 已保存预览帧图像到 {image_filename}")
-                                except Exception as img_save_exc:
-                                    exception_logger.error(f"任务 {task_id}: 保存预览帧图像失败: {img_save_exc}")
-                            else:
-                                normal_logger.warning(f"任务 {task_id}: 配置了 save_images 但未找到可保存的图像数据 (既无annotated_image也无preview_frame)。")
-                    
-                    # 保存JSON结果
-                    if save_json_result:
-                        json_dir = os.path.join(task_save_path, "json")
-                        os.makedirs(json_dir, exist_ok=True)
-                        json_filename = os.path.join(json_dir, f"{filename_base}.json")
+                        if annotated_image_b64_data and not save_images_enabled: 
+                            json_to_save["annotated_image_base64"] = annotated_image_b64_data
+                        elif "annotated_image_base64" in json_to_save: 
+                             del json_to_save["annotated_image_base64"]
+
+
+                        with open(full_json_path, 'w', encoding='utf-8') as f:
+                            json.dump(json_to_save, f, ensure_ascii=False, indent=4)
+                        
+                        # Update the original callback_json as well, if it's used later (e.g. for HTTP callback)
+                        callback_json["storage_info"]["json_result_path"] = full_json_path
+                        normal_logger.info(f"任务 {task_id}: JSON结果已保存到: {full_json_path}")
+                    except Exception as e_json:
+                        exception_logger.error(f"任务 {task_id}: 保存JSON结果失败: {e_json}")
+                        if callback_json.get("error_log") is None: callback_json["error_log"] = []
+                        callback_json["error_log"].append(f"Failed to save JSON: {str(e_json)}")
+
+                # --- 保存标注图像 ---
+                # 只有当 save_images_enabled 为 True 并且分析器返回了图像数据时才保存
+                if save_images_enabled:
+                    if annotated_image_b64_data:
                         try:
-                            with open(json_filename, 'w', encoding='utf-8') as f:
-                                json.dump(result_data, f, ensure_ascii=False, indent=4)
-                            normal_logger.info(f"任务 {task_id}: 已保存JSON结果到 {json_filename}")
-                        except Exception as json_save_exc:
-                            exception_logger.error(f"任务 {task_id}: 保存JSON结果失败: {json_save_exc}")
+                            img_data = base64.b64decode(annotated_image_b64_data)
+                            # 确保保存目录存在 (与JSON同级或类似结构)
+                            date_str = datetime.now().strftime("%Y-%m-%d") # 与JSON保存路径日期一致
+                            # 图像可以与JSON文件在同一 task_id 目录下，或者有自己的子目录如 'images'
+                            image_save_dir = os.path.join(json_base_save_path, date_str, task_id, "images")
+                            os.makedirs(image_save_dir, exist_ok=True)
 
-                    # 获取当前任务状态
-                    current_task = self.task_manager.get_task(task_id)
-                    current_status = current_task.get("status") if current_task else None
+                            frame_counter = frame_info.get("analyzer_frame_counter", "unknown_frame")
+                            image_filename = f"annotated_frame_{frame_counter}_{event_id}.{image_format}"
+                            full_image_path = os.path.join(image_save_dir, image_filename)
 
-                    # 只有当任务不是重试状态时才更新为处理中
-                    # 这样可以避免在重试过程中收到旧的结果时错误地将状态改回处理中
-                    if current_status != TaskStatus.RETRYING:
-                        # 更新任务状态
-                        self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING, result=result_data)
+                            with open(full_image_path, 'wb') as f_img:
+                                f_img.write(img_data)
+                            callback_json["storage_info"]["annotated_image_path"] = full_image_path
+                            normal_logger.info(f"任务 {task_id}: 标注图像已保存到: {full_image_path}")
+                            
+                            # 如果图像已保存，通常不需要在回调JSON中再带base64数据，除非特定需求
+                            # callback_json["annotated_image_base64"] = None # 或从回调中删除
+                            if "annotated_image_base64" in callback_json: # 从主回调中移除，因为它已存盘
+                                del callback_json["annotated_image_base64"]
 
-                    # 发送结果回调
-                    if callback_service and callback_enabled and callback_url:
-                        # 检查是否有检测结果
-                        if "detections" in result_data and result_data["detections"]:
-                            # 发送回调
-                            await callback_service.send_callback(task_id, result_data)
+                        except Exception as e_img_save:
+                            exception_logger.error(f"任务 {task_id}: 保存标注图像失败: {e_img_save}")
+                            if callback_json.get("error_log") is None: callback_json["error_log"] = []
+                            callback_json["error_log"].append(f"Failed to save image: {str(e_img_save)}")
+                    else:
+                        normal_logger.warning(f"任务 {task_id}: 配置了 save_images 但分析结果中未找到 'annotated_image_base64' 数据。帧计数: {frame_info.get('analyzer_frame_counter')}")
+                        if callback_json.get("error_log") is None: callback_json["error_log"] = []
+                        callback_json["error_log"].append("save_images was true, but no annotated_image_base64 found in result.")
 
-                        # 检查是否有跟踪结果
-                        elif "tracked_objects" in result_data and result_data["tracked_objects"]:
-                            # 对每个跟踪对象单独处理回调间隔
-                            for tracked_obj in result_data["tracked_objects"]:
-                                object_id = tracked_obj.get("track_id")
-                                if object_id:
-                                    # 发送对象级回调
-                                    await callback_service.send_callback(
-                                        task_id,
-                                        result_data,
-                                        object_id=str(object_id)
-                                    )
+                # --- 发送HTTP回调 ---
+                if callback_url:
+                    # Decide whether to include base64 image in callback
+                    # If image was saved, and json also saved, usually we don't send base64 to callback
+                    # But if only callback is enabled, user might want it.
+                    final_callback_payload = callback_json.copy()
+                    if annotated_image_b64_data and not save_images_enabled and not save_json_enabled:
+                        # Only callback, no saving, so include image in callback
+                        final_callback_payload["annotated_image_base64"] = annotated_image_b64_data
+                    elif "annotated_image_base64" in final_callback_payload and (save_images_enabled or save_json_enabled) :
+                        # If saved to disk (either as image or in json), remove from direct callback to reduce size
+                        del final_callback_payload["annotated_image_base64"]
 
-                        # 其他类型的结果直接发送
-                        elif any(key in result_data for key in ["segmentations", "cross_camera_objects", "crossing_events"]):
-                            await callback_service.send_callback(task_id, result_data)
+                    try:
+                        # 使用异步HTTP客户端发送回调
+                        # TODO: 实现异步HTTP POST请求 (例如使用 httpx)
+                        normal_logger.info(f"任务 {task_id}: 准备发送回调到 {callback_url}。数据量级(不含图像): {len(json.dumps(final_callback_payload).encode('utf-8'))} bytes")
+                        # Placeholder for actual async post
+                        # async with httpx.AsyncClient() as client:
+                        #     response = await client.post(callback_url, json=final_callback_payload, timeout=10.0)
+                        #     response.raise_for_status() # Raises an exception for 4XX/5XX responses
+                        # normal_logger.warning(f"任务 {task_id}: HTTP回调发送功能暂未实现。数据预览: {json.dumps(final_callback_payload, indent=2)[:1000]}...") # 截断预览
 
-                # 标记队列项为已处理
-                result_queue.task_done()
+                    except Exception as e_callback:
+                        exception_logger.error(f"任务 {task_id}: 发送回调到 {callback_url} 失败: {e_callback}")
+                        # 可以考虑重试机制
 
-        except asyncio.CancelledError:
-            normal_logger.info(f"结果处理器被取消: {task_id}")
-            # 取消注册任务回调
-            if callback_service:
-                callback_service.unregister_task(task_id)
+                # 清理，准备下一次迭代
+                del raw_result # 释放原始结果占用的内存
 
-        except Exception as e:
-            normal_logger.error(f"结果处理器发生错误: {str(e)}")
-            normal_logger.error(traceback.format_exc())
+            except queue.Empty:
+                # 队列为空，继续等待，检查停止事件
+                if task_id in self.stop_events and self.stop_events[task_id].is_set():
+                    normal_logger.info(f"任务 {task_id} 结果处理器检测到停止信号，正在退出。")
+                    break
+                await asyncio.sleep(0.01) # 例如，睡眠10毫秒
+                continue # 继续外层while循环
+
+            except Exception as e:
+                exception_logger.exception(f"任务 {task_id} 处理结果时发生未捕获的错误: {e}")
+                # 发生严重错误，也应该尝试检查停止信号
+                if task_id in self.stop_events and self.stop_events[task_id].is_set():
+                    normal_logger.info(f"任务 {task_id} 结果处理器因错误并检测到停止信号，正在退出。")
+                    break
+                time.sleep(0.1) # 避免错误刷屏
+
+        normal_logger.info(f"任务 {task_id} 结果处理器已停止。")
 
     async def process_frame(self, task_id: str, frame: np.ndarray, frame_index: int) -> Dict[str, Any]:
         """

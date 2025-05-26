@@ -530,9 +530,10 @@ class TaskService:
         # 构建结果配置
         result_config = {
             "save_images": task.save_images,
+            "save_result": task.save_result,
             "return_base64": task.return_base64 if hasattr(task, "return_base64") else True,
             "storage": {
-                "save_path": "results"
+                "save_path": task.output_url if hasattr(task, "output_url") and task.output_url else "results"
             }
         }
 
