@@ -141,9 +141,10 @@ async def lifespan(app: FastAPI):
     normal_logger.info("正在初始化任务管理器...")
     try:
         from core.task_management.manager import TaskManager
-        from core.task_management.stream import stream_manager
+        from core.task_management.stream import StreamManager
 
         normal_logger.info("正在初始化流管理器...")
+        stream_manager = StreamManager()
         await stream_manager.initialize()
         normal_logger.info("流管理器初始化完成。")
 
@@ -153,9 +154,11 @@ async def lifespan(app: FastAPI):
         app.state.task_manager = task_manager
         app.state.stream_manager = stream_manager
         
-        from core.task_management.stream import stream_task_bridge
+        from core.task_management.stream import StreamTaskBridge
         normal_logger.info("正在初始化流任务桥接器...")
+        stream_task_bridge = StreamTaskBridge()
         await stream_task_bridge.initialize(task_manager)
+        app.state.stream_task_bridge = stream_task_bridge
         normal_logger.info("流任务桥接器初始化完成。")
 
         from services.http.task_service import TaskService
@@ -212,36 +215,20 @@ async def lifespan(app: FastAPI):
     else:
         normal_logger.info("没有活动的流管理器需要关闭。")
         
-    try:
-        from core.task_management.stream import node_health_monitor
-        normal_logger.info("正在关闭节点健康监控器...")
-        await node_health_monitor.shutdown()
-        normal_logger.info("节点健康监控器已关闭。")
-    except Exception as e:
-        exception_logger.exception("关闭节点健康监控器时出错。")
-        
-    try:
-        from core.task_management.stream import stream_health_monitor
-        normal_logger.info("正在关闭流健康监控器...")
-        await stream_health_monitor.shutdown()
-        normal_logger.info("流健康监控器已关闭。")
-    except Exception as e:
-        exception_logger.exception("关闭流健康监控器时出错。")
-        
-    try:
-        from core.task_management.stream import stream_task_bridge
-        normal_logger.info("正在关闭流任务桥接器...")
+    if hasattr(app.state, "stream_task_bridge") and app.state.stream_task_bridge:
         try:
-            await asyncio.wait_for(stream_task_bridge.shutdown(), timeout=5.0)
-            normal_logger.info("流任务桥接器已正常关闭。")
-        except asyncio.TimeoutError:
-            exception_logger.warning("等待流任务桥接器关闭超时。")
-        except Exception as inner_e:
-            exception_logger.exception("流任务桥接器关闭过程中出错。")
-    except Exception as e:
-        exception_logger.exception("关闭流任务桥接器时出错。")
-    finally:
-        normal_logger.info("流任务桥接器关闭流程已完成。")
+            normal_logger.info("正在关闭流任务桥接器...")
+            try:
+                await asyncio.wait_for(app.state.stream_task_bridge.shutdown(), timeout=5.0)
+                normal_logger.info("流任务桥接器已正常关闭。")
+            except asyncio.TimeoutError:
+                exception_logger.warning("等待流任务桥接器关闭超时。")
+            except Exception as inner_e:
+                exception_logger.exception("流任务桥接器关闭过程中出错。")
+        except Exception as e:
+            exception_logger.exception("关闭流任务桥接器时出错。")
+        finally:
+            normal_logger.info("流任务桥接器关闭流程已完成。")
         
     if hasattr(app.state, "zlm_manager") and app.state.zlm_manager:
         try:

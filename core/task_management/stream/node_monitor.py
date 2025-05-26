@@ -215,5 +215,4 @@ class NodeHealthMonitor:
             "resources": usage
         }
 
-# 创建单例实例
-node_health_monitor = NodeHealthMonitor() 
+# 单例实例将在需要时创建 

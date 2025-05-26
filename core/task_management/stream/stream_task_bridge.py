@@ -351,5 +351,4 @@ class StreamTaskBridge:
             exception_logger.exception(f"关闭视频流与任务桥接器异常: {str(e)}")
             return False
 
-# 创建单例实例
-stream_task_bridge = StreamTaskBridge() 
+# 单例实例将在需要时创建 

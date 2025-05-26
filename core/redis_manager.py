@@ -27,10 +27,14 @@ class RedisManager:
         if self.initialized:
             return
 
-        self.redis_host = os.environ.get('REDIS_HOST', 'localhost')
-        self.redis_port = int(os.environ.get('REDIS_PORT', 6379))
-        self.redis_db = int(os.environ.get('REDIS_DB', 0))
-        self.redis_password = os.environ.get('REDIS_PASSWORD', None)
+        # 导入配置
+        from core.config import settings
+
+        # 使用配置文件中的Redis配置
+        self.redis_host = settings.REDIS_HOST
+        self.redis_port = settings.REDIS_PORT
+        self.redis_db = settings.REDIS_DB
+        self.redis_password = settings.REDIS_PASSWORD if settings.REDIS_PASSWORD else None
         self.redis_pool = None
         self.redis_client = None
 
@@ -41,6 +45,9 @@ class RedisManager:
                 port=self.redis_port,
                 db=self.redis_db,
                 password=self.redis_password,
+                max_connections=settings.REDIS_MAX_CONNECTIONS,
+                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
+                retry_on_timeout=settings.REDIS_RETRY_ON_TIMEOUT,
                 decode_responses=True
             )
             self.redis_client = redis.Redis(connection_pool=self.redis_pool)
@@ -211,13 +218,13 @@ class RedisManager:
         if self.redis_pool:
             await self.redis_pool.disconnect()
             normal_logger.info("Redis连接池已关闭")
-            
+
     async def get_value(self, key: str, as_json: bool = False) -> Optional[Any]:
         """获取键值"""
         try:
             normal_logger.info(f"Redis.get_value - 获取键: {key}")
             value = await self.redis_client.get(key)
-            
+
             if value:
                 normal_logger.info(f"Redis.get_value - 成功获取键 {key} 的值")
                 if as_json:
@@ -231,16 +238,16 @@ class RedisManager:
             else:
                 normal_logger.warning(f"Redis.get_value - 键 {key} 不存在")
                 return None
-                
+
         except Exception as e:
             exception_logger.error(f"Redis.get_value - 获取键值失败 - {key}: {str(e)}")
             return None
-            
+
     async def set_value(self, key: str, value: Any, ex: Optional[int] = None) -> bool:
         """设置键值"""
         try:
             normal_logger.info(f"Redis.set_value - 设置键: {key}")
-            
+
             if isinstance(value, (dict, list)):
                 try:
                     value = json.dumps(value)
@@ -248,16 +255,16 @@ class RedisManager:
                 except Exception as e:
                     exception_logger.error(f"Redis.set_value - JSON序列化失败 - {key}: {str(e)}")
                     raise
-            
+
             result = await self.redis_client.set(key, value, ex=ex)
-            
+
             if result:
                 normal_logger.info(f"Redis.set_value - 成功设置键 {key} 的值")
                 if ex:
                     normal_logger.info(f"Redis.set_value - 键 {key} 设置过期时间: {ex}秒")
             else:
                 normal_logger.warning(f"Redis.set_value - 设置键 {key} 返回结果: {result}")
-                
+
             # 验证键是否成功设置
             try:
                 exists = await self.exists_key(key)
@@ -267,13 +274,13 @@ class RedisManager:
                     normal_logger.warning(f"Redis.set_value - 验证失败，键 {key} 不存在")
             except Exception as e:
                 exception_logger.error(f"Redis.set_value - 验证键设置失败 - {key}: {str(e)}")
-            
+
             return bool(result)
-            
+
         except Exception as e:
             exception_logger.error(f"Redis.set_value - 设置键值失败 - {key}: {str(e)}")
             return False
-            
+
     async def delete_key(self, key: str) -> bool:
         """删除键"""
         try:
@@ -282,7 +289,7 @@ class RedisManager:
         except Exception as e:
             exception_logger.error(f"删除Redis键失败 - {key}: {str(e)}")
             return False
-            
+
     async def exists_key(self, key: str) -> bool:
         """检查键是否存在"""
         try:
@@ -290,7 +297,7 @@ class RedisManager:
         except Exception as e:
             exception_logger.error(f"检查Redis键是否存在失败 - {key}: {str(e)}")
             return False
-            
+
     async def zadd_task(self, key: str, member: str, score: float) -> bool:
         """添加任务到有序集合"""
         try:
@@ -299,7 +306,7 @@ class RedisManager:
         except Exception as e:
             exception_logger.error(f"添加任务到有序集合失败 - {key}: {str(e)}")
             return False
-            
+
     async def zget_tasks(self, key: str, start: int, end: int) -> List[str]:
         """获取有序集合中的任务"""
         try:
@@ -307,7 +314,7 @@ class RedisManager:
         except Exception as e:
             exception_logger.error(f"获取有序集合任务失败 - {key}: {str(e)}")
             return []
-            
+
     async def zrem_task(self, key: str, member: str) -> bool:
         """从有序集合中移除任务"""
         try:
@@ -380,15 +387,15 @@ class RedisManager:
         except Exception as e:
             exception_logger.error(f"删除匹配模式的键失败: {str(e)}")
             raise
-            
+
     # 发布订阅
     async def publish(self, channel: str, message: str) -> int:
         """发布消息到频道
-        
+
         Args:
             channel: 频道名称
             message: 消息内容
-            
+
         Returns:
             int: 接收到消息的客户端数量
         """
@@ -398,10 +405,10 @@ class RedisManager:
         except Exception as e:
             exception_logger.error(f"发布消息到频道 {channel} 失败: {str(e)}")
             return 0
-            
+
     async def subscribe(self, channel: str, callback: Callable):
         """订阅频道
-        
+
         Args:
             channel: 频道名称
             callback: 回调函数，接收频道名和消息内容 async def callback(channel, message)
@@ -410,7 +417,7 @@ class RedisManager:
             pubsub = self.redis_client.pubsub()
             await pubsub.subscribe(channel)
             normal_logger.info(f"已订阅频道: {channel}")
-            
+
             try:
                 while True:
                     message = await pubsub.get_message(ignore_subscribe_messages=True)
@@ -423,7 +430,7 @@ class RedisManager:
                 raise
             finally:
                 await pubsub.unsubscribe(channel)
-                
+
         except Exception as e:
             exception_logger.error(f"订阅频道 {channel} 失败: {str(e)}")
-            raise 
+            raise

@@ -404,6 +404,15 @@ class StreamTask(BaseModel):
         ge=0,
         example=5
     )
+    test_markers: Optional[List[str]] = Field(
+        None,
+        description="测试标记，用于标识测试类型",
+        example=["STREAM_RTSP_TEST"]
+    )
+    return_base64: Optional[bool] = Field(
+        True,
+        description="是否返回base64编码的图像"
+    )
 
     model_config = {"protected_namespaces": ()}
 
@@ -546,8 +555,6 @@ class BatchStreamTask(BaseModel):
 
     model_config = {"protected_namespaces": ()}
 
-
-
 class TaskStatusRequest(BaseModel):
     """任务状态请求"""
     task_id: str = Field(
@@ -555,8 +562,6 @@ class TaskStatusRequest(BaseModel):
         description="任务ID",
         example="vid_20240402_123456_abcd1234"
     )
-
-
 
 class VideoEncodingRequest(BaseModel):
     """视频编码请求"""

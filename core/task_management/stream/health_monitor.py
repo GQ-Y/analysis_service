@@ -298,5 +298,4 @@ class StreamHealthMonitor:
         self.stop()
         normal_logger.info("流健康监控器已关闭")
 
-# 创建单例实例
-stream_health_monitor = StreamHealthMonitor()
+# 单例实例将在需要时创建

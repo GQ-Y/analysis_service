@@ -21,7 +21,7 @@ from .factory import (
 
 # 导入桥接组件
 from .bridge import (
-    analyzer_bridge
+    AnalyzerBridge
 )
 
 # 导出公共接口
@@ -43,5 +43,5 @@ __all__ = [
     'stream_factory',
     
     # 桥接
-    'analyzer_bridge'
+    'AnalyzerBridge'
 ] 

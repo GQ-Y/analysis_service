@@ -34,37 +34,37 @@ class TaskService:
 
     async def create_task(self, task: StreamTask, task_id: str = None) -> Dict[str, Any]:
         """
-        创建单个任务
+        创建任务
 
         Args:
             task: 任务参数
-            task_id: 可选的任务ID，如果为None则自动生成
+            task_id: 任务ID（可选）
 
         Returns:
             Dict[str, Any]: 创建结果
         """
         try:
-            # 生成任务ID
-            if task_id is None:
+            # 如果未提供任务ID，则生成一个
+            if not task_id:
                 task_id = str(uuid.uuid4())
 
             # 构建任务配置
             task_config = self._build_task_config(task, task_id)
 
-            # 创建任务
-            task_data = {
-                "id": task_id,
-                "type": task.analysis_type or "detection",
-                "params": task_config,
-                "created_at": datetime.now().isoformat()
-            }
+            # 检查是否有测试标记
+            if hasattr(task, "test_markers") and task.test_markers:
+                normal_logger.info(f"任务包含测试标记: {task.test_markers}")
+                task_config["test_markers"] = task.test_markers
+                # 添加测试日志标记
+                from shared.utils.logger import TEST_LOG_MARKER
+                normal_logger.info(f"{TEST_LOG_MARKER} TASK_CREATE_START")
 
-            # 添加任务
-            if not self.task_manager.add_task(task_id, task_data):
+            # 添加任务到管理器
+            if not self.task_manager.add_task(task_id, task_config):
                 return {
                     "success": False,
                     "message": "添加任务失败",
-                    "task_id": None
+                    "task_id": task_id
                 }
 
             # 启动任务
@@ -75,10 +75,18 @@ class TaskService:
                     "task_id": task_id
                 }
 
-            test_logger.info("TEST_LOG_MARKER: TASK_CREATE_SUCCESS")
+            # 如果启用回调，注册回调
+            if task.enable_callback and task.callback_url:
+                from services.http.callback_service import callback_service
+                callback_service.register_task_callback(task_id, task.callback_url)
+
+            # 记录任务创建成功日志标记
+            from shared.utils.logger import TEST_LOG_MARKER
+            normal_logger.info(f"{TEST_LOG_MARKER} TASK_CREATE_SUCCESS")
+
             return {
                 "success": True,
-                "message": "任务创建并启动成功",
+                "message": "创建并启动任务成功",
                 "task_id": task_id
             }
 
@@ -87,7 +95,7 @@ class TaskService:
             return {
                 "success": False,
                 "message": f"创建任务异常: {str(e)}",
-                "task_id": None
+                "task_id": task_id if 'task_id' in locals() else None
             }
 
     async def start_task(self, model_code: str, stream_url: str, task_name: Optional[str] = None,

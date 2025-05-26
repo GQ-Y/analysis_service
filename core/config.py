@@ -2,9 +2,8 @@
 配置模块
 管理应用的配置参数
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing import Any, Dict, List, Optional, Union
 import os
 import logging
 from dotenv import load_dotenv
@@ -40,12 +39,7 @@ class LoggingSettings(BaseSettingsModel):
     backup_count: int = 5
     console: bool = True
 
-# 缓存设置
-class CacheSettings(BaseSettingsModel):
-    """缓存设置"""
-    enabled: bool = True
-    type: str = "redis" # redis, memory
-    ttl: int = 3600 # 1小时
+
 
 # 流媒体设置
 class StreamingSettings(BaseSettingsModel):
@@ -58,18 +52,87 @@ class StreamingSettings(BaseSettingsModel):
     frame_buffer_size: int = 30
     log_level: str = "INFO"
     # ZLMediaKit配置
-    use_zlmediakit: bool = False  # 是否使用ZLMediaKit
-    zlm_server_address: str = "127.0.0.1"  # ZLMediaKit服务器地址
-    zlm_http_port: int = 80  # HTTP端口
-    zlm_rtsp_port: int = 554  # RTSP端口
-    zlm_rtmp_port: int = 1935  # RTMP端口
-    zlm_api_port: int = 8080  # API端口
-    zlm_api_secret: str = "035c73f7-bb6b-4889-a715-d9eb2d1925cc"  # API密钥
-    zlm_lib_path: str = "/usr/local/lib"  # ZLMediaKit库路径
-    zlm_thread_num: int = 4  # ZLMediaKit线程数
-    zlm_log_level: int = 4  # 日志级别（1-6，6为最详细）
-    zlm_log_path: str = "logs/zlm"  # 日志路径
-    zlm_log_days: int = 7  # 日志保留天数
+    use_zlmediakit: bool = os.getenv("STREAMING_USE_ZLMEDIAKIT", "true").lower() == "true"
+    zlm_server_address: str = os.getenv("ZLM_SERVER_ADDRESS", "127.0.0.1")
+    zlm_http_port: int = int(os.getenv("ZLM_HTTP_PORT", "8088"))
+    zlm_rtsp_port: int = int(os.getenv("ZLM_RTSP_PORT", "554"))
+    zlm_rtmp_port: int = int(os.getenv("ZLM_RTMP_PORT", "1935"))
+    zlm_api_port: int = int(os.getenv("ZLM_API_PORT", "8088"))
+    zlm_api_secret: str = os.getenv("ZLM_API_SECRET", "OOEV3gbdHQh4VngpRdNcCeANzy4OFB4u")
+    zlm_lib_path: str = os.getenv("ZLM_LIB_PATH", "/usr/local/lib")
+    zlm_thread_num: int = int(os.getenv("ZLM_THREAD_NUM", "0"))
+    zlm_log_level: int = int(os.getenv("ZLM_LOG_LEVEL", "1"))
+    zlm_log_path: str = os.getenv("ZLM_LOG_PATH", "logs/zlm")
+
+# 协议配置设置
+class ProtocolSettings(BaseSettingsModel):
+    """协议配置设置"""
+    # 通用协议配置
+    retry_count: int = int(os.getenv("PROTOCOL_RETRY_COUNT", "3"))
+    retry_interval: int = int(os.getenv("PROTOCOL_RETRY_INTERVAL", "5000"))  # 毫秒
+    timeout: int = int(os.getenv("PROTOCOL_TIMEOUT", "10000"))  # 毫秒
+
+    # HTTP协议配置
+    http_user_agent: str = os.getenv("PROTOCOL_HTTP_USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36")
+    http_auth_enable: bool = os.getenv("PROTOCOL_HTTP_AUTH_ENABLE", "false").lower() == "true"
+    http_auth_user: str = os.getenv("PROTOCOL_HTTP_AUTH_USER", "")
+    http_auth_password: str = os.getenv("PROTOCOL_HTTP_AUTH_PASSWORD", "")
+    http_use_cache: bool = os.getenv("PROTOCOL_HTTP_USE_CACHE", "true").lower() == "true"
+    http_cache_timeout: int = int(os.getenv("PROTOCOL_HTTP_CACHE_TIMEOUT", "3600"))  # 秒
+
+    # HLS协议配置
+    hls_segment_duration: int = int(os.getenv("PROTOCOL_HLS_SEGMENT_DURATION", "5"))  # 秒
+    hls_playlist_size: int = int(os.getenv("PROTOCOL_HLS_PLAYLIST_SIZE", "5"))
+    hls_cache_segments: bool = os.getenv("PROTOCOL_HLS_CACHE_SEGMENTS", "true").lower() == "true"
+    hls_max_segments: int = int(os.getenv("PROTOCOL_HLS_MAX_SEGMENTS", "5"))
+    hls_user_agent: str = os.getenv("PROTOCOL_HLS_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+
+    # RTMP协议配置
+    rtmp_port: int = int(os.getenv("PROTOCOL_RTMP_PORT", "1935"))
+    rtmp_ssl_port: int = int(os.getenv("PROTOCOL_RTMP_SSL_PORT", "19350"))
+    rtmp_auth_enable: bool = os.getenv("PROTOCOL_RTMP_AUTH_ENABLE", "false").lower() == "true"
+    rtmp_auth_user: str = os.getenv("PROTOCOL_RTMP_AUTH_USER", "")
+    rtmp_auth_password: str = os.getenv("PROTOCOL_RTMP_AUTH_PASSWORD", "")
+    rtmp_max_buffer_ms: int = int(os.getenv("PROTOCOL_RTMP_MAX_BUFFER_MS", "2000"))  # 毫秒
+
+    # RTSP协议配置
+    rtsp_port: int = int(os.getenv("PROTOCOL_RTSP_PORT", "554"))
+    rtsp_ssl_port: int = int(os.getenv("PROTOCOL_RTSP_SSL_PORT", "322"))
+    rtsp_auth_enable: bool = os.getenv("PROTOCOL_RTSP_AUTH_ENABLE", "false").lower() == "true"
+    rtsp_auth_user: str = os.getenv("PROTOCOL_RTSP_AUTH_USER", "")
+    rtsp_auth_password: str = os.getenv("PROTOCOL_RTSP_AUTH_PASSWORD", "")
+    rtsp_rtp_type: str = os.getenv("PROTOCOL_RTSP_RTP_TYPE", "tcp")  # tcp, udp
+    rtsp_max_buffer_ms: int = int(os.getenv("PROTOCOL_RTSP_MAX_BUFFER_MS", "2000"))  # 毫秒
+
+    # WebRTC协议配置
+    webrtc_enable_audio: bool = os.getenv("PROTOCOL_WEBRTC_ENABLE_AUDIO", "false").lower() == "true"
+    webrtc_video_codec: str = os.getenv("PROTOCOL_WEBRTC_VIDEO_CODEC", "H264")  # VP8, VP9, H264
+    webrtc_max_bitrate: int = int(os.getenv("PROTOCOL_WEBRTC_MAX_BITRATE", "2000000"))  # bps
+    webrtc_force_tcp: bool = os.getenv("PROTOCOL_WEBRTC_FORCE_TCP", "false").lower() == "true"
+    webrtc_local_tcp_port: int = int(os.getenv("PROTOCOL_WEBRTC_LOCAL_TCP_PORT", "8189"))
+    webrtc_use_whip: bool = os.getenv("PROTOCOL_WEBRTC_USE_WHIP", "false").lower() == "true"
+    webrtc_use_whep: bool = os.getenv("PROTOCOL_WEBRTC_USE_WHEP", "false").lower() == "true"
+
+    # ONVIF协议配置
+    onvif_auth_enable: bool = os.getenv("PROTOCOL_ONVIF_AUTH_ENABLE", "true").lower() == "true"
+    onvif_auth_username: str = os.getenv("PROTOCOL_ONVIF_AUTH_USERNAME", "admin")
+    onvif_auth_password: str = os.getenv("PROTOCOL_ONVIF_AUTH_PASSWORD", "admin")
+    onvif_connection_timeout: int = int(os.getenv("PROTOCOL_ONVIF_CONNECTION_TIMEOUT", "10000"))  # 毫秒
+    onvif_receive_timeout: int = int(os.getenv("PROTOCOL_ONVIF_RECEIVE_TIMEOUT", "15000"))  # 毫秒
+    onvif_prefer_profile_type: str = os.getenv("PROTOCOL_ONVIF_PREFER_PROFILE_TYPE", "main")  # main, sub
+    onvif_prefer_h264: bool = os.getenv("PROTOCOL_ONVIF_PREFER_H264", "true").lower() == "true"
+    onvif_prefer_tcp: bool = os.getenv("PROTOCOL_ONVIF_PREFER_TCP", "true").lower() == "true"
+    onvif_buffer_size: int = int(os.getenv("PROTOCOL_ONVIF_BUFFER_SIZE", "8"))
+
+    # GB28181协议配置
+    gb28181_sip_port: int = int(os.getenv("PROTOCOL_GB28181_SIP_PORT", "5060"))
+    gb28181_device_id: str = os.getenv("PROTOCOL_GB28181_DEVICE_ID", "34020000002000000001")
+    gb28181_server_id: str = os.getenv("PROTOCOL_GB28181_SERVER_ID", "34020000002000000001")
+    gb28181_domain: str = os.getenv("PROTOCOL_GB28181_DOMAIN", "3402000000")
+    gb28181_password: str = os.getenv("PROTOCOL_GB28181_PASSWORD", "12345678")
+    gb28181_prefer_stream_type: str = os.getenv("PROTOCOL_GB28181_PREFER_STREAM_TYPE", "main")  # main, sub
+    gb28181_auto_switch_sub_stream: bool = os.getenv("PROTOCOL_GB28181_AUTO_SWITCH_SUB_STREAM", "true").lower() == "true"
+    gb28181_buffer_size: int = int(os.getenv("PROTOCOL_GB28181_BUFFER_SIZE", "8"))
 
 # 存储配置
 class StorageSettings(BaseSettingsModel):
@@ -79,11 +142,7 @@ class StorageSettings(BaseSettingsModel):
     temp_dir: str = "temp"
     max_size: int = 10 * 1024 * 1024 * 1024  # 10GB
 
-# 模型服务配置
-class ModelServiceSettings(BaseSettingsModel):
-    """模型服务配置"""
-    url: str = "http://localhost:8003"
-    api_prefix: str = "/api/v1"
+
 
 # 分析设置
 class AnalysisSettings(BaseSettingsModel):
@@ -111,12 +170,12 @@ class Settings(BaseSettings):
     )
 
     # 基础配置
-    PROJECT_NAME: str = "Analysis Service"
-    DESCRIPTION: str = "Meek YOLO Analysis Service"
-    VERSION: str = "0.1.0"
-    DEBUG_ENABLED: bool = False
+    PROJECT_NAME: str = "MeekYolo Analysis Service"
+    DESCRIPTION: str = "MeekYolo Analysis Service"
+    VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
-    ENVIRONMENT: str = "development"
+    DEBUG_ENABLED: bool = os.getenv("DEBUG_ENABLED", "false").lower() == "true"
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
 
     # 服务配置
     SERVICES_HOST: str = "0.0.0.0"
@@ -140,9 +199,6 @@ class Settings(BaseSettings):
     TASK_QUEUE_MAX_RETRIES: int = 3
     TASK_QUEUE_RETRY_DELAY: int = 5
 
-    # 缓存配置
-    CACHE: CacheSettings = CacheSettings()
-
     # 日志配置
     LOGGING: LoggingSettings = LoggingSettings()
 
@@ -152,19 +208,17 @@ class Settings(BaseSettings):
     # 流媒体配置
     STREAMING: StreamingSettings = StreamingSettings()
 
+    # 协议配置
+    PROTOCOLS: ProtocolSettings = ProtocolSettings()
+
     # 存储配置
     STORAGE: StorageSettings = StorageSettings()
-
-    # 模型服务配置
-    MODEL_SERVICE: ModelServiceSettings = ModelServiceSettings()
 
     # 分析配置
     ANALYSIS: AnalysisSettings = AnalysisSettings()
 
     # 默认目标检测配置
     DEFAULT_DETECTION_MODEL: str = "yolov8n.pt"
-    DEFAULT_SEGMENTATION_MODEL: str = "yolov8n-seg.pt"
-    DEFAULT_CLASSIFICATION_MODEL: str = "yolov8n-cls.pt"
 
     # 设置日志级别
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -175,11 +229,7 @@ class Settings(BaseSettings):
 # 创建设置实例
 settings = Settings()
 
-# 从环境变量加载模型服务配置
-if os.getenv("MODEL_SERVICE_URL"):
-    settings.MODEL_SERVICE.url = os.getenv("MODEL_SERVICE_URL")
-if os.getenv("MODEL_SERVICE_API_PREFIX"):
-    settings.MODEL_SERVICE.api_prefix = os.getenv("MODEL_SERVICE_API_PREFIX")
+
 
 # 从环境变量加载分析配置
 if os.getenv("ANALYSIS_CONFIDENCE"):

@@ -260,7 +260,7 @@ class ZLMediaKitManager:
             log_level = ctypes.c_int(self._config.log_level)
             log_mask = ctypes.c_int(7)  # LOG_CONSOLE | LOG_FILE | LOG_CALLBACK
             log_file_path = ctypes.c_char_p(self._config.log_path.encode('utf-8'))
-            log_file_days = ctypes.c_int(self._config.log_days)
+            log_file_days = ctypes.c_int(7)  # 默认保留7天日志
 
             # 注册日志回调
             if hasattr(self._lib, 'mk_set_log_callback'):

@@ -27,7 +27,7 @@ from .event_system import (
 )
 
 from .base_stream import BaseStream
-from .stream_manager import StreamManager, stream_manager
+from .stream_manager import StreamManager
 
 __all__ = [
     # 流接口
@@ -42,7 +42,6 @@ __all__ = [
     
     # 流管理器
     'StreamManager',
-    'stream_manager',
     
     # 配置管理
     'IConfig',

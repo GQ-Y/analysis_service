@@ -526,5 +526,4 @@ class StreamManager(IStreamManager):
         else:
             self._event_system.unregister_sync_handler(event_name, handler)
 
-# 单例实例
-stream_manager = StreamManager()
+# 单例实例将在需要时创建

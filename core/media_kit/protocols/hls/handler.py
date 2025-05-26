@@ -20,40 +20,56 @@ from .config import HlsConfig, hls_config
 
 class HlsStream(BaseStream):
     """HLS流类，实现HLS协议的流处理"""
-    
+
     def __init__(self, config: Dict[str, Any]):
         """初始化HLS流
-        
+
         Args:
             config: 流配置
         """
         # 调用基类初始化
         super().__init__(config.get("stream_id", ""), config)
-        
-        # HLS特有配置
-        self._hls_config = HlsConfig()
-        
-        # 如果配置中有HLS特有配置，更新
+
+        # HLS特有配置 - 使用统一配置
+        try:
+            from core.config import settings
+            self._hls_config = HlsConfig()
+            # 从统一配置加载
+            self._hls_config.retry_count = settings.PROTOCOLS.retry_count
+            self._hls_config.retry_interval = settings.PROTOCOLS.retry_interval
+            self._hls_config.timeout = settings.PROTOCOLS.timeout
+            self._hls_config.segment_duration = settings.PROTOCOLS.hls_segment_duration
+            self._hls_config.playlist_size = settings.PROTOCOLS.hls_playlist_size
+            self._hls_config.cache_segments = settings.PROTOCOLS.hls_cache_segments
+            self._hls_config.max_segments = settings.PROTOCOLS.hls_max_segments
+            self._hls_config.user_agent = settings.PROTOCOLS.hls_user_agent
+        except ImportError:
+            # 如果无法导入配置，使用默认值
+            self._hls_config = HlsConfig()
+
+        # 如果配置中有HLS特有配置，更新（优先级更高）
         hls_extra = config.get("hls", {})
         if hls_extra:
-            self._hls_config = HlsConfig.from_dict(hls_extra)
-        
+            for key, value in hls_extra.items():
+                if hasattr(self._hls_config, key):
+                    setattr(self._hls_config, key, value)
+
         # OpenCV视频捕获对象
         self._cap = None
-        
+
         # 重连配置
         self._retry_count = 0
         self._max_retries = self._hls_config.retry_count
         self._retry_interval = self._hls_config.retry_interval / 1000.0  # 转换为秒
-        
+
         # 超时配置
         self._timeout = self._hls_config.timeout / 1000.0  # 转换为秒
-        
+
         normal_logger.info(f"创建HLS流: {self._stream_id}, URL: {self._url}")
-    
+
     async def _start_pulling(self) -> bool:
         """开始拉流
-        
+
         Returns:
             bool: 是否成功启动拉流
         """
@@ -64,34 +80,34 @@ class HlsStream(BaseStream):
                 f"timeout={int(self._timeout * 1000000)}",  # 微秒
                 f"user_agent={self._hls_config.user_agent}"
             ]
-            
+
             # 构建完整的捕获URL
             if "?" in self._url:
                 cap_url = f"{self._url}&{'&'.join(cap_params)}"
             else:
                 cap_url = f"{self._url}?{'&'.join(cap_params)}"
-                
+
             normal_logger.debug(f"捕获URL: {cap_url}")
-            
+
             # 创建捕获对象
             self._cap = cv2.VideoCapture(cap_url)
-            
+
             # 验证捕获对象是否成功创建
             if not self._cap.isOpened():
                 exception_logger.exception(f"无法打开HLS流: {cap_url}")
                 self._last_error = "无法打开HLS流"
                 return False
-            
+
             normal_logger.info(f"成功创建HLS流捕获对象: {cap_url}")
             return True
         except Exception as e:
             exception_logger.exception(f"创建HLS流捕获对象异常: {str(e)}")
             self._last_error = f"创建HLS流异常: {str(e)}"
             return False
-    
+
     async def _stop_pulling(self) -> bool:
         """停止拉流
-        
+
         Returns:
             bool: 是否成功停止拉流
         """
@@ -100,20 +116,20 @@ class HlsStream(BaseStream):
             if self._cap:
                 self._cap.release()
                 self._cap = None
-            
+
             normal_logger.info(f"成功停止HLS流: {self._url}")
             return True
         except Exception as e:
             exception_logger.exception(f"停止HLS流异常: {str(e)}")
             return False
-    
+
     async def _pull_stream_task(self) -> None:
         """拉流任务，从HLS服务器拉取视频帧"""
         normal_logger.info(f"启动HLS流拉流任务: {self._url}")
-        
+
         # 重置重试计数
         self._retry_count = 0
-        
+
         try:
             while not self._stop_event.is_set():
                 try:
@@ -122,33 +138,33 @@ class HlsStream(BaseStream):
                         if not await self._reconnect():
                             # 重连失败，停止任务
                             break
-                    
+
                     # 读取一帧
                     ret, frame = self._cap.read()
-                    
+
                     if not ret or frame is None:
                         # 读取失败，尝试重连
                         normal_logger.warning(f"读取HLS流帧失败: {self._url}")
                         self._last_error = "读取HLS流帧失败"
-                        
+
                         if not await self._reconnect():
                             # 重连失败，停止任务
                             break
-                            
+
                         continue
-                    
+
                     # 读取成功，重置重试计数
                     self._retry_count = 0
-                    
+
                     # 添加帧到缓冲区
                     self._add_frame_to_buffer(frame)
-                    
+
                     # 帧处理完成，设置事件
                     self._frame_processed_event.set()
-                    
+
                     # 控制读取速度，避免占用太多CPU
                     await asyncio.sleep(0.001)
-                    
+
                 except asyncio.CancelledError:
                     normal_logger.info(f"HLS流 {self._stream_id} 拉流任务被取消")
                     break
@@ -156,7 +172,7 @@ class HlsStream(BaseStream):
                     exception_logger.exception(f"HLS流 {self._stream_id} 拉流异常: {str(e)}")
                     self._last_error = f"拉流异常: {str(e)}"
                     self._stats["errors"] += 1
-                    
+
                     # 尝试重连
                     if not await self._reconnect():
                         # 重连失败，停止任务
@@ -171,16 +187,16 @@ class HlsStream(BaseStream):
             if self._cap:
                 self._cap.release()
                 self._cap = None
-            
+
             normal_logger.info(f"HLS流 {self._stream_id} 拉流任务已停止")
-            
+
             # 设置状态
             self.set_status(StreamStatus.STOPPED)
             self.set_health_status(StreamHealthStatus.OFFLINE)
-    
+
     async def _reconnect(self) -> bool:
         """重新连接HLS流
-        
+
         Returns:
             bool: 是否成功重连
         """
@@ -191,24 +207,24 @@ class HlsStream(BaseStream):
             self.set_status(StreamStatus.ERROR)
             self.set_health_status(StreamHealthStatus.UNHEALTHY)
             return False
-        
+
         # 增加重试次数和统计
         self._retry_count += 1
         self._stats["reconnects"] += 1
-        
+
         normal_logger.info(f"HLS流 {self._stream_id} 尝试重连 (第 {self._retry_count}/{self._max_retries} 次)")
-        
+
         # 释放旧的捕获对象
         if self._cap:
             self._cap.release()
             self._cap = None
-        
+
         # 等待重试间隔
         await asyncio.sleep(self._retry_interval)
-        
+
         # 设置状态
         self.set_status(StreamStatus.CONNECTING)
-        
+
         # 重新创建捕获对象
         try:
             return await self._start_pulling()

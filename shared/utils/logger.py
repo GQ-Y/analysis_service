@@ -9,6 +9,9 @@ import os
 LOGS_DIR = "logs"
 os.makedirs(LOGS_DIR, exist_ok=True)
 
+# 测试日志标记常量
+TEST_LOG_MARKER = "TEST_LOG_MARKER"
+
 # 移除所有默认处理器，以便精细控制
 logger.remove()
 

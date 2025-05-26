@@ -397,6 +397,5 @@ class StreamManager:
 
         normal_logger.info("流管理器已关闭")
 
-# 创建单例实例
-stream_manager = StreamManager()
+# 单例实例将在需要时创建
 

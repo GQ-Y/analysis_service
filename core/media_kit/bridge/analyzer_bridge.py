@@ -260,5 +260,4 @@ class AnalyzerBridge:
             except Exception as e:
                 exception_logger.exception(f"任务 {task_id} 流错误回调异常: {str(e)}")
 
-# 单例实例
-analyzer_bridge = AnalyzerBridge()
+# 单例实例将在需要时创建
