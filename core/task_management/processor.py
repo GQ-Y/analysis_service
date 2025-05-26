@@ -304,12 +304,14 @@ class TaskProcessor:
             # 订阅视频流
             from core.task_management.stream import stream_manager
             try:
+                normal_logger.info(f"开始订阅流 {stream_id}，URL: {stream_url}")
                 success, frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
                 if not success or frame_queue is None:
                     error_msg = f"订阅视频流失败: {stream_id}"
                     normal_logger.error(error_msg)
                     self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                     return
+                normal_logger.info(f"成功订阅流 {stream_id}，等待帧数据...")
             except Exception as e:
                 error_msg = f"订阅视频流时发生异常: {str(e)}"
                 normal_logger.error(error_msg)
@@ -321,6 +323,7 @@ class TaskProcessor:
             # ... 原有的分析器创建代码 ...
 
             # 分析循环
+            normal_logger.info(f"开始任务 {task_id} 的分析循环")
             while not stop_event.is_set():
                 # 检查暂停事件
                 if pause_event.is_set():
@@ -329,25 +332,31 @@ class TaskProcessor:
                     continue
 
                 try:
-                    # 初始化帧计数器（如果不存在）
-                    if not hasattr(self, '_frame_count'):
-                        self._frame_count = {}
-                    if task_id not in self._frame_count:
-                        self._frame_count[task_id] = 0
+                    # 从帧队列获取帧，增加超时时间
+                    frame_data = await asyncio.wait_for(frame_queue.get(), timeout=10.0)  # 增加超时时间到10秒
+                    
+                    # 解包帧数据，通常是(frame, timestamp)的元组
+                    if frame_data and isinstance(frame_data, tuple) and len(frame_data) >= 2:
+                        frame, timestamp = frame_data[:2]
+                    else:
+                        normal_logger.warning(f"任务 {task_id}: 无效的帧数据格式")
+                        frame, timestamp = None, time.time()
 
-                    # 从帧队列获取帧（不打印日志，减少日志量）
-                    frame, timestamp = await asyncio.wait_for(frame_queue.get(), timeout=5.0)
-
-                    # 只在特定间隔打印帧获取信息
-                    if frame is not None:
-                        self._frame_count[task_id] += 1
-                        # 每100帧打印一次状态信息
-                        if self._frame_count[task_id] % 100 == 0:
-                            normal_logger.info(f"任务 {task_id}: 已处理 {self._frame_count[task_id]} 帧，当前帧大小: {frame.shape}")
-
+                    # 更新帧计数和状态
+                    if hasattr(self, '_frame_counts'):
+                        self._frame_counts[task_id] = self._frame_counts.get(task_id, 0) + 1
+                        
+                        # 每100帧记录一次日志
+                        if self._frame_counts[task_id] % 100 == 0:
+                            normal_logger.info(f"任务 {task_id}: 已处理 {self._frame_counts[task_id]} 帧")
+                        
                         # 重置连续错误计数
                         if hasattr(self, '_frame_error_counts') and task_id in self._frame_error_counts:
                             self._frame_error_counts[task_id] = 0
+                        
+                        # 重置超时计数
+                        if hasattr(self, '_frame_timeout_counts') and task_id in self._frame_timeout_counts:
+                            self._frame_timeout_counts[task_id] = 0
 
                     if frame is None:
                         # 没有收到帧，可能是流离线
@@ -418,7 +427,7 @@ class TaskProcessor:
                         # 根据不同情况采取不同策略
                         if status in [StreamStatus.RUNNING, StreamStatus.ONLINE]:
                             # 流状态正常但获取帧超时
-                            if timeout_count >= 3:  # 连续超时3次以上才重新订阅
+                            if timeout_count >= 5:  # 提高连续超时阈值，从3次改为5次
                                 normal_logger.info(f"流 {stream_id} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
                                 await stream_manager.unsubscribe_stream(stream_id, task_id)
                                 success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
@@ -434,7 +443,7 @@ class TaskProcessor:
                             normal_logger.info(f"流 {stream_id} 正在连接中，等待...")
                         elif status in [StreamStatus.OFFLINE, StreamStatus.ERROR]:
                             # 流离线或错误，尝试重新连接
-                            if timeout_count % 5 == 0:  # 每5次超时尝试一次重连
+                            if timeout_count % 10 == 0:  # 每10次超时尝试一次重连，而不是5次
                                 normal_logger.info(f"流 {stream_id} 状态异常 ({status})，尝试重新连接")
                                 # 通知流管理器重新连接
                                 await stream_manager.reconnect_stream(stream_id)

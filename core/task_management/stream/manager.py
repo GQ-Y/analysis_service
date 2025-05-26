@@ -196,15 +196,46 @@ class StreamManager:
             normal_logger.info(f"流ID为空，使用订阅者ID({subscriber_id})生成流ID: {stream_id}")
             # 更新配置中的stream_id
             config["stream_id"] = stream_id
+            
+        # 检查URL格式
+        stream_url = config.get("url", "")
+        if not stream_url:
+            normal_logger.error(f"流URL为空，无法订阅流: {stream_id}")
+            return False, None
+            
+        # 检查URL协议
+        if stream_url.startswith("rtsp://"):
+            normal_logger.info(f"检测到RTSP流: {stream_url}")
+            config["type"] = "rtsp"
+        elif stream_url.startswith("rtmp://"):
+            normal_logger.info(f"检测到RTMP流: {stream_url}")
+            config["type"] = "rtmp"
+        elif stream_url.startswith("http://") or stream_url.startswith("https://"):
+            if ".m3u8" in stream_url:
+                normal_logger.info(f"检测到HLS流: {stream_url}")
+                config["type"] = "hls"
+            else:
+                normal_logger.info(f"检测到HTTP流: {stream_url}")
+                config["type"] = "http"
+        else:
+            normal_logger.warning(f"未知流类型: {stream_url}，默认使用RTSP处理")
+            config["type"] = "rtsp"
 
         # 直接使用ZLMediaKit流
 
         # 获取或创建流
         try:
+            normal_logger.info(f"尝试获取或创建流: {stream_id}")
             stream = await self.get_or_create_stream(stream_id, config)
 
             # 订阅流
+            normal_logger.info(f"开始订阅流: {stream_id}, 订阅者: {subscriber_id}")
             success, queue = await stream.subscribe(subscriber_id)
+            
+            if success:
+                normal_logger.info(f"订阅流成功: {stream_id}, 订阅者: {subscriber_id}")
+            else:
+                normal_logger.error(f"订阅流失败: {stream_id}, 订阅者: {subscriber_id}")
 
             return success, queue
         except Exception as e:
@@ -396,6 +427,42 @@ class StreamManager:
             exception_logger.exception(f"关闭ZLMediaKit管理器时出错: {str(e)}")
 
         normal_logger.info("流管理器已关闭")
+
+    async def get_stream_proxy_url(self, stream_id: str) -> Optional[Dict[str, Any]]:
+        """获取流的代理URL信息
+
+        Args:
+            stream_id: 流ID
+
+        Returns:
+            Optional[Dict[str, Any]]: 代理URL信息
+        """
+        try:
+            stream = await self.get_stream(stream_id)
+            if not stream:
+                normal_logger.warning(f"流 {stream_id} 不存在")
+                return None
+                
+            # 检查是否是ZLM流
+            from core.media_kit.zlm_stream import ZLMVideoStream
+            if isinstance(stream, ZLMVideoStream):
+                # 获取代理URL信息
+                proxy_info = await stream.get_proxy_url_info()
+                normal_logger.info(f"获取流 {stream_id} 的代理URL信息成功")
+                return proxy_info
+            else:
+                normal_logger.warning(f"流 {stream_id} 不是ZLM流，无法获取代理URL信息")
+                return {
+                    "error": "流不是ZLM流，无法获取代理URL信息",
+                    "stream_id": stream_id,
+                    "stream_type": type(stream).__name__
+                }
+        except Exception as e:
+            exception_logger.exception(f"获取流 {stream_id} 的代理URL信息失败: {str(e)}")
+            return {
+                "error": f"获取代理URL信息失败: {str(e)}",
+                "stream_id": stream_id
+            }
 
 # 单例实例将在需要时创建
 

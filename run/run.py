@@ -89,11 +89,12 @@ def create_app() -> FastAPI:
     setup_exception_handlers(app)
 
     # 注册路由
-    from routers import task_router, health_router
+    from routers import task_router, health_router, stream_router
     from routers.task_video import router as video_router
     app.include_router(task_router)
     app.include_router(health_router)
     app.include_router(video_router)
+    app.include_router(stream_router)
 
     # 添加静态文件支持
     from fastapi.staticfiles import StaticFiles
@@ -123,10 +124,20 @@ async def lifespan(app: FastAPI):
         normal_logger.info(f"注册的路由: {[route.path for route in app.routes]}")
     
     # 检查并自动安装ZLMediaKit
-    from run.middlewares import init_zlm_environment
+    from run.middlewares import init_zlm_environment, start_zlm_service
     normal_logger.info("正在检查ZLMediaKit环境...")
     if init_zlm_environment():
         normal_logger.info("ZLMediaKit环境检查完成，库文件已就绪。")
+        
+        # 直接启动ZLMediaKit服务，不需要检查
+        normal_logger.info("正在启动ZLMediaKit服务进程...")
+        try:
+            if start_zlm_service():
+                normal_logger.info("ZLMediaKit服务进程已成功启动")
+            else:
+                normal_logger.warning("ZLMediaKit服务进程启动失败，将尝试使用现有配置继续")
+        except Exception as e:
+            exception_logger.exception("启动ZLMediaKit服务进程时出错")
     else:
         normal_logger.warning("ZLMediaKit环境检查失败，将尝试使用现有配置继续。")
         
@@ -266,6 +277,19 @@ async def lifespan(app: FastAPI):
             except:
                 pass
             normal_logger.info("ZLMediaKit关闭流程已完成。")
+    else:
+        normal_logger.info("没有ZLMediaKit管理器需要关闭。")
+    
+    # 确保ZLMediaKit服务已停止
+    try:
+        from run.middlewares import stop_zlm_service
+        normal_logger.info("正在停止ZLMediaKit服务进程...")
+        if stop_zlm_service():
+            normal_logger.info("ZLMediaKit服务进程已成功停止")
+        else:
+            normal_logger.warning("ZLMediaKit服务进程停止失败，请检查进程状态")
+    except Exception as e:
+        exception_logger.exception("停止ZLMediaKit服务进程时出错")
 
     # 清理信号处理器
     signal_handler.cleanup()

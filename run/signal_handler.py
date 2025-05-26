@@ -67,6 +67,19 @@ class SignalHandler:
             except Exception as e:
                 normal_logger.error(f"处理 ZLMediaKit 管理器时出错: {str(e)}")
         
+        # 尝试停止ZLMediaKit服务进程
+        try:
+            from run.middlewares import stop_zlm_service
+            normal_logger.info("信号处理器正在停止ZLMediaKit服务进程...")
+            # 直接调用停止函数，避免再次检查
+            stop_result = stop_zlm_service()
+            if stop_result:
+                normal_logger.info("ZLMediaKit服务进程已被信号处理器成功停止")
+            else:
+                normal_logger.warning("ZLMediaKit服务进程无法被信号处理器停止")
+        except Exception as e:
+            normal_logger.error(f"信号处理器停止ZLMediaKit服务时出错: {str(e)}")
+        
         # 给一些时间让正常的关闭流程执行
         time.sleep(1.0)
         

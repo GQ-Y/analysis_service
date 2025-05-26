@@ -58,17 +58,7 @@ class ZLMChecker:
                 exception_logger.error("安装ZLMediaKit库文件失败")
                 return False
 
-        # 检查并启动ZLMediaKit服务进程
-        if not ZLMChecker.check_zlm_process():
-            normal_logger.info("ZLMediaKit服务未运行，尝试启动...")
-            if ZLMChecker.start_zlm_service():
-                normal_logger.info("成功启动ZLMediaKit服务")
-            else:
-                normal_logger.warning("无法启动ZLMediaKit服务，部分功能可能不可用")
-                # 即使服务无法启动，库文件已经安装，所以仍然返回成功
-        else:
-            normal_logger.info("ZLMediaKit服务已在运行")
-
+        # 库文件检查成功
         return True
 
     @staticmethod
@@ -255,14 +245,104 @@ class ZLMChecker:
             return False
 
     @staticmethod
-    def start_zlm_service():
-        """尝试启动ZLMediaKit服务"""
+    def stop_zlm_service():
+        """停止ZLMediaKit服务
+
+        Returns:
+            bool: 是否成功停止服务
+        """
         try:
-            if ZLMChecker.check_zlm_process():
-                normal_logger.info("ZLMediaKit服务已在运行，无需重复启动。")
+            # 先检查服务是否在运行
+            is_running = ZLMChecker.check_zlm_process()
+            if not is_running:
+                normal_logger.info("ZLMediaKit服务未运行，无需停止")
                 return True
 
             system_type = platform.system().lower()
+            if system_type in ["darwin", "linux"]:
+                normal_logger.info("尝试停止ZLMediaKit服务...")
+                # 使用killall命令
+                try:
+                    subprocess.run(["killall", "MediaServer"], 
+                                   capture_output=True, 
+                                   check=True)
+                    normal_logger.info("ZLMediaKit服务已停止")
+                    
+                    # 等待进程完全退出
+                    time.sleep(1)
+                    
+                    # 验证服务已停止，但不再重复记录日志
+                    if not ZLMChecker._check_zlm_process_silent():
+                        normal_logger.info("确认ZLMediaKit服务已停止")
+                        return True
+                    else:
+                        normal_logger.warning("ZLMediaKit服务可能未完全停止，尝试强制终止")
+                        subprocess.run(["killall", "-9", "MediaServer"], 
+                                       capture_output=True)
+                        time.sleep(1)
+                        return not ZLMChecker._check_zlm_process_silent()
+                except subprocess.CalledProcessError:
+                    normal_logger.warning("killall命令执行失败，尝试使用pkill")
+                    
+                    # 使用pkill命令
+                    try:
+                        subprocess.run(["pkill", "-f", "MediaServer"], 
+                                       capture_output=True)
+                        time.sleep(1)
+                        if not ZLMChecker._check_zlm_process_silent():
+                            normal_logger.info("确认ZLMediaKit服务已停止")
+                            return True
+                        else:
+                            normal_logger.warning("ZLMediaKit服务未停止，尝试强制终止")
+                            subprocess.run(["pkill", "-9", "-f", "MediaServer"], 
+                                           capture_output=True)
+                            time.sleep(1)
+                            return not ZLMChecker._check_zlm_process_silent()
+                    except Exception as e:
+                        exception_logger.error(f"使用pkill停止ZLMediaKit服务失败: {str(e)}")
+                        return False
+            else:
+                normal_logger.warning(f"对于操作系统 {system_type}，停止ZLMediaKit服务的逻辑未实现")
+                return False
+        except Exception as e:
+            exception_logger.exception(f"停止ZLMediaKit服务时出错: {str(e)}")
+            return False
+            
+    @staticmethod
+    def _check_zlm_process_silent():
+        """检查ZLMediaKit进程是否在运行（静默版本，不记录日志）"""
+        try:
+            process_name = "MediaServer"
+            if platform.system().lower() in ["darwin", "linux"]:
+                result = subprocess.run(["pgrep", "-f", process_name], 
+                                        capture_output=True, text=True)
+                return result.returncode == 0 and result.stdout.strip()
+            else:
+                return False # 假设未运行
+        except:
+            return False
+
+    @staticmethod
+    def start_zlm_service():
+        """尝试启动ZLMediaKit服务
+            
+        Returns:
+            bool: 是否成功启动服务
+        """
+        try:
+            # 先尝试杀掉可能存在的进程，不管是否存在都尝试杀掉
+            system_type = platform.system().lower()
+            if system_type in ["darwin", "linux"]:
+                try:
+                    # 静默执行，不记录日志
+                    subprocess.run(["killall", "-9", "MediaServer"], 
+                                  capture_output=True,
+                                  check=False)  # 不检查返回码，忽略错误
+                    time.sleep(0.5)  # 简短等待，确保进程已关闭
+                except:
+                    pass  # 忽略任何错误
+
+            # 准备启动服务
             media_server_executable = "MediaServer"
             prebuilt_dir_segment = f"zlmos/{system_type}" 
             media_server_path_candidate1 = PROJECT_ROOT / prebuilt_dir_segment / media_server_executable
@@ -295,6 +375,24 @@ class ZLMChecker:
                 else:
                     normal_logger.warning(f"源配置文件 {source_config_path} 不存在，ZLMediaKit可能使用默认配置或无法启动。")
             
+            # 确保配置文件中的HTTP端口设置正确
+            try:
+                import configparser
+                config = configparser.ConfigParser(interpolation=None)
+                config.read(config_file_path)
+                
+                # 检查HTTP端口是否设置为8088
+                if 'http' in config and 'port' in config['http']:
+                    port = config['http']['port']
+                    if port != '8088':
+                        normal_logger.warning(f"配置文件中HTTP端口不是8088，当前值: {port}，将修改为8088")
+                        config['http']['port'] = '8088'
+                        with open(config_file_path, 'w') as f:
+                            config.write(f)
+                        normal_logger.info("已修改配置文件中的HTTP端口为8088")
+            except Exception as e:
+                exception_logger.warning(f"检查/修改配置文件中的HTTP端口设置时出错: {str(e)}")
+            
             normal_logger.info(f"正在启动ZLMediaKit服务: {media_server_path} -c {config_file_path}")
             
             # 确保MediaServer可执行
@@ -308,9 +406,10 @@ class ZLMChecker:
                                      start_new_session=True,
                                      cwd=media_server_path.parent) # 在MediaServer所在目录运行
 
-            normal_logger.info(f"ZLMediaKit服务启动命令已发送，PID (可能是shell的): {process.pid}")
+            normal_logger.info(f"ZLMediaKit服务启动命令已发送，PID: {process.pid}")
             time.sleep(3) # 给服务一些启动时间
 
+            # 检查服务是否成功启动
             if ZLMChecker.check_zlm_process():
                 normal_logger.info("成功启动ZLMediaKit服务。")
                 try:

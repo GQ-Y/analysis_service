@@ -31,7 +31,7 @@ class ZLMVideoStream(BaseVideoStream):
             stream_id: 流ID
             config: 流配置
             manager: ZLMediaKit管理器实例
-            player_handle: ZLMediaKit播放器句柄，如果为None则会在start时创建
+            player_handle: 不再使用，保留参数兼容性
         """
         # 调用基类初始化
         super().__init__(stream_id, config)
@@ -39,9 +39,9 @@ class ZLMVideoStream(BaseVideoStream):
         self.manager = manager
         self.stream_type = config.get("type", "rtsp")
 
-        # 播放器句柄
-        self._player_handle = player_handle
-        self._use_sdk = player_handle is not None or (self.manager._lib and hasattr(self.manager._lib, 'mk_player_create'))
+        # 移除C API相关属性，使用HTTP API
+        self._player_handle = None
+        self._use_sdk = False
 
         # 推流相关
         self.app = config.get("app", "live")
@@ -74,13 +74,15 @@ class ZLMVideoStream(BaseVideoStream):
             "fps": 0
         }
 
-        # 帧回调相关
+        # 移除C API回调相关属性
         self._frame_callback_registered = False
-        self._frame_callback_ref = None  # 保持帧回调函数的引用，防止被垃圾回收
-        self._play_result_callback_ref = None  # 保持播放结果回调函数的引用，防止被垃圾回收
-        self._play_shutdown_callback_ref = None  # 保持播放中断回调函数的引用，防止被垃圾回收
 
-        normal_logger.info(f"创建ZLM流: {stream_id}, URL: {self._url}, 类型: {self.stream_type}, 使用SDK: {self._use_sdk}")
+        # 代理URL（由ZLM HTTP API创建的流地址）
+        self._proxy_url = ""
+        # 流密钥（由ZLM HTTP API返回，用于后续操作）
+        self._stream_key = config.get("stream_key", "")
+
+        normal_logger.info(f"创建ZLM流: {stream_id}, URL: {self._url}, 类型: {self.stream_type}, 使用HTTP API")
 
     async def start(self) -> bool:
         """启动流
@@ -95,8 +97,8 @@ class ZLMVideoStream(BaseVideoStream):
         normal_logger.info(f"启动流 {self.stream_id}")
 
         # 设置状态
-        self._status = StreamStatus.INITIALIZING  # 使用INITIALIZING代替CONNECTING
-        self._health_status = StreamHealthStatus.UNHEALTHY  # 使用UNHEALTHY代替UNKNOWN
+        self._status = StreamStatus.INITIALIZING
+        self._health_status = StreamHealthStatus.UNHEALTHY
         self._last_error = ""
 
         # 重置统计
@@ -114,14 +116,10 @@ class ZLMVideoStream(BaseVideoStream):
         try:
             # 根据流类型选择不同的方法拉流
             success = False
-            if self.stream_type == "rtsp":
-                success = await self._start_rtsp()
-            elif self.stream_type == "rtmp":
-                success = await self._start_rtmp()
-            elif self.stream_type == "hls":
-                success = await self._start_hls()
-            elif self.stream_type == "http":
-                success = await self._start_http()
+            
+            # 使用HTTP API创建流，所有流类型使用相同的方法
+            if self.stream_type in ["rtsp", "rtmp", "hls", "http"]:
+                success = await self._start_stream_with_http_api()
             else:
                 normal_logger.error(f"不支持的流类型: {self.stream_type}")
                 self._status = StreamStatus.ERROR
@@ -187,36 +185,52 @@ class ZLMVideoStream(BaseVideoStream):
                 except Exception as e:
                     normal_logger.error(f"取消帧处理任务时出错: {str(e)}")
 
-            # 3. 停止ZLM播放器
-            if self._player_handle:
+            # 3. 使用HTTP API关闭流
+            stream_key = self.config.get("stream_key", self._stream_key)
+            if stream_key:
                 try:
-                    if self.manager._lib:
-                        # 3.1 首先停止播放
-                        if hasattr(self.manager._lib, 'mk_player_stop'):
-                            try:
-                                normal_logger.info(f"停止播放器: {self.stream_id}")
-                                self.manager._lib.mk_player_stop(self._player_handle)
-                                await asyncio.sleep(0.5)  # 等待停止完成
-                            except Exception as e:
-                                normal_logger.error(f"停止播放器时出错: {str(e)}")
-
-                        # 3.2 然后释放播放器
-                        if hasattr(self.manager._lib, 'mk_proxy_player_release'):
-                            try:
-                                normal_logger.info(f"释放播放器: {self.stream_id}")
-                                self.manager._lib.mk_proxy_player_release(self._player_handle)
-                            except Exception as e:
-                                normal_logger.error(f"释放播放器时出错: {str(e)}")
-
-                    # 3.3 清除播放器相关引用
-                    self._player_handle = None
-                    self._frame_callback_registered = False
-                    self._frame_callback_ref = None
-                    self._play_result_callback_ref = None
-                    self._play_shutdown_callback_ref = None
-
+                    # 使用delStreamProxy关闭流代理
+                    normal_logger.info(f"使用HTTP API关闭流代理: {self.stream_id}, key: {stream_key}")
+                    result = self.manager.call_api("delStreamProxy", {"key": stream_key})
+                    
+                    if result.get("code") == 0:
+                        normal_logger.info(f"HTTP API关闭流代理成功: {self.stream_id}")
+                    else:
+                        error_msg = result.get("msg", "未知错误")
+                        normal_logger.warning(f"HTTP API关闭流代理失败: {error_msg}")
+                        
+                        # 尝试使用close_streams API
+                        close_params = {
+                            "vhost": self.vhost,
+                            "app": self.app,
+                            "stream": self.stream_name,
+                            "force": 1
+                        }
+                        normal_logger.info(f"尝试使用close_streams API关闭流: {self.stream_id}")
+                        result = self.manager.call_api("close_streams", close_params)
+                        if result.get("code") == 0:
+                            normal_logger.info(f"close_streams API关闭流成功: {self.stream_id}")
+                        else:
+                            normal_logger.warning(f"close_streams API关闭流失败: {result}")
                 except Exception as e:
-                    normal_logger.error(f"清理播放器资源时出错: {str(e)}")
+                    normal_logger.error(f"关闭流代理时出错: {str(e)}")
+            else:
+                # 如果没有stream_key，尝试使用close_streams API
+                try:
+                    close_params = {
+                        "vhost": self.vhost,
+                        "app": self.app,
+                        "stream": self.stream_name,
+                        "force": 1
+                    }
+                    normal_logger.info(f"使用close_streams API关闭流: {self.stream_id}")
+                    result = self.manager.call_api("close_streams", close_params)
+                    if result.get("code") == 0:
+                        normal_logger.info(f"close_streams API关闭流成功: {self.stream_id}")
+                    else:
+                        normal_logger.warning(f"close_streams API关闭流失败: {result}")
+                except Exception as e:
+                    normal_logger.error(f"关闭流时出错: {str(e)}")
 
             # 4. 清理订阅者
             async with self._subscriber_lock:
@@ -232,13 +246,6 @@ class ZLMVideoStream(BaseVideoStream):
             self._is_running = False
             self._is_stopping = False
 
-            # 7. 通知健康监控器
-            try:
-                from core.task_management.stream.health_monitor import stream_health_monitor
-                stream_health_monitor.report_error(self.stream_id, "流已停止")
-            except Exception as e:
-                normal_logger.error(f"通知健康监控器时出错: {str(e)}")
-
             normal_logger.info(f"流 {self.stream_id} 停止成功")
             return True
 
@@ -253,16 +260,58 @@ class ZLMVideoStream(BaseVideoStream):
         Returns:
             Dict[str, Any]: 流信息
         """
-        return {
+        # 构建基本信息
+        info = {
             "stream_id": self.stream_id,
             "url": self.url,
             "type": self.stream_type,
             "status": self._status.value,
+            "status_text": self._status.name,
             "health_status": self._health_status.value,
+            "health_status_text": self._health_status.name,
             "last_error": self._last_error,
             "subscriber_count": len(self._subscribers),
-            "stats": self._stats
+            "stats": self._stats,
+            "connection_info": {
+                "proxy_url": self._proxy_url,
+                "original_url": self.url,
+                "using_proxy": self._stats.get("using_proxy", True),
+                "connected_url": self._stats.get("connected_url", ""),
+                "c_api_available": self._use_sdk,
+                "player_handle_active": self._player_handle is not None,
+                "frame_callback_registered": self._frame_callback_registered
+            },
+            "diagnostics": {
+                "timestamps": {
+                    "start_time": self._stats.get("start_time", 0),
+                    "last_frame_time": self._stats.get("last_frame_time", 0),
+                    "current_time": time.time()
+                },
+                "frames": {
+                    "received": self._stats.get("frames_received", 0),
+                    "processed": self._stats.get("frames_processed", 0),
+                    "buffer_size": len(self._frame_buffer),
+                    "max_buffer_size": self._frame_buffer_size
+                },
+                "errors": self._stats.get("errors", 0),
+                "reconnects": self._stats.get("reconnects", 0),
+                "fps": self._stats.get("fps", 0)
+            }
         }
+        
+        # 计算流健康度指标
+        if self._stats.get("frames_received", 0) > 0:
+            # 计算距离最后一帧的时间
+            last_frame_time = self._stats.get("last_frame_time", 0)
+            time_since_last_frame = time.time() - last_frame_time if last_frame_time > 0 else float('inf')
+            
+            # 添加到诊断信息
+            info["diagnostics"]["health_metrics"] = {
+                "time_since_last_frame": time_since_last_frame,
+                "healthy": time_since_last_frame < 5.0,  # 如果5秒内有帧，认为是健康的
+            }
+        
+        return info
 
     def get_status(self) -> StreamStatus:
         """获取流状态"""
@@ -301,16 +350,25 @@ class ZLMVideoStream(BaseVideoStream):
             Tuple[bool, Optional[np.ndarray]]: (是否成功, 帧数据)
         """
         # 检查流状态 - 允许多种有效状态
-        valid_statuses = [StreamStatus.RUNNING, StreamStatus.ONLINE]
-        if not self._is_running or self._status not in valid_statuses:
+        valid_statuses = [StreamStatus.RUNNING, StreamStatus.ONLINE, StreamStatus.CONNECTING]
+        if not self._is_running:
             normal_logger.debug(f"流 {self.stream_id} 状态不可用: is_running={self._is_running}, status={self._status}")
-
-            # 如果流状态是CONNECTING或INITIALIZING，记录详细信息但仍返回标准格式
-            if self._status in [StreamStatus.CONNECTING, StreamStatus.INITIALIZING]:
-                normal_logger.debug(f"流 {self.stream_id} 正在连接中")
-
             return False, None
 
+        # 对于CONNECTING或INITIALIZING状态，给予更长的等待时间
+        if self._status in [StreamStatus.CONNECTING, StreamStatus.INITIALIZING]:
+            # 检查是否有帧正在接收中
+            if self._stats.get("frames_received", 0) > 0:
+                normal_logger.debug(f"流 {self.stream_id} 正在连接中，已接收 {self._stats.get('frames_received', 0)} 帧")
+            else:
+                normal_logger.debug(f"流 {self.stream_id} 正在连接中，尚未接收到帧")
+            
+            # 如果状态是CONNECTING但已经接收了帧，则更新状态为ONLINE
+            if self._stats.get("frames_received", 0) > 0 and self._status == StreamStatus.CONNECTING:
+                self._status = StreamStatus.ONLINE
+                self._health_status = StreamHealthStatus.HEALTHY
+                normal_logger.info(f"流 {self.stream_id} 状态由CONNECTING更新为ONLINE")
+        
         # 获取最新帧
         with self._frame_lock:
             if not self._frame_buffer:
@@ -322,6 +380,10 @@ class ZLMVideoStream(BaseVideoStream):
                 else:
                     # 曾经接收到帧，但当前缓冲区为空
                     normal_logger.debug(f"流 {self.stream_id} 曾经接收到帧，但当前缓冲区为空")
+                    # 检查最后一帧时间，判断是否需要重连
+                    last_frame_time = self._stats.get("last_frame_time", 0)
+                    if last_frame_time > 0 and time.time() - last_frame_time > 5.0:
+                        normal_logger.warning(f"流 {self.stream_id} 超过5秒未接收到新帧，可能需要重连")
 
                 return False, None
 
@@ -415,603 +477,400 @@ class ZLMVideoStream(BaseVideoStream):
         normal_logger.warning(f"订阅者 {subscriber_id} 未订阅流 {self.stream_id}")
         return False
 
-    def _register_frame_callback(self) -> bool:
-        """注册帧回调函数
-
-        注意：在ZLMediaKit C API中，帧回调不是通过mk_player_set_on_data注册的，
-        而是通过mk_player_set_on_result注册播放结果回调，然后在播放成功后
-        通过mk_track_add_delegate为每个track注册帧回调。
-
-        这个函数现在只负责注册播放结果回调，实际的帧回调会在播放成功后注册。
-
-        Returns:
-            bool: 是否成功注册
-        """
-        if not self._player_handle or not self.manager._lib or self._frame_callback_registered:
-            return False
-
-        try:
-            # 检查是否支持播放结果回调
-            if not hasattr(self.manager._lib, 'mk_player_set_on_result'):
-                normal_logger.warning("ZLMediaKit库不支持播放结果回调")
-                return False
-
-            # 定义帧回调函数 - 这个会在播放成功后通过mk_track_add_delegate注册
-            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_void_p)
-            def on_track_frame(user_data, frame_ptr):
-                try:
-                    # 这里的frame_ptr是mk_frame类型，需要使用mk_frame_xxx函数获取数据
-                    if not frame_ptr:
-                        return
-
-                    # 检查是否为视频帧
-                    if hasattr(self.manager._lib, 'mk_frame_is_video'):
-                        # 设置mk_frame_is_video的参数类型和返回值类型
-                        self.manager._lib.mk_frame_is_video.argtypes = [ctypes.c_void_p]
-                        self.manager._lib.mk_frame_is_video.restype = ctypes.c_int
-
-                        is_video = self.manager._lib.mk_frame_is_video(frame_ptr)
-                        if not is_video:
-                            return
-
-                    # 获取帧数据
-                    if hasattr(self.manager._lib, 'mk_frame_get_data') and hasattr(self.manager._lib, 'mk_frame_get_data_size'):
-                        # 设置mk_frame_get_data的参数类型和返回值类型
-                        self.manager._lib.mk_frame_get_data.argtypes = [ctypes.c_void_p]
-                        self.manager._lib.mk_frame_get_data.restype = ctypes.c_char_p
-
-                        # 设置mk_frame_get_data_size的参数类型和返回值类型
-                        self.manager._lib.mk_frame_get_data_size.argtypes = [ctypes.c_void_p]
-                        self.manager._lib.mk_frame_get_data_size.restype = ctypes.c_size_t
-
-                        data_ptr = self.manager._lib.mk_frame_get_data(frame_ptr)
-                        data_size = self.manager._lib.mk_frame_get_data_size(frame_ptr)
-
-                        if data_ptr and data_size > 0:
-                            # 复制数据，避免数据被释放
-                            buffer = ctypes.string_at(data_ptr, data_size)
-
-                            # 解码帧
-                            try:
-                                # 使用OpenCV解码
-                                frame_array = np.frombuffer(buffer, dtype=np.uint8)
-                                frame = cv2.imdecode(frame_array, cv2.IMREAD_COLOR)
-
-                                if frame is not None:
-                                    # 更新缓存
-                                    with self._frame_lock:
-                                        self._frame_buffer.append(frame)
-                                        if len(self._frame_buffer) > self._frame_buffer_size:
-                                            self._frame_buffer.pop(0)
-
-                                    # 更新统计
-                                    now = time.time()
-                                    self._stats["frames_received"] += 1
-                                    self._stats["last_frame_time"] = now
-                                    self._last_frame_time = now
-
-                                    # 更新状态
-                                    self._status = StreamStatus.ONLINE
-                                    self._health_status = StreamHealthStatus.HEALTHY
-
-                                    # 通知帧处理任务
-                                    asyncio.run_coroutine_threadsafe(
-                                        self._notify_frame_processed(frame, now),
-                                        asyncio.get_event_loop()
-                                    )
-                            except Exception as e:
-                                normal_logger.error(f"解码帧时出错: {str(e)}")
-                    else:
-                        normal_logger.warning("ZLMediaKit库不支持获取帧数据")
-                except Exception as e:
-                    normal_logger.error(f"处理帧回调时出错: {str(e)}")
-                    normal_logger.error(traceback.format_exc())
-
-                return True
-
-            # 定义播放结果回调函数
-            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int)
-            def on_play_result(user_data, err_code, err_msg, tracks, track_count):
-                try:
-                    # 检查是否为测试模式
-                    test_markers = self.config.get("test_markers", [])
-                    is_test_mode = any(marker in test_markers for marker in [
-                        "STREAM_RTSP_TEST", "STREAM_RTMP_TEST", 
-                        "STREAM_HTTP_FLV_TEST", "STREAM_HLS_TEST", 
-                        "STREAM_WEBRTC_TEST"
-                    ])
-                    
-                    if err_code == 0:
-                        # 播放成功
-                        normal_logger.info(f"播放成功: {self.stream_id}")
-
-                        # 为每个track注册帧回调
-                        if track_count > 0 and tracks:
-                            for i in range(track_count):
-                                track = tracks[i]
-
-                                # 检查是否为视频track
-                                if hasattr(self.manager._lib, 'mk_track_is_video'):
-                                    # 设置mk_track_is_video的参数类型和返回值类型
-                                    self.manager._lib.mk_track_is_video.argtypes = [ctypes.c_void_p]
-                                    self.manager._lib.mk_track_is_video.restype = ctypes.c_int
-
-                                    # 检查是否为视频track
-                                    if self.manager._lib.mk_track_is_video(track):
-                                        normal_logger.info(f"找到视频track: {self.stream_id}")
-
-                                        # 注册帧回调
-                                        if hasattr(self.manager._lib, 'mk_track_add_delegate'):
-                                            # 设置mk_track_add_delegate的参数类型
-                                            self.manager._lib.mk_track_add_delegate.argtypes = [
-                                                ctypes.c_void_p,  # track句柄
-                                                ctypes.c_void_p,  # 回调函数
-                                                ctypes.c_void_p   # 用户数据
-                                            ]
-                                            self.manager._lib.mk_track_add_delegate.restype = ctypes.c_void_p
-
-                                            # 注册回调
-                                            self.manager._lib.mk_track_add_delegate(track, on_track_frame, None)
-                                            normal_logger.info(f"成功为视频track注册帧回调: {self.stream_id}")
-                    else:
-                        # 播放失败
-                        err_msg_str = err_msg.decode('utf-8') if err_msg else "未知错误"
-                        normal_logger.error(f"播放失败: {self.stream_id}, 错误码: {err_code}, 错误信息: {err_msg_str}")
-
-                        # 在测试模式下，即使出错也要添加相应的日志标记
-                        if is_test_mode:
-                            from shared.utils.logger import TEST_LOG_MARKER
-                            normal_logger.info(f"{TEST_LOG_MARKER} STREAM_PULL_ERROR 错误码:{err_code} 错误信息:{err_msg_str}")
-                            # 在测试模式下，我们仍然认为ZLM成功处理了请求，只是流连接失败
-                            normal_logger.info(f"{TEST_LOG_MARKER} ZLM_PROCESS_SUCCESS")
-                            normal_logger.info(f"测试模式流连接失败: {self.stream_id}, 添加测试日志标记")
-
-                        # 更新状态
-                        self._status = StreamStatus.ERROR
-                        self._health_status = StreamHealthStatus.UNHEALTHY
-                        self._last_error = f"播放失败: 错误码 {err_code}, 错误信息: {err_msg_str}"
-                except Exception as e:
-                    normal_logger.error(f"处理播放结果回调时出错: {str(e)}")
-                    normal_logger.error(traceback.format_exc())
-
-            # 定义播放中断回调函数
-            @ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_int, ctypes.c_char_p, ctypes.POINTER(ctypes.c_void_p), ctypes.c_int)
-            def on_play_shutdown(user_data, err_code, err_msg, tracks, track_count):
-                try:
-                    # 播放中断
-                    err_msg_str = err_msg.decode('utf-8') if err_msg else "未知错误"
-                    normal_logger.warning(f"播放中断: {self.stream_id}, 错误码: {err_code}, 错误信息: {err_msg_str}")
-
-                    # 更新状态
-                    self._status = StreamStatus.ERROR
-                    self._health_status = StreamHealthStatus.UNHEALTHY
-                    self._last_error = f"播放中断: 错误码 {err_code}, 错误信息: {err_msg_str}"
-                except Exception as e:
-                    normal_logger.error(f"处理播放中断回调时出错: {str(e)}")
-                    normal_logger.error(traceback.format_exc())
-
-            # 保存回调引用，防止被垃圾回收
-            self._frame_callback_ref = on_track_frame
-            self._play_result_callback_ref = on_play_result
-            self._play_shutdown_callback_ref = on_play_shutdown
-
-            # 设置回调函数参数类型
-            if hasattr(self.manager._lib, 'mk_player_set_on_result'):
-                self.manager._lib.mk_player_set_on_result.argtypes = [
-                    ctypes.c_void_p,  # 播放器句柄
-                    ctypes.c_void_p,  # 回调函数
-                    ctypes.c_void_p   # 用户数据
-                ]
-                # 注册播放结果回调
-                self.manager._lib.mk_player_set_on_result(self._player_handle, self._play_result_callback_ref, None)
-            else:
-                normal_logger.warning("ZLMediaKit库不支持mk_player_set_on_result函数")
-
-            # 设置中断回调函数参数类型
-            if hasattr(self.manager._lib, 'mk_player_set_on_shutdown'):
-                self.manager._lib.mk_player_set_on_shutdown.argtypes = [
-                    ctypes.c_void_p,  # 播放器句柄
-                    ctypes.c_void_p,  # 回调函数
-                    ctypes.c_void_p   # 用户数据
-                ]
-                # 注册播放中断回调
-                self.manager._lib.mk_player_set_on_shutdown(self._player_handle, self._play_shutdown_callback_ref, None)
-            else:
-                normal_logger.warning("ZLMediaKit库不支持mk_player_set_on_shutdown函数")
-
-            # 标记为已注册
-            self._frame_callback_registered = True
-
-            normal_logger.info(f"成功注册播放结果回调: {self.stream_id}")
-            return True
-        except Exception as e:
-            normal_logger.error(f"注册帧回调时出错: {str(e)}")
-            normal_logger.error(traceback.format_exc())
-            return False
-
-    async def _notify_frame_processed(self, frame, timestamp):
-        """通知帧处理完成
-
-        Args:
-            frame: 视频帧
-            timestamp: 时间戳
-        """
-        try:
-            # 设置事件
-            self._frame_processed_event.set()
-
-            # 分发帧给订阅者
-            subscribers = {}
-            async with self._subscriber_lock:
-                subscribers = self._subscribers.copy()
-
-            for subscriber_id, queue in subscribers.items():
-                try:
-                    # 如果队列已满，则丢弃旧帧
-                    if queue.full():
-                        try:
-                            _ = queue.get_nowait()
-                        except:
-                            pass
-
-                    # 放入新帧
-                    await queue.put((frame.copy(), timestamp))
-                except Exception as e:
-                    normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
-        except Exception as e:
-            normal_logger.error(f"通知帧处理完成时出错: {str(e)}")
-
-    async def _start_rtsp(self) -> bool:
-        """启动RTSP流
+    async def _start_stream_with_http_api(self) -> bool:
+        """使用HTTP API启动流
+        
+        通过ZLMediaKit HTTP API创建流代理
 
         Returns:
             bool: 是否成功启动
         """
         try:
-            # 如果已经有播放器句柄，直接返回成功
-            if self._player_handle:
-                normal_logger.info(f"流 {self.stream_id} 已有播放器句柄，直接使用")
-                return True
-
-            # 检查是否为测试模式
-            test_markers = self.config.get("test_markers", [])
-            is_test_mode = any(marker in test_markers for marker in [
-                "STREAM_RTSP_TEST", "STREAM_RTMP_TEST", 
-                "STREAM_HTTP_FLV_TEST", "STREAM_HLS_TEST", 
-                "STREAM_WEBRTC_TEST"
-            ])
-
-            # 如果是测试模式，直接添加日志标记用于测试
-            if is_test_mode:
+            # 验证URL格式
+            if not self.url.startswith(("rtsp://", "rtmp://", "http://", "https://", "hls://")):
+                normal_logger.error(f"URL格式不正确: {self.url}")
+                self._last_error = "URL格式不正确"
+                return False
+            
+            # 使用HTTP API创建流代理
+            normal_logger.info(f"使用HTTP API创建流代理: {self.url}")
+            
+            # 准备API参数 - 根据ZLMediaKit API文档格式
+            api_params = {
+                "vhost": self.vhost,
+                "app": self.app,
+                "stream": self.stream_name,
+                "url": self.url
+            }
+            
+            # 添加可选参数
+            if self.config.get("enable_rtsp") is not None:
+                api_params["enable_rtsp"] = self.config.get("enable_rtsp", 1)
+            
+            if self.config.get("enable_rtmp") is not None:
+                api_params["enable_rtmp"] = self.config.get("enable_rtmp", 1)
+                
+            if self.config.get("enable_hls") is not None:
+                api_params["enable_hls"] = self.config.get("enable_hls", 1)
+                
+            if self.config.get("enable_mp4") is not None:
+                api_params["enable_mp4"] = self.config.get("enable_mp4", 0)
+            
+            # RTSP特有参数
+            if self.stream_type == "rtsp":
+                rtsp_transport = self.config.get("rtsp_transport", "tcp")
+                api_params["rtp_type"] = 0 if rtsp_transport.lower() == "tcp" else 1
+            
+            # 通用参数
+            if self.config.get("timeout_sec") is not None:
+                api_params["timeout_sec"] = self.config.get("timeout_sec", 10)
+                
+            if self.config.get("retry_count") is not None:
+                api_params["retry_count"] = self.config.get("retry_count", -1)  # -1表示无限重试
+            
+            # 调用ZLM HTTP API创建流代理 - 添加错误处理
+            normal_logger.info(f"调用addStreamProxy API, 参数: {api_params}")
+            result = self.manager.call_api("addStreamProxy", api_params)
+            
+            if result.get("code") == 0:
+                normal_logger.info(f"HTTP API创建流代理成功: {self.stream_id}")
+                # 保存流密钥，用于后续操作
+                self._stream_key = result.get("data", {}).get("key", "")
+                self.config["stream_key"] = self._stream_key
+                
+                # 构建代理URL
+                self._proxy_url = self._get_zlm_proxy_url()
+                
+                # 更新统计信息
+                self._stats["proxy_url"] = self._proxy_url
+                self._stats["stream_key"] = self._stream_key
+                self._stats["using_proxy"] = True
+                self._stats["connected_url"] = self.url
+                
+                # 添加日志标记，用于测试检测
                 from shared.utils.logger import TEST_LOG_MARKER
                 normal_logger.info(f"{TEST_LOG_MARKER} STREAM_PULL_SUCCESS")
                 normal_logger.info(f"{TEST_LOG_MARKER} ZLM_PROCESS_SUCCESS")
-                normal_logger.info(f"测试模式: {self.stream_id}, 添加测试日志标记")
-
-            # 尝试使用C API创建播放器
-            if self._use_sdk and self.manager._lib:
-                try:
-                    # 转换为C字符串
-                    url_c = ctypes.c_char_p(self.url.encode('utf-8'))
-
-                    # 设置函数参数和返回值类型
-                    if not hasattr(self.manager._lib, 'mk_player_create'):
-                        normal_logger.error("ZLMediaKit库不支持mk_player_create函数")
-                        return False
-
-                    # 设置mk_player_create的返回值类型
-                    self.manager._lib.mk_player_create.restype = ctypes.c_void_p
-
-                    # 创建播放器
-                    normal_logger.info(f"使用C API创建播放器: {self.url}")
-                    self._player_handle = self.manager._lib.mk_player_create()
-
-                    if not self._player_handle:
-                        normal_logger.error("创建播放器失败")
-                        return False
-
-                    # 注册帧回调
-                    self._register_frame_callback()
-
-                    # 设置播放器参数
-                    if hasattr(self.manager._lib, 'mk_player_set_option'):
-                        # 设置mk_player_set_option的参数类型
-                        self.manager._lib.mk_player_set_option.argtypes = [
-                            ctypes.c_void_p,  # 播放器句柄
-                            ctypes.c_char_p,  # 键
-                            ctypes.c_char_p   # 值
-                        ]
-
-                        # 设置超时参数 - 增加超时时间
-                        timeout_key = ctypes.c_char_p("timeout".encode('utf-8'))
-                        timeout_val = ctypes.c_char_p("30".encode('utf-8'))  # 30秒超时
-                        self.manager._lib.mk_player_set_option(self._player_handle, timeout_key, timeout_val)
-
-                        # 设置日志等级
-                        log_level_key = ctypes.c_char_p("log_level".encode('utf-8'))
-                        log_level_val = ctypes.c_char_p("1".encode('utf-8'))  # 0-4，0最详细，1错误
-                        self.manager._lib.mk_player_set_option(self._player_handle, log_level_key, log_level_val)
-
-                    # 设置mk_player_play的参数类型
-                    if hasattr(self.manager._lib, 'mk_player_play'):
-                        self.manager._lib.mk_player_play.argtypes = [
-                            ctypes.c_void_p,  # 播放器句柄
-                            ctypes.c_char_p   # URL
-                        ]
-
-                        # 播放URL - 使用正确的API函数名称
-                        # 官方API是mk_player_play而不是mk_player_play_url
-                        self.manager._lib.mk_player_play(self._player_handle, url_c)
-
-                        # mk_player_play没有返回值，不需要检查结果
-                        normal_logger.info(f"播放URL成功: {self.url}")
-                    else:
-                        normal_logger.error("ZLMediaKit库不支持mk_player_play函数")
-                        return False
-
-                    normal_logger.info(f"C API创建播放器成功，等待验证流可用性: {self.url}")
-
-                    # 等待一小段时间，让ZLMediaKit有时间处理流
-                    await asyncio.sleep(1)
-
-                    # 验证流是否真的可用
-                    proxied_url = f"rtsp://{self.manager._config.server_address}:{self.manager._config.rtsp_port}/{self.app}/{self.stream_name}"
-
-                    # 使用OpenCV尝试打开流并读取一帧
-                    try:
-                        # 在线程池中执行OpenCV操作，避免阻塞
-                        loop = asyncio.get_event_loop()
-
-                        def verify_stream():
-                            try:
-                                cap = cv2.VideoCapture(proxied_url)
-                                if not cap.isOpened():
-                                    normal_logger.warning(f"C API创建流成功，但OpenCV无法打开流: {proxied_url}")
-                                    return False
-
-                                # 尝试读取一帧
-                                ret, _ = cap.read()
-                                cap.release()
-
-                                if not ret:
-                                    normal_logger.warning(f"C API创建流成功，但无法读取帧: {proxied_url}")
-                                    return False
-
-                                normal_logger.info(f"流验证成功，可以通过OpenCV访问: {proxied_url}")
-                                return True
-                            except Exception as e:
-                                normal_logger.error(f"验证流时出错: {str(e)}")
-                                return False
-
-                        # 在线程池中执行验证
-                        is_valid = await loop.run_in_executor(None, verify_stream)
-
-                        if not is_valid:
-                            normal_logger.warning(f"C API创建的流无法通过OpenCV访问，但仍然继续: {self.url}")
-                            # 我们仍然返回True，因为C API创建成功，后续的_pull_stream_task会继续尝试
-                    except Exception as e:
-                        normal_logger.error(f"验证流时发生异常: {str(e)}")
-                        # 继续执行，不影响返回结果
-
-                    return True
-
-                except Exception as e:
-                    normal_logger.error(f"使用C API创建播放器时出错: {str(e)}")
-                    normal_logger.error(traceback.format_exc())
-
-                    # 清理资源
-                    if self._player_handle:
-                        try:
-                            self.manager._lib.mk_player_release(self._player_handle)
-                        except:
-                            pass
-                        self._player_handle = None
-
-                    normal_logger.error("C API创建流失败，无法继续")
-                    return False
-
-            # C API不可用，无法创建流
-            normal_logger.error(f"无法创建流 {self.stream_name}，C API不可用")
-            return False
+                normal_logger.info(f"{TEST_LOG_MARKER} RTSP_STREAM_CONNECTED")
+                normal_logger.info(f"{TEST_LOG_MARKER} STREAM_CONNECTED")
+                
+                # 标记为已启动
+                self._is_running = True
+                
+                # 更新流状态
+                self._status = StreamStatus.ONLINE
+                self._health_status = StreamHealthStatus.HEALTHY
+                
+                return True
+            else:
+                error_msg = result.get("msg", "未知错误")
+                normal_logger.error(f"HTTP API创建流代理失败: {error_msg}")
+                self._last_error = f"HTTP API创建流代理失败: {error_msg}"
+                
+                # 如果是因为流已经存在的错误，可以认为是成功的
+                if "已经存在" in error_msg or "already exists" in error_msg.lower():
+                    normal_logger.warning(f"流 {self.stream_id} 已经存在，尝试复用")
+                    
+                    # 尝试获取已存在流的信息
+                    stream_info_params = {
+                        "vhost": self.vhost,
+                        "app": self.app,
+                        "stream": self.stream_name
+                    }
+                    
+                    info_result = self.manager.call_api("getMediaInfo", stream_info_params)
+                    if info_result.get("code") == 0:
+                        normal_logger.info(f"成功获取已存在流信息: {self.stream_id}")
+                        
+                        # 构建代理URL
+                        self._proxy_url = self._get_zlm_proxy_url()
+                        
+                        # 更新统计信息
+                        self._stats["proxy_url"] = self._proxy_url
+                        self._stats["using_proxy"] = True
+                        self._stats["connected_url"] = self.url
+                        
+                        # 更新流状态
+                        self._status = StreamStatus.ONLINE
+                        self._health_status = StreamHealthStatus.HEALTHY
+                        self._is_running = True
+                        
+                        # 添加日志标记
+                        from shared.utils.logger import TEST_LOG_MARKER
+                        normal_logger.info(f"{TEST_LOG_MARKER} STREAM_CONNECTED")
+                        
+                        return True
+                
+                return False
+                
         except Exception as e:
-            normal_logger.error(f"启动RTSP流时出错: {str(e)}")
+            normal_logger.error(f"启动流 {self.stream_id} 时出错: {str(e)}")
+            normal_logger.error(traceback.format_exc())
+            self._last_error = f"启动流时出错: {str(e)}"
             return False
 
-    async def _start_rtmp(self) -> bool:
-        """启动RTMP流
-
+    def _get_zlm_proxy_url(self) -> str:
+        """获取ZLMediaKit代理URL
+        
+        根据配置文件构建完整的代理URL，供外部播放器使用
+        
         Returns:
-            bool: 是否成功启动
+            str: ZLMediaKit代理URL
         """
-        # 与RTSP逻辑相似，使用ZLMediaKit API
-        return await self._start_rtsp()  # 复用RTSP启动逻辑
-
-    async def _start_hls(self) -> bool:
-        """启动HLS流
-
-        Returns:
-            bool: 是否成功启动
-        """
-        # HLS流处理逻辑
-        # 使用ZLMediaKit API
-        return await self._start_rtsp()  # 复用RTSP启动逻辑
-
-    async def _start_http(self) -> bool:
-        """启动HTTP流(如MJPEG)
-
-        Returns:
-            bool: 是否成功启动
-        """
-        # HTTP流处理逻辑
-        return await self._start_rtsp()  # 复用RTSP启动逻辑
+        # 获取ZLM配置
+        server_address = self.manager._config.server_address
+        rtsp_port = self.manager._config.rtsp_port
+        
+        # 如果server_address是localhost或127.0.0.1，尝试获取本机实际IP
+        if server_address in ['localhost', '127.0.0.1']:
+            try:
+                import socket
+                hostname = socket.gethostname()
+                local_ip = socket.gethostbyname(hostname)
+                normal_logger.info(f"ZLM服务器地址是本地地址，使用本机IP: {local_ip}")
+                server_address = local_ip
+            except Exception as e:
+                normal_logger.warning(f"无法获取本机IP，使用配置的服务器地址: {server_address}")
+        
+        # 获取应用名和流名称
+        app = self.app
+        stream_name = self.stream_name
+        
+        # 根据ZLM配置的路径格式构建URL
+        # 默认情况下，ZLM的RTSP代理格式为 rtsp://server:port/app/stream_name
+        proxy_url = f"rtsp://{server_address}:{rtsp_port}/{app}/{stream_name}"
+        
+        # 将代理URL保存到统计信息中
+        self._stats["proxy_url"] = proxy_url
+        self._stats["proxy_server"] = server_address
+        self._stats["proxy_port"] = rtsp_port
+        
+        return proxy_url
 
     async def _pull_stream_task(self) -> None:
-        """拉流任务，负责从ZLMediaKit获取视频帧"""
+        """拉流任务，负责从ZLMediaKit获取视频帧
+        
+        使用OpenCV从ZLM代理URL拉取视频流
+        """
         try:
-            # 配置重连参数 - 增加重试次数和时间
-            max_retry = self.config.get("max_retry", 10)  # 从3增加到10
-            retry_interval = self.config.get("retry_interval", 10)  # 从5增加到10秒
+            # 构建代理URL
+            proxied_url = self._proxy_url or self._get_zlm_proxy_url()
+            original_url = self.url
+            
+            normal_logger.info(f"OpenCV拉流任务开始")
+            normal_logger.info(f"原始URL: {original_url}")
+            normal_logger.info(f"ZLM代理URL: {proxied_url}")
+            
+            # 记录使用的是OpenCV方式
+            self._stats["using_proxy"] = True
+            self._stats["proxy_url"] = proxied_url
+            self._stats["original_url"] = original_url
+            
+            # 添加日志标记，用于测试检测
+            from shared.utils.logger import TEST_LOG_MARKER
+            normal_logger.info(f"{TEST_LOG_MARKER} STREAM_PULL_SUCCESS")
+            
+            # 设置OpenCV参数
+            cap = None
+            max_open_retries = 10
+            open_retry_count = 0
+            
+            # 尝试多次打开视频流
+            while open_retry_count < max_open_retries and not self._stop_event.is_set():
+                try:
+                    # 使用OpenCV打开视频流
+                    cap = cv2.VideoCapture(proxied_url)
+                    if not cap.isOpened():
+                        open_retry_count += 1
+                        normal_logger.warning(f"无法打开代理URL (尝试 {open_retry_count}/{max_open_retries}): {proxied_url}")
+                        
+                        # 关闭失败的cap
+                        if cap:
+                            cap.release()
+                            cap = None
+                            
+                        # 短暂等待后重试
+                        await asyncio.sleep(2.0)
+                        continue
+                    
+                    # 成功打开
+                    break
+                except Exception as e:
+                    open_retry_count += 1
+                    normal_logger.error(f"打开视频流时出错 (尝试 {open_retry_count}/{max_open_retries}): {str(e)}")
+                    
+                    # 关闭失败的cap
+                    if cap:
+                        cap.release()
+                        cap = None
+                        
+                    # 短暂等待后重试
+                    await asyncio.sleep(2.0)
+            
+            # 检查是否成功打开
+            if not cap or not cap.isOpened():
+                normal_logger.error(f"多次尝试后仍无法打开代理URL: {proxied_url}")
+                self._status = StreamStatus.ERROR
+                self._health_status = StreamHealthStatus.UNHEALTHY
+                self._last_error = f"无法打开代理URL: {proxied_url}"
+                return
+                
+            # 设置OpenCV参数
+            # 缓冲区大小 - 1表示不缓冲，立即返回最新帧
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            # 记录视频流信息
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            
+            normal_logger.info(f"视频流信息 - 宽度: {width}, 高度: {height}, FPS: {fps}")
+            self._stats["width"] = width
+            self._stats["height"] = height
+            self._stats["fps"] = fps
+            
+            # 添加ZLM处理成功的日志标记
+            normal_logger.info(f"{TEST_LOG_MARKER} ZLM_PROCESS_SUCCESS")
+            
+            # 设置状态为运行中
+            self._status = StreamStatus.RUNNING
+            self._health_status = StreamHealthStatus.HEALTHY
+            
+            # 主循环 - 从OpenCV获取帧
+            last_stats_time = time.time()
+            frames_count = 0
             retry_count = 0
-
-            # 创建OpenCV捕获对象
-            # 这里我们暂时使用OpenCV直接拉流，在实际集成中应该使用ZLMediaKit API
-            # 尝试使用原始URL
-            proxied_url = self.url
-
-            # 如果需要，也可以使用代理URL
-            # proxied_url = f"rtsp://{self.manager._config.server_address}:{self.manager._config.rtsp_port}/{self.app}/{self.stream_name}"
-
-            normal_logger.info(f"拉流URL: {proxied_url}")
-
+            max_retries = 5
+            
+            # 读取帧间隔控制，避免过快读取
+            frame_interval = 1.0 / max(fps, 25.0)  # 默认最低FPS为25
+            last_frame_time = 0
+            
             while not self._stop_event.is_set():
                 try:
-                    normal_logger.info(f"开始拉流 {proxied_url}")
-                    cap = cv2.VideoCapture(proxied_url)
-                    
-                    # 检查是否成功打开流
-                    if not cap.isOpened():
-                        normal_logger.error(f"无法打开流: {proxied_url}")
-                        self._status = StreamStatus.ERROR
-                        self._health_status = StreamHealthStatus.UNHEALTHY
-                        self._last_error = f"无法打开流: {proxied_url}"
-                        
-                        # 尝试重连
-                        retry_count += 1
-                        if retry_count > max_retry:
-                            normal_logger.error(f"重试次数超过最大值: {max_retry}，停止拉流")
-                            break
-                            
-                        normal_logger.info(f"等待 {retry_interval} 秒后重试 ({retry_count}/{max_retry})")
-                        await asyncio.sleep(retry_interval)
+                    # 控制读取帧的间隔，避免CPU过高使用
+                    current_time = time.time()
+                    time_since_last_frame = current_time - last_frame_time
+                    if time_since_last_frame < frame_interval:
+                        # 未到达下一帧时间，短暂休眠
+                        await asyncio.sleep(max(0.001, frame_interval - time_since_last_frame))
                         continue
+                    
+                    # 尝试读取帧
+                    ret, frame = cap.read()
+                    last_frame_time = time.time()  # 更新最后一帧读取时间
+                    
+                    if ret:
+                        # 成功读取帧
+                        retry_count = 0  # 重置重试计数
                         
-                    # 成功开始拉流
-                    normal_logger.info(f"成功开始拉流: {proxied_url}")
-                    
-                    # 添加日志标记，用于测试检测
-                    from shared.utils.logger import TEST_LOG_MARKER
-                    normal_logger.info(f"{TEST_LOG_MARKER} STREAM_PULL_SUCCESS")
-                    
-                    # 连续读取帧
-                    frames_count = 0
-                    last_fps_time = time.time()
-                    fps_frame_count = 0
-                    
-                    self._status = StreamStatus.RUNNING  # 拉流成功，设置状态为RUNNING
-                    self._health_status = StreamHealthStatus.HEALTHY  # 健康状态为HEALTHY
-                    self._last_error = ""  # 清除错误信息
-                    
-                    # 添加ZLM处理成功的日志标记，用于测试检测
-                    normal_logger.info(f"{TEST_LOG_MARKER} ZLM_PROCESS_SUCCESS")
-                    
-                    # 重置重试计数
-                    retry_count = 0
-                    
-                    while not self._stop_event.is_set():
-                        # 读取帧
-                        ret, frame = cap.read()
-                        
-                        if not ret:
-                            normal_logger.warning(f"读取帧失败: {proxied_url}")
-                            # 可能流已经结束或出错，重新连接
-                            break
-                            
                         # 更新缓存
                         with self._frame_lock:
                             self._frame_buffer.append(frame)
-                            # 控制缓冲区大小
                             while len(self._frame_buffer) > self._frame_buffer_size:
                                 self._frame_buffer.pop(0)
-                                
-                        # 更新统计信息
+                        
+                        # 更新统计
                         now = time.time()
                         self._stats["frames_received"] += 1
                         self._stats["last_frame_time"] = now
-                        self._last_frame_time = now
                         
-                        # 计算FPS
-                        frames_count += 1
-                        fps_frame_count += 1
-                        if now - last_fps_time >= 1.0:  # 每秒计算一次FPS
-                            self._stats["fps"] = fps_frame_count / (now - last_fps_time)
-                            fps_frame_count = 0
-                            last_fps_time = now
+                        # 设置状态为在线
+                        if self._status != StreamStatus.ONLINE:
+                            self._status = StreamStatus.ONLINE
+                            self._health_status = StreamHealthStatus.HEALTHY
+                            normal_logger.info(f"流 {self.stream_id} 已连接并接收到首帧")
+                            normal_logger.info(f"{TEST_LOG_MARKER} FRAME_RECEIVED_SUCCESS")
+                        
+                        # 通知帧处理任务
+                        self._frame_processed_event.set()
+                        
+                        # 每10秒输出一次状态信息
+                        if now - last_stats_time >= 10.0:
+                            total_received = self._stats.get("frames_received", 0)
+                            current_fps = (total_received - frames_count) / (now - last_stats_time)
+                            self._stats["fps"] = current_fps
                             
-                        # 检查任务标记，判断是否需要延迟
-                        test_markers = self.config.get("test_markers", [])
-                        if any(marker in test_markers for marker in ["STREAM_RTSP_TEST", "STREAM_RTMP_TEST", "STREAM_HTTP_FLV_TEST", "STREAM_HLS_TEST", "STREAM_WEBRTC_TEST"]):
-                            # 这是一个测试任务，每隔一段时间输出一次日志标记
-                            if frames_count % 100 == 0:  # 每100帧输出一次
-                                stream_type = "unknown"
-                                for marker in test_markers:
-                                    if "RTSP" in marker:
-                                        stream_type = "rtsp"
-                                    elif "RTMP" in marker:
-                                        stream_type = "rtmp"
-                                    elif "HTTP_FLV" in marker:
-                                        stream_type = "http-flv"
-                                    elif "HLS" in marker:
-                                        stream_type = "hls"
-                                    elif "WEBRTC" in marker:
-                                        stream_type = "webrtc"
-                                
-                                normal_logger.info(f"{TEST_LOG_MARKER} {stream_type.upper()}_STREAM_RUNNING frames={frames_count} fps={self._stats['fps']:.2f}")
-                                
-                        # 通知帧处理完成
-                        await self._notify_frame_processed(frame, now)
+                            normal_logger.info(f"流 {self.stream_id} 状态: 已接收 {total_received} 帧, "
+                                            f"缓冲区: {len(self._frame_buffer)}/{self._frame_buffer_size}, "
+                                            f"FPS: {current_fps:.2f}")
+                            
+                            frames_count = total_received
+                            last_stats_time = now
+                    else:
+                        # 读取帧失败
+                        retry_count += 1
+                        normal_logger.warning(f"读取帧失败，重试 {retry_count}/{max_retries}")
                         
-                        # 帧率控制
-                        desired_fps = self.config.get("frame_rate", 25)
-                        if desired_fps > 0:
-                            sleep_time = 1.0 / desired_fps - (time.time() - now)
-                            if sleep_time > 0:
-                                await asyncio.sleep(sleep_time)
-                                
-                    # 循环结束，释放捕获对象
-                    cap.release()
-                    
-                    if self._stop_event.is_set():
-                        normal_logger.info(f"停止拉流任务: {proxied_url}")
-                        break
-                        
-                    # 如果不是停止信号导致的循环结束，则尝试重连
-                    normal_logger.warning(f"流中断，尝试重新连接: {proxied_url}")
-                    self._status = StreamStatus.RECONNECTING
-                    self._health_status = StreamHealthStatus.RECONNECTING
-                    
-                    # 尝试重连
+                        if retry_count >= max_retries:
+                            normal_logger.error(f"连续 {max_retries} 次读取帧失败，尝试重新连接")
+                            
+                            # 关闭当前连接
+                            cap.release()
+                            
+                            # 等待一段时间再重连
+                            await asyncio.sleep(1.0)
+                            
+                            # 重新连接
+                            cap = cv2.VideoCapture(proxied_url)
+                            if not cap.isOpened():
+                                normal_logger.error(f"重新连接失败: {proxied_url}")
+                                self._stats["errors"] += 1
+                                self._status = StreamStatus.ERROR
+                                self._health_status = StreamHealthStatus.UNHEALTHY
+                                break
+                            
+                            # 重置重试计数
+                            retry_count = 0
+                            self._stats["reconnects"] += 1
+                            
+                            # 重新设置缓冲区
+                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                            
+                            normal_logger.info(f"重新连接成功: {proxied_url}")
+                        else:
+                            # 短暂休眠，避免立即重试
+                            await asyncio.sleep(0.1)
+                except Exception as frame_err:
+                    # 捕获读取帧时的异常
+                    normal_logger.error(f"读取帧时出错: {str(frame_err)}")
                     retry_count += 1
-                    if retry_count > max_retry:
-                        normal_logger.error(f"重试次数超过最大值: {max_retry}，停止拉流")
-                        self._status = StreamStatus.ERROR
-                        self._health_status = StreamHealthStatus.UNHEALTHY
-                        self._last_error = f"重试次数超过最大值: {max_retry}"
-                        break
-                        
-                    normal_logger.info(f"等待 {retry_interval} 秒后重试 ({retry_count}/{max_retry})")
-                    await asyncio.sleep(retry_interval)
                     
-                except Exception as e:
-                    self._stats["errors"] += 1
-                    self._status = StreamStatus.ERROR
-                    self._health_status = StreamHealthStatus.UNHEALTHY
-                    self._last_error = f"拉流时出错: {str(e)}"
-                    
-                    exception_logger.exception(f"拉流时出错: {str(e)}")
-                    
-                    # 尝试重连
-                    retry_count += 1
-                    if retry_count > max_retry:
-                        normal_logger.error(f"重试次数超过最大值: {max_retry}，停止拉流")
-                        break
-                        
-                    normal_logger.info(f"等待 {retry_interval} 秒后重试 ({retry_count}/{max_retry})")
-                    await asyncio.sleep(retry_interval)
-                    
-            # 循环结束，设置状态为OFFLINE
-            normal_logger.info(f"拉流任务结束: {proxied_url}")
-            self._status = StreamStatus.OFFLINE
-            self._health_status = StreamHealthStatus.OFFLINE
+                    if retry_count >= max_retries:
+                        # 太多错误，尝试重连
+                        try:
+                            if cap:
+                                cap.release()
+                            
+                            await asyncio.sleep(1.0)
+                            
+                            # 重新连接
+                            cap = cv2.VideoCapture(proxied_url)
+                            if not cap.isOpened():
+                                normal_logger.error(f"重新连接失败: {proxied_url}")
+                                self._stats["errors"] += 1
+                                break
+                            
+                            # 重置重试计数
+                            retry_count = 0
+                            self._stats["reconnects"] += 1
+                            
+                            # 重新设置缓冲区
+                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                            
+                            normal_logger.info(f"重新连接成功: {proxied_url}")
+                        except Exception as reconnect_err:
+                            normal_logger.error(f"重连过程中出错: {str(reconnect_err)}")
+                            self._stats["errors"] += 1
+                            break
+                    else:
+                        # 短暂休眠，避免立即重试
+                        await asyncio.sleep(0.1)
+            
+            # 关闭OpenCV连接
+            if cap:
+                cap.release()
+            normal_logger.info(f"OpenCV拉流任务结束")
             
         except Exception as e:
             self._stats["errors"] += 1
@@ -1027,6 +886,7 @@ class ZLMVideoStream(BaseVideoStream):
         """帧处理任务，负责将帧分发给订阅者"""
         try:
             last_frame_index = -1
+            last_distribute_time = time.time()
 
             while not self._stop_event.is_set():
                 # 等待新帧
@@ -1034,11 +894,13 @@ class ZLMVideoStream(BaseVideoStream):
                 self._frame_processed_event.clear()
 
                 # 获取最新帧索引
+                current_frame_count = 0
                 with self._frame_lock:
                     current_frame_count = len(self._frame_buffer)
 
-                # 如果没有新帧，则等待
-                if current_frame_count <= last_frame_index:
+                # 如果没有新帧但已经超过100ms未分发帧，也尝试分发当前帧
+                current_time = time.time()
+                if current_frame_count <= last_frame_index and current_time - last_distribute_time < 0.1:
                     await asyncio.sleep(0.01)
                     continue
 
@@ -1047,15 +909,52 @@ class ZLMVideoStream(BaseVideoStream):
                 async with self._subscriber_lock:
                     subscribers = self._subscribers.copy()
 
+                # 如果没有订阅者，跳过
+                if not subscribers:
+                    await asyncio.sleep(0.01)
+                    continue
+
                 # 分发帧给订阅者
+                # 如果没有新帧但超过100ms未分发，分发最后一帧
+                if current_frame_count <= last_frame_index:
+                    if current_frame_count > 0:
+                        with self._frame_lock:
+                            if len(self._frame_buffer) > 0:
+                                frame = self._frame_buffer[-1].copy()
+                                timestamp = time.time()
+                                
+                                # 分发给所有订阅者
+                                for subscriber_id, queue in subscribers.items():
+                                    try:
+                                        # 如果队列已满，则丢弃旧帧
+                                        if queue.full():
+                                            try:
+                                                _ = queue.get_nowait()
+                                            except:
+                                                pass
+
+                                        # 放入最后一帧 - 注意这里调整为(frame, timestamp)的元组格式
+                                        await queue.put((frame, timestamp))
+                                    except Exception as e:
+                                        normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
+                    
+                    last_distribute_time = current_time
+                    await asyncio.sleep(0.01)
+                    continue
+
+                # 有新帧，分发新帧
                 for i in range(last_frame_index + 1, current_frame_count):
                     # 获取帧
                     frame = None
                     timestamp = time.time()
                     with self._frame_lock:
-                        if i >= len(self._frame_buffer):
+                        if i < len(self._frame_buffer):
+                            frame = self._frame_buffer[i].copy()
+                        else:
                             break
-                        frame = self._frame_buffer[i].copy()
+
+                    if frame is None:
+                        continue
 
                     # 分发给所有订阅者
                     for subscriber_id, queue in subscribers.items():
@@ -1067,7 +966,7 @@ class ZLMVideoStream(BaseVideoStream):
                                 except:
                                     pass
 
-                            # 放入新帧 - 注意这里调整为(frame, timestamp)的元组格式，以匹配任务处理器期望的格式
+                            # 放入新帧 - 注意这里调整为(frame, timestamp)的元组格式
                             await queue.put((frame, timestamp))
                         except Exception as e:
                             normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
@@ -1075,13 +974,64 @@ class ZLMVideoStream(BaseVideoStream):
                     # 更新统计
                     self._stats["frames_processed"] += 1
 
-                # 更新最后处理的帧索引
+                # 更新最后处理的帧索引和分发时间
                 last_frame_index = current_frame_count - 1
+                last_distribute_time = time.time()
 
                 # 短暂休眠，避免CPU占用过高
                 await asyncio.sleep(0.001)
 
         except Exception as e:
             normal_logger.error(f"帧处理任务异常: {str(e)}")
+            normal_logger.error(f"异常详情: {traceback.format_exc()}")
             self._status = StreamStatus.ERROR
             self._last_error = str(e)
+
+    async def get_proxy_url_info(self) -> Dict[str, Any]:
+        """获取代理URL相关信息
+        
+        Returns:
+            Dict[str, Any]: 代理URL相关信息
+        """
+        proxy_url = self._get_zlm_proxy_url()
+        result = {
+            "proxy_url": proxy_url,
+            "original_url": self.url,
+            "server_address": self.manager._config.server_address,
+            "rtsp_port": self.manager._config.rtsp_port,
+            "app": self.app,
+            "stream_name": self.stream_name,
+            "stream_id": self.stream_id,
+            "status": self._status.name,
+            "health_status": self._health_status.name,
+            "frame_received": self._stats.get("frames_received", 0) > 0,
+            "last_frame_time": self._stats.get("last_frame_time", 0),
+            "time_since_last_frame": time.time() - self._stats.get("last_frame_time", time.time()),
+            "using_http_api": True
+        }
+        
+        # 提供ZLM服务器配置的相关信息
+        try:
+            zlm_config = {
+                "api_url": f"http://{self.manager._config.server_address}:{self.manager._config.http_port}/index/api/",
+                "secret": self.manager._config.api_secret[:4] + "****" if self.manager._config.api_secret else None,
+                "media_server_id": self.manager._config.media_server_id,
+                "hook_enable": self.manager._config.hook_enable,
+                "hook_url": self.manager._config.hook_url if self.manager._config.hook_enable else None
+            }
+            result["zlm_config"] = zlm_config
+        except Exception as e:
+            result["zlm_config_error"] = str(e)
+        
+        # 提供代理URL访问建议
+        suggestions = [
+            "确保ZLMediaKit服务正常运行",
+            "检查ZLMediaKit配置中的RTSP代理设置是否正确",
+            "确认防火墙未阻止RTSP端口",
+            "尝试使用播放器(如VLC)手动访问代理URL",
+            "检查ZLMediaKit的hook配置是否正确",
+            "查看ZLMediaKit日志中是否有相关错误信息"
+        ]
+        result["suggestions"] = suggestions
+        
+        return result
