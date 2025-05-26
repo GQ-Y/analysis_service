@@ -28,6 +28,7 @@ from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 # 延迟导入stream_manager，避免循环导入
 from core.redis_manager import RedisManager
 from core.analyzer.analyzer_factory import AnalyzerFactory
+from core.task_management.callback_service import callback_service
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -297,12 +298,12 @@ class TaskProcessor:
             # stream_id 和 stream_url 应该直接在 task_config (即params_config) 中
             stream_id_from_task_config = task_config.get("video_id") # _build_task_config 中stream_config用了 video_id
             if not stream_id_from_task_config: # 向后兼容或备用方案
-                 stream_id_from_task_config = task_config.get("stream_id") 
+                 stream_id_from_task_config = task_config.get("stream_id")
                  if not stream_id_from_task_config:
                       stream_id_from_task_config = f"stream_{task_id}" # 如果都没有，则生成
-            
+
             stream_url = task_config.get("stream_url", "")
-            
+
             # 构建流订阅所需的 stream_config (这部分代码可以保持不变，因为它已经从 task_config 取值了)
             stream_config_for_subscription = {
                 "url": stream_url,
@@ -310,12 +311,12 @@ class TaskProcessor:
                 "reconnect_attempts": task_config.get("reconnect_attempts", settings.STREAMING.reconnect_attempts),
                 "reconnect_delay": task_config.get("reconnect_delay", settings.STREAMING.reconnect_delay),
                 "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size),
-                "task_id": task_id, 
-                "video_id": stream_id_from_task_config 
+                "task_id": task_id,
+                "video_id": stream_id_from_task_config
             }
-            
+
             # 获取流配置 (这部分是旧的，上面的 stream_id_from_task_config 和 stream_url 已经获取了)
-            # stream_id = task_config.get("stream_id", "") 
+            # stream_id = task_config.get("stream_id", "")
             # if not stream_id:
             # stream_id = f"stream_{task_id}"
             # normal_logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
@@ -345,7 +346,7 @@ class TaskProcessor:
 
             # 创建分析器
             analyzer = None
-            
+
             # analyzer_type 来自 task_config (即params_config) 中的 subtask.type
             analyzer_type = task_config.get("subtask", {}).get("type")
 
@@ -353,7 +354,7 @@ class TaskProcessor:
                 # 构造分析器初始化和处理所需的参数
                 # 1. 从 task_config (即params_config) 中的 "analysis"
                 analyzer_kwargs = task_config.get("analysis", {}).copy()
-                
+
                 # 2. 从 task_config (即params_config) 中的 "model" 获取 model_code, confidence, iou_threshold
                 model_params = task_config.get("model", {})
                 if "code" in model_params:
@@ -388,7 +389,7 @@ class TaskProcessor:
                         normal_logger.info(f"任务 {task_id} [DIAGNOSTIC]: 分析器创建成功. Analyzer object: {analyzer}")
                     else:
                         normal_logger.error(f"任务 {task_id} [DIAGNOSTIC]: 分析器创建失败 (AnalyzerFactory.create_analyzer 返回 None).")
-    
+
                     if analyzer:
                         # 等待模型加载完成
                         if hasattr(analyzer, 'load_model') and hasattr(analyzer, 'loaded') and not analyzer.loaded: # 检查是否定义了load_model, loaded，且尚未加载
@@ -414,7 +415,7 @@ class TaskProcessor:
                                 if hasattr(self.task_manager, 'update_task_status'):
                                     self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                                 return # 异常，则退出
-                        
+
                         # 再次检查 loaded 状态，确保模型已成功加载
                         if hasattr(analyzer, 'loaded') and analyzer.loaded:
                             normal_logger.info(f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 创建并模型加载成功。")
@@ -447,8 +448,8 @@ class TaskProcessor:
                  normal_logger.warning(f"任务 {task_id}: 'analyzer_type' (从params_config.subtask.type获取) 未找到。任务将仅拉取帧数据，不进行分析。")
             # elif not params_from_task_config: # 这个检查现在不需要了，因为 task_config 就是 params_from_task_config
             #     normal_logger.warning(f"任务 {task_id}: 'params' 未在任务配置中找到。任务将仅拉取帧数据，不进行分析。")
-    
-    
+
+
             # 分析循环
             normal_logger.info(f"开始任务 {task_id} 的分析循环")
             frame_index = 0 # 初始化帧索引
@@ -462,7 +463,7 @@ class TaskProcessor:
                 try:
                     # 从帧队列获取帧，增加超时时间
                     frame_data = await asyncio.wait_for(frame_queue.get(), timeout=15.0)  # 将超时时间从10秒增加到15秒
-                    
+
                     # 解包帧数据，通常是(frame, timestamp)的元组
                     if frame_data and isinstance(frame_data, tuple) and len(frame_data) >= 2:
                         frame, timestamp = frame_data[:2]
@@ -473,15 +474,15 @@ class TaskProcessor:
                     # 更新帧计数和状态
                     if hasattr(self, '_frame_counts'):
                         self._frame_counts[task_id] = self._frame_counts.get(task_id, 0) + 1
-                        
+
                         # 每100帧记录一次日志
                         if self._frame_counts[task_id] % 100 == 0:
                             normal_logger.info(f"任务 {task_id}: 已处理 {self._frame_counts[task_id]} 帧")
-                        
+
                         # 重置连续错误计数
                         if hasattr(self, '_frame_error_counts') and task_id in self._frame_error_counts:
                             self._frame_error_counts[task_id] = 0
-                        
+
                         # 重置超时计数
                         if hasattr(self, '_frame_timeout_counts') and task_id in self._frame_timeout_counts:
                             self._frame_timeout_counts[task_id] = 0
@@ -529,9 +530,9 @@ class TaskProcessor:
                             # process_video_frame 也使用收集到的 analyzer_kwargs
                             # 确保 return_image 标志在这里被传递
                             analysis_data = await analyzer.process_video_frame(
-                                frame, 
-                                frame_index=frame_index, 
-                                **analyzer_kwargs 
+                                frame,
+                                frame_index=frame_index,
+                                **analyzer_kwargs
                             )
                         except Exception as analysis_exc:
                             normal_logger.error(f"任务 {task_id}: 帧 {frame_index} 分析时发生错误: {analysis_exc}")
@@ -554,7 +555,7 @@ class TaskProcessor:
                             "frame_shape": frame.shape if frame is not None else None,
                             "message": "成功获取帧 (分析器未配置或初始化失败)"
                         }
-                    
+
 
                     result_queue.put(analysis_data) # 直接放入分析结果
 
@@ -583,10 +584,10 @@ class TaskProcessor:
                             if timeout_count >= 8:  # 提高连续超时阈值，从5次改为8次
                                 normal_logger.info(f"流 {stream_id_to_use} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
                                 await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
-                                
+
                                 # 等待一段时间后再重新订阅，避免立即重新订阅
                                 await asyncio.sleep(2.0)
-                                
+
                                 success, new_frame_queue = await stream_manager.subscribe_stream(stream_id_to_use, task_id, stream_config_for_subscription)
 
                                 if success and new_frame_queue is not None:
@@ -647,6 +648,16 @@ class TaskProcessor:
 
             normal_logger.info(f"工作进程 {task_id}: 已结束")
 
+        except asyncio.CancelledError:
+            # 任务被取消，优雅退出
+            normal_logger.info(f"工作进程 {task_id} 被取消，正在退出。")
+            # 确保取消订阅
+            if 'stream_id_to_use' in locals() and stream_id_to_use:
+                try:
+                    from core.task_management.stream import stream_manager
+                    await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
+                except Exception:
+                    pass  # 忽略取消订阅时的错误
         except Exception as e:
             normal_logger.error(f"工作进程 {task_id} 异常: {str(e)}")
 
@@ -859,27 +870,31 @@ class TaskProcessor:
             return
 
         task_full_config = self.running_tasks[task_id].get("config", {})
-        
-        
-        result_config = task_full_config.get("result", {}) 
-        storage_config = result_config.get("storage", {}) 
-        
-        # 回调URL
-        callback_url = result_config.get("callback_url")
-        
-        # 保存JSON结果的标志和路径
+
+        # 从 task_full_config (即 params_config) 的正确路径获取回调配置
+        subtask_callback_config = task_full_config.get("subtask", {}).get("callback", {})
+        enable_callback_flag = subtask_callback_config.get("enabled", False)
+        callback_url_from_config = subtask_callback_config.get("url") # 这是原始的、可能包含多个URL的字符串
+
+        # callback_interval 是直接在 task_full_config (即 params_config) 顶层的
+        task_callback_interval = task_full_config.get("callback_interval", 0)
+
+        # result_config 和 storage_config 的获取保持不变，用于保存结果的路径等
+        result_config = task_full_config.get("result", {})
+        storage_config = result_config.get("storage", {})
+
         save_json_enabled = result_config.get("save_result", False)
-        json_base_save_path = storage_config.get("save_path", "results") 
-        
-        # 保存图像的标志和路径
+        json_base_save_path = storage_config.get("save_path", "results")
+
         save_images_enabled = result_config.get("save_images", False)
         image_format = storage_config.get("image_format", "jpg")
 
-        normal_logger.info(f"任务 {task_id}: _handle_results 启动。save_json_enabled={save_json_enabled}, save_images_enabled={save_images_enabled}, callback_url={callback_url}")
+        normal_logger.info(f"任务 {task_id}: _handle_results 启动。enable_callback={enable_callback_flag}, save_json_enabled={save_json_enabled}, save_images_enabled={save_images_enabled}, callback_url(raw_from_config)='{callback_url_from_config}', callback_interval={task_callback_interval}s")
         normal_logger.info(f"任务 {task_id}: JSON保存路径基址: {json_base_save_path}, 图像格式: {image_format}")
         normal_logger.debug(f"任务 {task_id}: 完整 task_full_config['result']: {result_config}")
+        normal_logger.debug(f"任务 {task_id}: 完整 task_full_config['subtask']['callback']: {subtask_callback_config}")
 
-        loop = asyncio.get_running_loop() # 获取当前事件循环
+        loop = asyncio.get_running_loop()
 
         while True:
             try:
@@ -890,7 +905,7 @@ class TaskProcessor:
                     normal_logger.info(f"任务 {task_id} 结果处理器收到结束信号。")
                     break
 
-              
+
                 event_id = str(uuid.uuid4())
                 event_timestamp_utc = datetime.utcnow().isoformat() + "Z"
 
@@ -901,12 +916,12 @@ class TaskProcessor:
                     "stream_url": task_full_config.get("stream_url"), # 直接从顶层获取
                     "model_code": task_full_config.get("model", {}).get("code"), # 从 model 子字典获取
                     "device": task_full_config.get("device", "auto"), # 直接从顶层获取
-                    "frame_rate_setting": { 
+                    "frame_rate_setting": {
                         "fps": task_full_config.get("frame_processing_fps"), # 更新键名
                         "skip_frames": task_full_config.get("frame_skip_interval") # 更新键名
                     },
                     "analysis_interval_seconds": task_full_config.get("analysis_interval"), # 直接从顶层获取
-                    "output_destination_base": json_base_save_path 
+                    "output_destination_base": json_base_save_path
                 }
 
                 # 2. 提取 frame_info (来自分析器结果)
@@ -918,7 +933,7 @@ class TaskProcessor:
                     "detections": detections_list,
                     "detection_count": len(detections_list)
                 }
-                
+
                 # 4. 提取 analysis_config_applied (来自分析器结果)
                 analysis_config_applied = raw_result.get("applied_config", {})
 
@@ -961,27 +976,27 @@ class TaskProcessor:
                         date_str = datetime.now().strftime("%Y-%m-%d")
                         current_save_dir = os.path.join(json_base_save_path, date_str, task_id)
                         os.makedirs(current_save_dir, exist_ok=True)
-                        
+
                         # 文件名：frame_analyzer_counter_eventid.json
                         frame_counter = frame_info.get("analyzer_frame_counter", "unknown_frame")
                         json_filename = f"frame_{frame_counter}_{event_id}.json"
                         full_json_path = os.path.join(current_save_dir, json_filename)
-                        
-                        json_to_save = callback_json.copy() 
-                        
+
+                        json_to_save = callback_json.copy()
+
                         # BUG FIX: Update json_result_path in the copy that will be saved
                         if json_to_save.get("storage_info") is None: json_to_save["storage_info"] = {}
                         json_to_save["storage_info"]["json_result_path"] = full_json_path
 
-                        if annotated_image_b64_data and not save_images_enabled: 
+                        if annotated_image_b64_data and not save_images_enabled:
                             json_to_save["annotated_image_base64"] = annotated_image_b64_data
-                        elif "annotated_image_base64" in json_to_save: 
+                        elif "annotated_image_base64" in json_to_save:
                              del json_to_save["annotated_image_base64"]
 
 
                         with open(full_json_path, 'w', encoding='utf-8') as f:
                             json.dump(json_to_save, f, ensure_ascii=False, indent=4)
-                        
+
                         # Update the original callback_json as well, if it's used later (e.g. for HTTP callback)
                         callback_json["storage_info"]["json_result_path"] = full_json_path
                         normal_logger.info(f"任务 {task_id}: JSON结果已保存到: {full_json_path}")
@@ -1010,7 +1025,7 @@ class TaskProcessor:
                                 f_img.write(img_data)
                             callback_json["storage_info"]["annotated_image_path"] = full_image_path
                             normal_logger.info(f"任务 {task_id}: 标注图像已保存到: {full_image_path}")
-                            
+
                             # 如果图像已保存，通常不需要在回调JSON中再带base64数据，除非特定需求
                             # callback_json["annotated_image_base64"] = None # 或从回调中删除
                             if "annotated_image_base64" in callback_json: # 从主回调中移除，因为它已存盘
@@ -1026,34 +1041,34 @@ class TaskProcessor:
                         callback_json["error_log"].append("save_images was true, but no annotated_image_base64 found in result.")
 
                 # --- 发送HTTP回调 ---
-                if callback_url:
-                    # Decide whether to include base64 image in callback
-                    # If image was saved, and json also saved, usually we don't send base64 to callback
-                    # But if only callback is enabled, user might want it.
-                    final_callback_payload = callback_json.copy()
-                    if annotated_image_b64_data and not save_images_enabled and not save_json_enabled:
-                        # Only callback, no saving, so include image in callback
-                        final_callback_payload["annotated_image_base64"] = annotated_image_b64_data
-                    elif "annotated_image_base64" in final_callback_payload and (save_images_enabled or save_json_enabled) :
-                        # If saved to disk (either as image or in json), remove from direct callback to reduce size
-                        del final_callback_payload["annotated_image_base64"]
+                # 使用从 task_full_config 正确路径获取的 enable_callback_flag 和 callback_url_from_config
+                if enable_callback_flag and callback_url_from_config:
+                    urls_to_send = [url.strip() for url in callback_url_from_config.split(',') if url.strip()]
+                    if not urls_to_send:
+                        normal_logger.warning(f"任务 {task_id}: enable_callback is true, but no valid URLs found in callback_url string: '{callback_url_from_config}'")
+                    else:
+                        final_callback_payload = callback_json.copy()
+                        if annotated_image_b64_data and not save_images_enabled and not save_json_enabled:
+                            final_callback_payload["annotated_image_base64"] = annotated_image_b64_data
+                        elif "annotated_image_base64" in final_callback_payload and (save_images_enabled or save_json_enabled) :
+                            del final_callback_payload["annotated_image_base64"]
 
-                    try:
-                        # 使用异步HTTP客户端发送回调
-                        # TODO: 实现异步HTTP POST请求 (例如使用 httpx)
-                        normal_logger.info(f"任务 {task_id}: 准备发送回调到 {callback_url}。数据量级(不含图像): {len(json.dumps(final_callback_payload).encode('utf-8'))} bytes")
-                        # Placeholder for actual async post
-                        # async with httpx.AsyncClient() as client:
-                        #     response = await client.post(callback_url, json=final_callback_payload, timeout=10.0)
-                        #     response.raise_for_status() # Raises an exception for 4XX/5XX responses
-                        # normal_logger.warning(f"任务 {task_id}: HTTP回调发送功能暂未实现。数据预览: {json.dumps(final_callback_payload, indent=2)[:1000]}...") # 截断预览
-
-                    except Exception as e_callback:
-                        exception_logger.error(f"任务 {task_id}: 发送回调到 {callback_url} 失败: {e_callback}")
-                        # 可以考虑重试机制
+                        for single_url in urls_to_send:
+                            await callback_service.enqueue_callback(
+                                task_id=task_id,
+                                url=single_url,
+                                payload=final_callback_payload,
+                                callback_interval_seconds=task_callback_interval
+                            )
+                            normal_logger.info(f"任务 {task_id}: 已为URL '{single_url}' 创建回调任务。")
 
                 # 清理，准备下一次迭代
                 del raw_result # 释放原始结果占用的内存
+
+            except asyncio.CancelledError:
+                # 任务被取消，优雅退出
+                normal_logger.info(f"任务 {task_id} 结果处理器被取消，正在退出。")
+                break
 
             except queue.Empty:
                 # 队列为空，继续等待，检查停止事件
@@ -1076,52 +1091,52 @@ class TaskProcessor:
     async def process_frame(self, task_id: str, frame: np.ndarray, frame_index: int) -> Dict[str, Any]:
         """
         处理单帧图像
-        
+
         Args:
             task_id: 任务ID
             frame: 图像帧
             frame_index: 帧索引
-            
+
         Returns:
             Dict[str, Any]: 处理结果
         """
         normal_logger.info(f"处理任务 {task_id} 的第 {frame_index} 帧，帧大小: {frame.shape}")
-        
+
         # 获取任务参数
         task_params = self.get_task_params(task_id)
         if not task_params:
             normal_logger.warning(f"找不到任务参数: {task_id}")
             return {"success": False, "error": "找不到任务参数"}
-            
+
         # 获取分析器
         analyzer = self.get_analyzer(task_id)
         if not analyzer:
             normal_logger.warning(f"找不到分析器: {task_id}")
             return {"success": False, "error": "找不到分析器"}
-            
+
         # 检查模型加载状态
         normal_logger.info(f"分析器状态: {analyzer.model_info}")
-        
+
         # 执行分析
         try:
             start_time = time.time()
             result = await analyzer.process_video_frame(frame, frame_index)
             process_time = time.time() - start_time
-            
+
             # 添加处理时间
             if "stats" not in result:
                 result["stats"] = {}
             result["stats"]["process_time"] = process_time
-            
+
             # 输出分析结果摘要
             detections_count = len(result.get("detections", []))
             normal_logger.info(f"任务 {task_id} 第 {frame_index} 帧分析完成，检测到 {detections_count} 个目标，耗时: {process_time:.4f}秒")
-            
+
             if detections_count > 0:
                 normal_logger.info(f"检测结果示例: {result.get('detections', [])[:2]}")
-            
+
             return result
-            
+
         except Exception as e:
             exception_logger.exception(f"处理帧时出错: {e}")
             return {"success": False, "error": str(e)}

@@ -184,12 +184,14 @@ async def lifespan(app: FastAPI):
 
         from services.http.task_service import TaskService
         from services.analysis_service import AnalysisService
-        from services.http.callback_service import CallbackService
+        from core.task_management.callback_service import CallbackService
         from services.http.video_encoder_service import VideoEncoderService
+        from core.task_management.callback_service import callback_service
 
         app.state.task_service = TaskService(task_manager)
         app.state.analysis_service = AnalysisService()
-        app.state.callback_service = CallbackService()
+        await callback_service.start()
+        app.state.callback_service = callback_service
         app.state.video_encoder_service = VideoEncoderService()
 
         normal_logger.info("任务管理器和服务初始化成功。")
@@ -201,7 +203,24 @@ async def lifespan(app: FastAPI):
 
     # 关闭时执行
     normal_logger.info("正在关闭分析服务...")
+    sys.stdout.flush(); sys.stderr.flush()
 
+    # 1. CallbackService
+    if hasattr(app.state, "callback_service") and app.state.callback_service:
+        try:
+            normal_logger.info("RUN.PY LIFESPAN: ====> [START] 正在停止回调服务...")
+            sys.stdout.flush(); sys.stderr.flush()
+            await app.state.callback_service.stop()
+            normal_logger.info("RUN.PY LIFESPAN: ====> [END] 回调服务已停止。")
+            sys.stdout.flush(); sys.stderr.flush()
+        except Exception as e:
+            exception_logger.exception("停止回调服务时出错。")
+            sys.stdout.flush(); sys.stderr.flush()
+    else:
+        normal_logger.warning("RUN.PY LIFESPAN: CallbackService not found in app.state or not active.")
+        sys.stdout.flush(); sys.stderr.flush()
+
+    # 2. TaskManager
     if hasattr(app.state, "task_manager") and app.state.task_manager:
         try:
             normal_logger.info("正在停止任务管理器...")
@@ -327,9 +346,10 @@ async def lifespan(app: FastAPI):
     
     # 给一点时间让日志输出
     time.sleep(0.02)
+    sys.stdout.flush(); sys.stderr.flush()
     
     # 强制退出，跳过所有析构函数和清理过程
-    os._exit(0)
+    os._exit(0) # <--- 恢复 os._exit(0)
 
 def parse_args():
     """解析命令行参数"""

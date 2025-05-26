@@ -75,11 +75,6 @@ class TaskService:
                     "task_id": task_id
                 }
 
-            # 如果启用回调，注册回调
-            if task.enable_callback and task.callback_url:
-                from services.http.callback_service import callback_service
-                callback_service.register_task_callback(task_id, task.callback_url)
-
             # 记录任务创建成功日志标记
             from shared.utils.logger import TEST_LOG_MARKER
             normal_logger.info(f"{TEST_LOG_MARKER} TASK_CREATE_SUCCESS")
