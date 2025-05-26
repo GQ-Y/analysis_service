@@ -18,6 +18,7 @@ import sys
 import io
 import contextlib
 import json
+import base64
 
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
@@ -357,7 +358,16 @@ class TaskProcessor:
                 # 3. 从 task_config (即params_config) 中的 "device" 获取 device
                 if "device" in task_config:
                     analyzer_kwargs["device"] = task_config.get("device")
-                
+
+                # 4. 新增：从 task_config (即params_config) 中的 "result" 获取 return_base64，并以 "return_image" 的键名加入
+                result_config = task_config.get("result", {})
+                if "return_base64" in result_config:
+                    analyzer_kwargs["return_image"] = result_config.get("return_base64", False)
+                else:
+                    # 如果 task_config.result 中没有，尝试从顶层 task_config 获取 (作为后备)
+                    # 这取决于 task_config 的具体结构，但原始请求中 return_base64 在顶层
+                    analyzer_kwargs["return_image"] = task_config.get("return_base64", False)
+
                 try:
                     normal_logger.info(f"任务 {task_id}: 准备创建分析器, 类型: {analyzer_type}, 收集到的参数: {analyzer_kwargs}")
                     analyzer = AnalyzerFactory.create_analyzer(
@@ -503,6 +513,7 @@ class TaskProcessor:
                     if analyzer:
                         try:
                             # process_video_frame 也使用收集到的 analyzer_kwargs
+                            # 确保 return_image 标志在这里被传递
                             analysis_data = await analyzer.process_video_frame(
                                 frame, 
                                 frame_index=frame_index, 
@@ -930,6 +941,87 @@ class TaskProcessor:
                 elif result_type == "result":
                     # 处理分析结果
                     result_data = result.get("data", {})
+
+                    # 新增：处理结果保存
+                    save_images = task_config.get("result", {}).get("save_images", False)
+                    # save_result 通常指保存JSON, 但原始请求参数是 save_result, 指的是总的结果保存开关
+                    # 我们需要确认 task_config 中是否有更细致的控制，例如 save_json_result
+                    # 暂时我们假设 task_config.save_result 控制JSON的保存
+                    save_json_result = task_config.get("save_result", False) 
+                    base_save_path = task_config.get("result", {}).get("storage", {}).get("save_path", "results")
+
+                    if save_images or save_json_result:
+                        # 确保基础保存目录存在
+                        os.makedirs(base_save_path, exist_ok=True)
+                        
+                        # 创建任务特定的保存目录
+                        task_save_path = os.path.join(base_save_path, task_id)
+                        os.makedirs(task_save_path, exist_ok=True)
+
+                        # 使用 frame_id 或 timestamp 生成唯一文件名
+                        # 优先使用 frame_index (如果存在于result_data中，这通常由分析器提供)
+                        frame_identifier_from_data = result_data.get("frame_index", result_data.get("frame_id"))
+                        
+                        # 如果分析结果中没有帧标识，则尝试从任务的帧计数器获取 (尽管这可能不完全同步)
+                        # 或者最后回退到时间戳。更可靠的是确保分析器将帧标识放入结果。
+                        if frame_identifier_from_data is None:
+                             # 尝试从 self._frame_counts 获取，但这可能不准确或不存在
+                             # 更好的方法是确保 frame_index 或 frame_id 在 result_data 中
+                             # 这里我们暂时使用时间戳作为备选
+                             frame_identifier = int(time.time() * 1000)
+                        else:
+                             frame_identifier = frame_identifier_from_data
+
+                        timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] # 年月日_时分秒_毫秒
+                        
+                        filename_base = f"frame_{frame_identifier}_{timestamp_str}"
+
+                    # 保存标注图像
+                    if save_images:
+                        image_to_save = None
+                        # 优先从 result_data 中获取 "annotated_image" (如果分析器直接提供了 base64 编码的图像)
+                        if "annotated_image" in result_data and isinstance(result_data["annotated_image"], str):
+                            images_dir = os.path.join(task_save_path, "images")
+                            os.makedirs(images_dir, exist_ok=True)
+                            image_filename = os.path.join(images_dir, f"{filename_base}.jpg")
+                            try:
+                                img_bytes = base64.b64decode(result_data["annotated_image"])
+                                img_array = np.frombuffer(img_bytes, dtype=np.uint8)
+                                image_to_save = cv2.imdecode(img_array, cv2.IMREAD_COLOR) # 解码图像以备后续保存
+                                if image_to_save is not None:
+                                   cv2.imwrite(image_filename, image_to_save)
+                                   normal_logger.info(f"任务 {task_id}: 已保存base64标注图像到 {image_filename}")
+                                else:
+                                   normal_logger.warning(f"任务 {task_id}: 解码base64图像失败，无法保存。")
+                            except Exception as b64_save_exc:
+                                exception_logger.error(f"任务 {task_id}: 保存base64标注图像失败: {b64_save_exc}")
+                        else:
+                            # 其次尝试从 preview_frames 获取 (这是 _process_detection_results 更新的)
+                            preview_image = self.get_preview_frame(task_id)
+                            if preview_image is not None and isinstance(preview_image, np.ndarray):
+                                image_to_save = preview_image
+                                images_dir = os.path.join(task_save_path, "images")
+                                os.makedirs(images_dir, exist_ok=True)
+                                image_filename = os.path.join(images_dir, f"{filename_base}.jpg")
+                                try:
+                                    cv2.imwrite(image_filename, image_to_save)
+                                    normal_logger.info(f"任务 {task_id}: 已保存预览帧图像到 {image_filename}")
+                                except Exception as img_save_exc:
+                                    exception_logger.error(f"任务 {task_id}: 保存预览帧图像失败: {img_save_exc}")
+                            else:
+                                normal_logger.warning(f"任务 {task_id}: 配置了 save_images 但未找到可保存的图像数据 (既无annotated_image也无preview_frame)。")
+                    
+                    # 保存JSON结果
+                    if save_json_result:
+                        json_dir = os.path.join(task_save_path, "json")
+                        os.makedirs(json_dir, exist_ok=True)
+                        json_filename = os.path.join(json_dir, f"{filename_base}.json")
+                        try:
+                            with open(json_filename, 'w', encoding='utf-8') as f:
+                                json.dump(result_data, f, ensure_ascii=False, indent=4)
+                            normal_logger.info(f"任务 {task_id}: 已保存JSON结果到 {json_filename}")
+                        except Exception as json_save_exc:
+                            exception_logger.error(f"任务 {task_id}: 保存JSON结果失败: {json_save_exc}")
 
                     # 获取当前任务状态
                     current_task = self.task_manager.get_task(task_id)
