@@ -518,40 +518,41 @@ class ZLMVideoStream(BaseVideoStream):
             
             if result.get("code") == 0:
                 normal_logger.info(f"HTTP API创建流代理成功: {self.stream_id}")
-                # 保存流密钥，用于后续操作
                 self._zlm_internal_api_key = result.get("data", {}).get("key", "")
                 self.config["stream_key"] = self._zlm_internal_api_key
-                
-                # 构建代理URL
                 self._proxy_url = self._get_zlm_proxy_url()
-                
-                # 更新统计信息
                 self._stats["proxy_url"] = self._proxy_url
                 self._stats["stream_key"] = self._zlm_internal_api_key
-                self._stats["using_proxy"] = True
+                self._stats["using_proxy"] = True # Standard ZLM proxying
                 self._stats["connected_url"] = self.url
-                
-                # 添加日志标记，用于测试检测
                 from shared.utils.logger import TEST_LOG_MARKER
                 normal_logger.info(f"{TEST_LOG_MARKER} STREAM_PULL_SUCCESS")
                 normal_logger.info(f"{TEST_LOG_MARKER} ZLM_PROCESS_SUCCESS")
                 normal_logger.info(f"{TEST_LOG_MARKER} RTSP_STREAM_CONNECTED")
                 normal_logger.info(f"{TEST_LOG_MARKER} STREAM_CONNECTED")
-                
-                # 标记为已启动
                 self._is_running = True
-                
-                # 更新流状态
                 self._status = StreamStatus.ONLINE
                 self._health_status = StreamHealthStatus.HEALTHY
-                
                 return True
             else:
                 error_msg = result.get("msg", "未知错误")
                 normal_logger.error(f"HTTP API创建流代理失败: {error_msg}")
                 self._last_error = f"HTTP API创建流代理失败: {error_msg}"
+
+                # 新增：如果是因为 schema 不支持，并且原始URL是HTTP(S)开头的，
+                # 尝试直接使用原始URL给OpenCV (假设它可能是OpenCV能直接播放的格式)
+                if "not supported play schema" in error_msg.lower() and \
+                   (self.url.lower().startswith("http://") or self.url.lower().startswith("https://")):
+                    normal_logger.warning(f"流 {self.stream_id}: addStreamProxy 不支持该 schema。将尝试直接使用原始URL '{self.url}' 进行 OpenCV 拉流。")
+                    # self._proxy_url = self.url # _proxy_url 通常指ZLM生成的代理地址，这里不设置
+                    self.config["force_direct_opencv_pull"] = True 
+                    self._stats["using_proxy"] = False # 明确标记不通过ZLM代理，而是直接拉源
+                    self._stats["connected_url"] = self.url
+                    self._is_running = True 
+                    self._status = StreamStatus.CONNECTING 
+                    self._health_status = StreamHealthStatus.UNKNOWN
+                    return True # 返回True，让后续的 _pull_task 尝试用原始URL
                 
-                # 如果是因为流已经存在的错误，可以认为是成功的
                 if "已经存在" in error_msg or "already exists" in error_msg.lower():
                     normal_logger.warning(f"流 {self.stream_id} 已经存在，尝试复用")
                     
@@ -641,30 +642,31 @@ class ZLMVideoStream(BaseVideoStream):
         try:
             normal_logger.info(f"OpenCV拉流任务开始 for stream_id: {self.stream_id}")
             
-            # 步骤 1: 检查配置中是否直接指定了 OpenCV 拉流地址 (最高优先级)
-            if self.config.get("opencv_pull_url"):
+            # 步骤 0: 检查是否要强制使用原始URL (例如当addStreamProxy因schema不支持而失败时)
+            if self.config.get("force_direct_opencv_pull"):
+                zlm_pull_url_for_opencv = self.url # self.url 就是 _url, 即原始输入 URL
+                normal_logger.info(f"流 {self.stream_id}: 强制使用原始URL进行OpenCV拉流: {zlm_pull_url_for_opencv}")
+            # 步骤 1: 检查配置中是否直接指定了 OpenCV 拉流地址 (用户覆盖，次高优先级)
+            elif self.config.get("opencv_pull_url"):
                 zlm_pull_url_for_opencv = self.config["opencv_pull_url"]
                 normal_logger.info(f"流 {self.stream_id}: 使用配置中指定的 OpenCV 拉流地址: {zlm_pull_url_for_opencv}")
             else:
                 # 步骤 2: 调用 get_zlm_player_proxy_info 主要用于确认流状态和获取元数据
-                # 但我们不再期望它提供 player_urls 列表
                 try:
                     normal_logger.info(f"流 {self.stream_id}: 尝试从 ZLM API 获取播放信息 (元数据检查)...")
-                    proxy_info = await self.get_zlm_player_proxy_info() # This calls the modified get_proxy_url_info
+                    proxy_info = await self.get_zlm_player_proxy_info()
                     if proxy_info and proxy_info.get("success"):
                         normal_logger.info(f"流 {self.stream_id}: ZLM API元数据检查成功. Online: {proxy_info.get('online_status_from_zlm')}. Raw info: {proxy_info.get('raw_media_info')}")
-                        # 这里可以根据 proxy_info 中的其他信息做一些判断，但不再从中取URL
-                    elif proxy_info: # API 调用本身可能失败，或者 success 为 False
+                    elif proxy_info:
                         normal_logger.warning(f"流 {self.stream_id}: ZLM API元数据检查失败或未返回成功。Response: {proxy_info}")
-                    else: # proxy_info is None
+                    else: 
                         normal_logger.warning(f"流 {self.stream_id}: ZLM API元数据检查返回 None.")
                 except Exception as e_player_info:
                     exception_logger.error(f"流 {self.stream_id}: ZLM API元数据检查时发生异常: {e_player_info}")
 
-                # 步骤 3: 使用备用方法 (get_opencv_pull_url) 构建拉流地址
-                # 这是获取 OpenCV 拉流地址的主要方式（如果未在配置中覆盖）
-                normal_logger.info(f"流 {self.stream_id}: 使用 get_opencv_pull_url() 构建 OpenCV 拉流地址...")
-                zlm_pull_url_for_opencv = self.get_opencv_pull_url() # 同步方法
+                # 步骤 3: 使用 get_opencv_pull_url() 构建指向本地ZLM代理的拉流地址 (标准流程)
+                normal_logger.info(f"流 {self.stream_id}: 使用 get_opencv_pull_url() 构建指向本地ZLM的 OpenCV 拉流地址...")
+                zlm_pull_url_for_opencv = self.get_opencv_pull_url()
             
             if not zlm_pull_url_for_opencv: # 如果最终还是没有URL
                 error_message = f"流 {self.stream_id}: 无法确定有效的 OpenCV 拉流地址。原始URL: {self.url}"
@@ -677,14 +679,6 @@ class ZLMVideoStream(BaseVideoStream):
 
             normal_logger.info(f"流 {self.stream_id}: 最终选定 OpenCV 拉流地址: {zlm_pull_url_for_opencv}")
 
-            # 构建代理URL (此处的proxied_url更像是最终选定的拉流URL)
-            # proxied_url = self._proxy_url or self._get_zlm_proxy_url() # 旧逻辑
-            # original_url = self.url # 旧逻辑，但 self.url 就是原始URL
-            
-            # normal_logger.info(f"OpenCV拉流任务开始") # 日志已提前
-            # normal_logger.info(f"原始URL: {original_url}")
-            # normal_logger.info(f"ZLM代理URL: {proxied_url}")
-            
             # 记录使用的是OpenCV方式
             self._stats["using_proxy"] = True # 这个标记可能需要重新审视其含义，因为我们总是通过ZLM拉流
             self._stats["proxy_url"] = zlm_pull_url_for_opencv # 记录实际使用的URL
