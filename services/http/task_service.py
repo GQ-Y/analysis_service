@@ -505,25 +505,27 @@ class TaskService:
         analysis_config = {}
         if task.config:
             # 复制所有配置参数
-            for attr_name in dir(task.config):
-                # 跳过私有属性和方法
-                if attr_name.startswith('_') or callable(getattr(task.config, attr_name)):
-                    continue
-                
-                # 跳过不再支持的跟踪相关参数
-                if attr_name in ["tracking_type", "max_lost_time", "min_hits", 
-                                "related_cameras", "feature_type"]:
-                    continue
-
-                # 获取属性值
-                attr_value = getattr(task.config, attr_name)
-
-                # 跳过None值
-                if attr_value is None:
-                    continue
-
-                # 添加到分析配置
-                analysis_config[attr_name] = attr_value
+            # 确保 task.config (Pydantic模型) 被转换为纯字典
+            if hasattr(task.config, "model_dump") and callable(task.config.model_dump):
+                analysis_config = task.config.model_dump(exclude_unset=True) # Pydantic V2+
+            elif hasattr(task.config, "dict") and callable(task.config.dict):
+                analysis_config = task.config.dict(exclude_unset=True) # Pydantic V1
+            else:
+                # Fallback or error if not a Pydantic model or unknown version
+                # For now, let's try iterating, but this was the source of the issue
+                analysis_config = {}
+                for attr_name in dir(task.config):
+                    if attr_name.startswith('_') or callable(getattr(task.config, attr_name)):
+                        continue
+                    # 跳过不再支持的跟踪相关参数 (保留，以防万一)
+                    if attr_name in ["tracking_type", "max_lost_time", "min_hits", 
+                                    "related_cameras", "feature_type"]:
+                        continue
+                    attr_value = getattr(task.config, attr_name)
+                    if attr_value is None:
+                        continue
+                    analysis_config[attr_name] = attr_value
+                normal_logger.warning("task.config 不是预期的Pydantic模型，或版本未知，尝试了属性迭代。")
 
         # 构建结果配置
         result_config = {

@@ -26,6 +26,7 @@ from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 
 # 延迟导入stream_manager，避免循环导入
 from core.redis_manager import RedisManager
+from core.analyzer.analyzer_factory import AnalyzerFactory
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -281,49 +282,152 @@ class TaskProcessor:
             pause_event: 暂停事件
         """
         try:
-            normal_logger.info(f"工作进程 {task_id}: 开始初始化")
+            # 此时接收到的 task_config 实际上是 _build_task_config() 中的 params_config
+            normal_logger.info(f"工作进程 {task_id}: 开始初始化。接收到的 task_config (即params_config): {json.dumps(task_config, indent=2, ensure_ascii=False)}")
 
-            # 获取流配置
-            stream_id = task_config.get("stream_id", "")
-            # 如果stream_id为空，使用task_id作为替代
-            if not stream_id:
-                stream_id = f"stream_{task_id}"
-                normal_logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
-
-            stream_url = task_config.get("stream_url", "")  # 修正字段名，使用stream_url而不是url
-            stream_config = {
+            # stream_id 和 stream_url 应该直接在 task_config (即params_config) 中
+            stream_id_from_task_config = task_config.get("video_id") # _build_task_config 中stream_config用了 video_id
+            if not stream_id_from_task_config: # 向后兼容或备用方案
+                 stream_id_from_task_config = task_config.get("stream_id") 
+                 if not stream_id_from_task_config:
+                      stream_id_from_task_config = f"stream_{task_id}" # 如果都没有，则生成
+            
+            stream_url = task_config.get("stream_url", "")
+            
+            # 构建流订阅所需的 stream_config (这部分代码可以保持不变，因为它已经从 task_config 取值了)
+            stream_config_for_subscription = {
                 "url": stream_url,
                 "rtsp_transport": task_config.get("rtsp_transport", "tcp"),
                 "reconnect_attempts": task_config.get("reconnect_attempts", settings.STREAMING.reconnect_attempts),
                 "reconnect_delay": task_config.get("reconnect_delay", settings.STREAMING.reconnect_delay),
                 "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size),
-                "task_id": task_id,  # 添加任务ID
-                "video_id": stream_id  # 使用stream_id作为视频ID
+                "task_id": task_id, 
+                "video_id": stream_id_from_task_config 
             }
+            
+            # 获取流配置 (这部分是旧的，上面的 stream_id_from_task_config 和 stream_url 已经获取了)
+            # stream_id = task_config.get("stream_id", "") 
+            # if not stream_id:
+            # stream_id = f"stream_{task_id}"
+            # normal_logger.info(f"流ID为空，使用任务ID生成流ID: {stream_id}")
+            stream_id_to_use = stream_id_from_task_config # 统一使用此变量
 
-            # 订阅视频流
+            normal_logger.info(f"工作进程 {task_id}: 使用流ID '{stream_id_to_use}' 和 URL '{stream_url}'")
+
+            # 订阅视频流 (使用 stream_config_for_subscription)
             from core.task_management.stream import stream_manager
             try:
-                normal_logger.info(f"开始订阅流 {stream_id}，URL: {stream_url}")
-                success, frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+                normal_logger.info(f"开始订阅流 {stream_id_to_use}，URL: {stream_url}")
+                success, frame_queue = await stream_manager.subscribe_stream(stream_id_to_use, task_id, stream_config_for_subscription)
                 if not success or frame_queue is None:
-                    error_msg = f"订阅视频流失败: {stream_id}"
+                    error_msg = f"订阅视频流失败: {stream_id_to_use}"
                     normal_logger.error(error_msg)
-                    self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                    if hasattr(self.task_manager, 'update_task_status'):
+                         self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                     return
-                normal_logger.info(f"成功订阅流 {stream_id}，等待帧数据...")
+                # normal_logger.info(f"成功订阅流 {stream_id_to_use}，等待帧数据...") # 这条日志在原位置已注释
             except Exception as e:
                 error_msg = f"订阅视频流时发生异常: {str(e)}"
                 normal_logger.error(error_msg)
                 normal_logger.error(traceback.format_exc())
-                self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                if hasattr(self.task_manager, 'update_task_status'):
+                    self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
                 return
 
             # 创建分析器
-            # ... 原有的分析器创建代码 ...
+            analyzer = None
+            
+            # analyzer_type 来自 task_config (即params_config) 中的 subtask.type
+            analyzer_type = task_config.get("subtask", {}).get("type")
 
+            if analyzer_type:
+                # 构造分析器初始化和处理所需的参数
+                # 1. 从 task_config (即params_config) 中的 "analysis"
+                analyzer_kwargs = task_config.get("analysis", {}).copy()
+                
+                # 2. 从 task_config (即params_config) 中的 "model" 获取 model_code, confidence, iou_threshold
+                model_params = task_config.get("model", {})
+                if "code" in model_params:
+                    analyzer_kwargs["model_code"] = model_params["code"]
+                if "confidence" not in analyzer_kwargs and "confidence" in model_params:
+                    analyzer_kwargs["confidence"] = model_params["confidence"]
+                if "iou_threshold" not in analyzer_kwargs and "iou_threshold" in model_params:
+                    analyzer_kwargs["iou_threshold"] = model_params["iou_threshold"]
+
+                # 3. 从 task_config (即params_config) 中的 "device" 获取 device
+                if "device" in task_config:
+                    analyzer_kwargs["device"] = task_config.get("device")
+                
+                try:
+                    normal_logger.info(f"任务 {task_id}: 准备创建分析器, 类型: {analyzer_type}, 收集到的参数: {analyzer_kwargs}")
+                    analyzer = AnalyzerFactory.create_analyzer(
+                        analyzer_type,
+                        **analyzer_kwargs
+                    )
+    
+                    if analyzer:
+                        # 等待模型加载完成
+                        if hasattr(analyzer, 'load_model') and hasattr(analyzer, 'loaded') and not analyzer.loaded: # 检查是否定义了load_model, loaded，且尚未加载
+                            model_to_load = analyzer_kwargs.get('model_code') or getattr(analyzer, 'model_code', '未知模型')
+                            normal_logger.info(f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 正在等待模型 '{model_to_load}' 加载...")
+                            try:
+                                # 调用分析器自身的 load_model 方法，它应该负责设置 self.loaded
+                                # YOLODetectionAnalyzer.load_model 确实会调用 self.detector.load_model 并设置 self.loaded
+                                loaded_successfully = await analyzer.load_model(model_to_load)
+                                if loaded_successfully: # analyzer.loaded 应该已被更新
+                                    normal_logger.info(f"任务 {task_id}: 模型 '{model_to_load}' 为分析器 {analyzer.__class__.__name__} 加载成功。")
+                                else:
+                                    # 如果 analyzer.load_model 返回 False，说明加载失败
+                                    error_msg = f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 的模型 '{model_to_load}' 显式加载失败 (load_model返回False)。"
+                                    normal_logger.error(error_msg)
+                                    if hasattr(self.task_manager, 'update_task_status'):
+                                        self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                                    return # 加载失败，则退出
+                            except Exception as load_exc:
+                                error_msg = f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 等待模型 '{model_to_load}' 加载时发生异常: {load_exc}"
+                                normal_logger.error(error_msg)
+                                normal_logger.error(traceback.format_exc())
+                                if hasattr(self.task_manager, 'update_task_status'):
+                                    self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                                return # 异常，则退出
+                        
+                        # 再次检查 loaded 状态，确保模型已成功加载
+                        if hasattr(analyzer, 'loaded') and analyzer.loaded:
+                            normal_logger.info(f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 创建并模型加载成功。")
+                        elif hasattr(analyzer, 'loaded') and not analyzer.loaded: # 如果显式调用 load_model 后 loaded 仍为 False
+                            model_code_check = analyzer_kwargs.get("model_code") or getattr(analyzer, 'model_code', '未知模型')
+                            error_msg = f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 已创建，但模型 '{model_code_check}' 在尝试显式加载后仍未能加载。"
+                            normal_logger.error(error_msg)
+                            if hasattr(self.task_manager, 'update_task_status'):
+                                self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                            return
+                        elif not hasattr(analyzer, 'loaded'): # 如果分析器没有 'loaded' 属性 (理论上 BaseAnalyzer 有)
+                             normal_logger.warning(f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 没有 'loaded' 属性，无法确认模型加载状态。")
+                        # 之前这里有一个 elif hasattr(analyzer, 'loaded') and not analyzer.loaded: 的分支，现在由上面的逻辑覆盖
+                        # else: # 这个else对应 if analyzer: 的情况，即 analyzer 为 None
+                        #     normal_logger.info(f"任务 {task_id}: 分析器 {analyzer.__class__.__name__} 创建成功 (无法从属性确认模型加载状态，依赖初始化过程)。")
+                    else: # analyzer is None
+                        error_msg = f"任务 {task_id}: 创建分析器 {analyzer_type} 失败 (AnalyzerFactory 返回 None)."
+                        normal_logger.error(error_msg)
+                        if hasattr(self.task_manager, 'update_task_status'):
+                            self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                        return
+                except Exception as e:
+                    error_msg = f"任务 {task_id}: 创建或加载分析器时发生异常: {str(e)}"
+                    normal_logger.error(error_msg)
+                    normal_logger.error(traceback.format_exc())
+                    if hasattr(self.task_manager, 'update_task_status'):
+                        self.task_manager.update_task_status(task_id, TaskStatus.FAILED, error=error_msg)
+                    return
+            elif not analyzer_type:
+                 normal_logger.warning(f"任务 {task_id}: 'analyzer_type' (从params_config.subtask.type获取) 未找到。任务将仅拉取帧数据，不进行分析。")
+            # elif not params_from_task_config: # 这个检查现在不需要了，因为 task_config 就是 params_from_task_config
+            #     normal_logger.warning(f"任务 {task_id}: 'params' 未在任务配置中找到。任务将仅拉取帧数据，不进行分析。")
+    
+    
             # 分析循环
             normal_logger.info(f"开始任务 {task_id} 的分析循环")
+            frame_index = 0 # 初始化帧索引
             while not stop_event.is_set():
                 # 检查暂停事件
                 if pause_event.is_set():
@@ -333,7 +437,7 @@ class TaskProcessor:
 
                 try:
                     # 从帧队列获取帧，增加超时时间
-                    frame_data = await asyncio.wait_for(frame_queue.get(), timeout=10.0)  # 增加超时时间到10秒
+                    frame_data = await asyncio.wait_for(frame_queue.get(), timeout=15.0)  # 将超时时间从10秒增加到15秒
                     
                     # 解包帧数据，通常是(frame, timestamp)的元组
                     if frame_data and isinstance(frame_data, tuple) and len(frame_data) >= 2:
@@ -375,35 +479,61 @@ class TaskProcessor:
 
                             # 检查流状态
                             from core.task_management.stream import stream_manager
-                            stream_info = await stream_manager.get_stream_info(stream_id)
+                            stream_info = await stream_manager.get_stream_info(stream_id_to_use)
 
                             if stream_info:
                                 # 尝试重新订阅
-                                await stream_manager.unsubscribe_stream(stream_id, task_id)
-                                success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+                                await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
+                                success, new_frame_queue = await stream_manager.subscribe_stream(stream_id_to_use, task_id, stream_config_for_subscription)
 
                                 if success and new_frame_queue is not None:
-                                    normal_logger.info(f"成功重新订阅流 {stream_id}")
+                                    normal_logger.info(f"成功重新订阅流 {stream_id_to_use}")
                                     frame_queue = new_frame_queue
                                     self._frame_error_counts[task_id] = 0  # 重置错误计数
                                 else:
-                                    normal_logger.error(f"重新订阅流 {stream_id} 失败")
+                                    normal_logger.error(f"重新订阅流 {stream_id_to_use} 失败")
 
                         time.sleep(1)
                         continue
 
-                    # 执行分析
-                    # 这里应该有实际的分析代码，但由于我们只是测试帧获取，
-                    # 所以创建一个简单的结果对象
-                    result = {
-                        "task_id": task_id,
-                        "timestamp": timestamp,
-                        "frame_shape": frame.shape if frame is not None else None,
-                        "message": "成功获取帧"
-                    }
+                    frame_index += 1 # 增加帧索引
 
-                    # 将结果放入结果队列
-                    result_queue.put(result)
+                    # 执行分析
+                    analysis_data = None
+                    if analyzer:
+                        try:
+                            # process_video_frame 也使用收集到的 analyzer_kwargs
+                            analysis_data = await analyzer.process_video_frame(
+                                frame, 
+                                frame_index=frame_index, 
+                                **analyzer_kwargs 
+                            )
+                        except Exception as analysis_exc:
+                            normal_logger.error(f"任务 {task_id}: 帧 {frame_index} 分析时发生错误: {analysis_exc}")
+                            normal_logger.error(traceback.format_exc())
+                            analysis_data = {
+                                "success": False,
+                                "error": f"帧分析错误: {str(analysis_exc)}",
+                                "detections": [], # 确保有空列表以防后续代码出错
+                                "frame_index": frame_index,
+                                "task_id": task_id,
+                                "timestamp": time.time() # 使用当前时间戳
+                            }
+                    else:
+                        # 如果没有分析器 (因为未配置或创建失败)
+                        analysis_data = {
+                            "success": True, # 获取帧是成功的
+                            "task_id": task_id,
+                            "timestamp": timestamp, # 原始帧时间戳
+                            "frame_index": frame_index,
+                            "frame_shape": frame.shape if frame is not None else None,
+                            "message": "成功获取帧 (分析器未配置或初始化失败)"
+                        }
+                    
+                    # 将结果包装后放入结果队列
+                    # _handle_results 方法期望的格式是 {"type": "result", "data": ...}
+                    result_for_queue = {"type": "result", "data": analysis_data}
+                    result_queue.put(result_for_queue)
 
                 except asyncio.TimeoutError:
                     normal_logger.warning(f"任务 {task_id}: 获取帧超时")
@@ -417,36 +547,40 @@ class TaskProcessor:
 
                     # 检查流状态
                     from core.task_management.stream import stream_manager
-                    stream_info = await stream_manager.get_stream_info(stream_id)
+                    stream_info = await stream_manager.get_stream_info(stream_id_to_use)
 
                     if stream_info:
                         status = stream_info.get("status")
                         health = stream_info.get("health_status")
-                        normal_logger.info(f"流 {stream_id} 状态: {status}, 健康状态: {health}")
+                        normal_logger.info(f"流 {stream_id_to_use} 状态: {status}, 健康状态: {health}")
 
                         # 根据不同情况采取不同策略
                         if status in [StreamStatus.RUNNING, StreamStatus.ONLINE]:
                             # 流状态正常但获取帧超时
-                            if timeout_count >= 5:  # 提高连续超时阈值，从3次改为5次
-                                normal_logger.info(f"流 {stream_id} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
-                                await stream_manager.unsubscribe_stream(stream_id, task_id)
-                                success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+                            if timeout_count >= 8:  # 提高连续超时阈值，从5次改为8次
+                                normal_logger.info(f"流 {stream_id_to_use} 状态正常但连续 {timeout_count} 次获取帧超时，尝试重新订阅")
+                                await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
+                                
+                                # 等待一段时间后再重新订阅，避免立即重新订阅
+                                await asyncio.sleep(2.0)
+                                
+                                success, new_frame_queue = await stream_manager.subscribe_stream(stream_id_to_use, task_id, stream_config_for_subscription)
 
                                 if success and new_frame_queue is not None:
-                                    normal_logger.info(f"成功重新订阅流 {stream_id}")
+                                    normal_logger.info(f"成功重新订阅流 {stream_id_to_use}")
                                     frame_queue = new_frame_queue
                                     self._frame_timeout_counts[task_id] = 0  # 重置超时计数
                                 else:
-                                    normal_logger.error(f"重新订阅流 {stream_id} 失败")
+                                    normal_logger.error(f"重新订阅流 {stream_id_to_use} 失败")
                         elif status in [StreamStatus.CONNECTING, StreamStatus.INITIALIZING]:
                             # 流正在连接中，等待
-                            normal_logger.info(f"流 {stream_id} 正在连接中，等待...")
+                            normal_logger.info(f"流 {stream_id_to_use} 正在连接中，等待...")
                         elif status in [StreamStatus.OFFLINE, StreamStatus.ERROR]:
                             # 流离线或错误，尝试重新连接
-                            if timeout_count % 10 == 0:  # 每10次超时尝试一次重连，而不是5次
-                                normal_logger.info(f"流 {stream_id} 状态异常 ({status})，尝试重新连接")
+                            if timeout_count % 15 == 0:  # 每15次超时尝试一次重连，增加间隔
+                                normal_logger.info(f"流 {stream_id_to_use} 状态异常 ({status})，尝试重新连接")
                                 # 通知流管理器重新连接
-                                await stream_manager.reconnect_stream(stream_id)
+                                await stream_manager.reconnect_stream(stream_id_to_use)
 
                     # 短暂等待后继续
                     await asyncio.sleep(1)
@@ -469,24 +603,24 @@ class TaskProcessor:
 
                         # 尝试重新订阅
                         from core.task_management.stream import stream_manager
-                        await stream_manager.unsubscribe_stream(stream_id, task_id)
-                        success, new_frame_queue = await stream_manager.subscribe_stream(stream_id, task_id, stream_config)
+                        await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
+                        success, new_frame_queue = await stream_manager.subscribe_stream(stream_id_to_use, task_id, stream_config_for_subscription)
 
                         if success and new_frame_queue is not None:
-                            normal_logger.info(f"成功重新订阅流 {stream_id}")
+                            normal_logger.info(f"成功重新订阅流 {stream_id_to_use}")
                             frame_queue = new_frame_queue
                             self._frame_exception_counts[task_id] = 0  # 重置异常计数
                         else:
-                            normal_logger.error(f"重新订阅流 {stream_id} 失败")
+                            normal_logger.error(f"重新订阅流 {stream_id_to_use} 失败")
 
                     # 短暂等待后继续
                     await asyncio.sleep(1)
                     continue
 
             # 任务结束，取消订阅
-            if stream_id:
+            if stream_id_to_use:
                 from core.task_management.stream import stream_manager
-                await stream_manager.unsubscribe_stream(stream_id, task_id)
+                await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
 
             normal_logger.info(f"工作进程 {task_id}: 已结束")
 

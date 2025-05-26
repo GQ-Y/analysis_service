@@ -68,15 +68,24 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
         Returns:
             bool: 是否成功加载模型
         """
+        # 如果模型已加载且代码相同，则直接返回成功
+        if self.loaded and hasattr(self, 'current_model_code') and self.current_model_code == model_code:
+            normal_logger.info(f"模型 {model_code} 已为YOLO检测分析器加载。")
+            return True
+
         try:
             # 加载检测器模型
             success = await self.detector.load_model(model_code)
             if success:
                 self.current_model_code = model_code
+                self.loaded = True  #  关键修改：设置 loaded 标志为 True
                 normal_logger.info(f"YOLO检测分析器成功加载模型: {model_code}")
+            else:
+                self.loaded = False # 确保如果加载失败，loaded 状态也明确
             return success
         except Exception as e:
             exception_logger.exception(f"YOLO检测分析器加载模型失败: {e}")
+            self.loaded = False # 发生异常时也标记为未加载
             return False
 
     async def detect(self, frame: np.ndarray, **kwargs) -> Dict[str, Any]:
@@ -102,11 +111,6 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
         # 输出更详细的日志
         normal_logger.info(f"开始检测第{frame_count}帧，帧大小: {frame.shape}")
         
-        # 获取参数
-        confidence = kwargs.get("confidence", self.confidence)
-        iou_threshold = kwargs.get("iou_threshold", self.iou_threshold)
-        max_detections = kwargs.get("max_detections", self.max_detections)
-        
         # 检查模型是否已加载
         if not self.loaded:
             normal_logger.warning(f"模型未加载，无法执行检测")
@@ -126,9 +130,6 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
             # 调用YOLO检测器的detect方法
             detect_result = await self.detector.detect(
                 frame,
-                confidence=confidence,
-                iou_threshold=iou_threshold,
-                max_detections=max_detections,
                 **kwargs
             )
             

@@ -35,22 +35,18 @@ class ZLMVideoStream(BaseVideoStream):
         """
         # 调用基类初始化
         super().__init__(stream_id, config)
-
         self.manager = manager
         self.stream_type = config.get("type", "rtsp")
 
         # 移除C API相关属性，使用HTTP API
-        self._player_handle = None
-        self._use_sdk = False
-
-        # 推流相关
+        self._url = config.get("url", "")  # 修改为直接使用实例属性，避免访问父类的只读属性
         self.app = config.get("app", "live")
         self.vhost = config.get("vhost", "__defaultVhost__")
         self.stream_name = config.get("stream_name", stream_id)
 
-        # 帧缓存
+        # 帧缓存 - 增加缓冲区大小提高稳定性
         self._frame_buffer = []
-        self._frame_buffer_size = config.get("frame_buffer_size", 5)
+        self._frame_buffer_size = config.get("frame_buffer_size", 30)  # 从5增加到30
         self._frame_lock = threading.Lock()
 
         # 流控制
@@ -83,6 +79,12 @@ class ZLMVideoStream(BaseVideoStream):
         self._stream_key = config.get("stream_key", "")
 
         normal_logger.info(f"创建ZLM流: {stream_id}, URL: {self._url}, 类型: {self.stream_type}, 使用HTTP API")
+
+    # 重写url属性，确保能够正确获取和设置url值
+    @property
+    def url(self) -> str:
+        """获取流URL"""
+        return self._url
 
     async def start(self) -> bool:
         """启动流
@@ -764,11 +766,15 @@ class ZLMVideoStream(BaseVideoStream):
                         # 成功读取帧
                         retry_count = 0  # 重置重试计数
                         
-                        # 更新缓存
+                        # 更新缓存 - 使用更高效的锁策略
                         with self._frame_lock:
+                            # 如果缓冲区已满，则移除最旧的一半帧，提高处理效率
+                            if len(self._frame_buffer) >= self._frame_buffer_size:
+                                # 丢弃旧帧而不是逐个移除
+                                self._frame_buffer = self._frame_buffer[len(self._frame_buffer)//2:]
+                            
+                            # 添加新帧
                             self._frame_buffer.append(frame)
-                            while len(self._frame_buffer) > self._frame_buffer_size:
-                                self._frame_buffer.pop(0)
                         
                         # 更新统计
                         now = time.time()
@@ -887,20 +893,27 @@ class ZLMVideoStream(BaseVideoStream):
         try:
             last_frame_index = -1
             last_distribute_time = time.time()
+            min_frame_interval = 0.02  # 50fps的最小帧间隔
 
             while not self._stop_event.is_set():
-                # 等待新帧
-                await self._frame_processed_event.wait()
-                self._frame_processed_event.clear()
+                # 等待新帧，添加超时机制避免永久阻塞
+                try:
+                    await asyncio.wait_for(self._frame_processed_event.wait(), timeout=1.0)
+                    self._frame_processed_event.clear()
+                except asyncio.TimeoutError:
+                    # 超时但没有新帧，短暂休眠后继续
+                    await asyncio.sleep(0.05)
+                    continue
 
                 # 获取最新帧索引
                 current_frame_count = 0
                 with self._frame_lock:
                     current_frame_count = len(self._frame_buffer)
 
-                # 如果没有新帧但已经超过100ms未分发帧，也尝试分发当前帧
+                # 如果没有新帧但已经超过50ms未分发帧，也尝试分发当前帧
+                # 降低从100ms到50ms，增加分发频率
                 current_time = time.time()
-                if current_frame_count <= last_frame_index and current_time - last_distribute_time < 0.1:
+                if current_frame_count <= last_frame_index and current_time - last_distribute_time < 0.05:
                     await asyncio.sleep(0.01)
                     continue
 
@@ -915,7 +928,7 @@ class ZLMVideoStream(BaseVideoStream):
                     continue
 
                 # 分发帧给订阅者
-                # 如果没有新帧但超过100ms未分发，分发最后一帧
+                # 如果没有新帧但超过50ms未分发，分发最后一帧
                 if current_frame_count <= last_frame_index:
                     if current_frame_count > 0:
                         with self._frame_lock:
@@ -926,60 +939,93 @@ class ZLMVideoStream(BaseVideoStream):
                                 # 分发给所有订阅者
                                 for subscriber_id, queue in subscribers.items():
                                     try:
-                                        # 如果队列已满，则丢弃旧帧
+                                        # 如果队列已满，则丢弃一半的旧帧以释放空间
                                         if queue.full():
                                             try:
-                                                _ = queue.get_nowait()
+                                                # 移除一半旧帧而不是只移除一帧
+                                                for _ in range(queue.qsize() // 2):
+                                                    _ = queue.get_nowait()
                                             except:
                                                 pass
 
-                                        # 放入最后一帧 - 注意这里调整为(frame, timestamp)的元组格式
+                                        # 放入最后一帧
                                         await queue.put((frame, timestamp))
                                     except Exception as e:
                                         normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
                     
                     last_distribute_time = current_time
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(min_frame_interval)  # 使用最小帧间隔控制分发速率
                     continue
 
                 # 有新帧，分发新帧
-                for i in range(last_frame_index + 1, current_frame_count):
-                    # 获取帧
-                    frame = None
-                    timestamp = time.time()
+                # 每个订阅者只分发最新的帧，避免队列堆积
+                # 如果帧太多，跳过中间帧，只发送最新的帧
+                if current_frame_count - last_frame_index > 5:  # 如果有超过5帧的积压
+                    normal_logger.info(f"帧积压过多 ({current_frame_count - last_frame_index} 帧)，跳过中间帧")
+                    # 只分发最新的帧
                     with self._frame_lock:
-                        if i < len(self._frame_buffer):
-                            frame = self._frame_buffer[i].copy()
-                        else:
-                            break
-
-                    if frame is None:
-                        continue
-
-                    # 分发给所有订阅者
-                    for subscriber_id, queue in subscribers.items():
-                        try:
-                            # 如果队列已满，则丢弃旧帧
-                            if queue.full():
+                        if len(self._frame_buffer) > 0:
+                            frame = self._frame_buffer[-1].copy()
+                            timestamp = time.time()
+                            
+                            # 分发给所有订阅者
+                            for subscriber_id, queue in subscribers.items():
                                 try:
-                                    _ = queue.get_nowait()
-                                except:
-                                    pass
+                                    # 如果队列已满，则清空队列
+                                    if queue.full():
+                                        try:
+                                            while not queue.empty():
+                                                _ = queue.get_nowait()
+                                        except:
+                                            pass
 
-                            # 放入新帧 - 注意这里调整为(frame, timestamp)的元组格式
-                            await queue.put((frame, timestamp))
-                        except Exception as e:
-                            normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
+                                    # 放入最新帧
+                                    await queue.put((frame, timestamp))
+                                except Exception as e:
+                                    normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
+                    
+                    # 更新索引和时间
+                    last_frame_index = current_frame_count - 1
+                    last_distribute_time = time.time()
+                else:
+                    # 正常分发每一帧
+                    for i in range(last_frame_index + 1, current_frame_count):
+                        # 获取帧
+                        frame = None
+                        timestamp = time.time()
+                        with self._frame_lock:
+                            if i < len(self._frame_buffer):
+                                frame = self._frame_buffer[i].copy()
+                            else:
+                                break
 
-                    # 更新统计
-                    self._stats["frames_processed"] += 1
+                        if frame is None:
+                            continue
 
-                # 更新最后处理的帧索引和分发时间
-                last_frame_index = current_frame_count - 1
-                last_distribute_time = time.time()
+                        # 分发给所有订阅者
+                        for subscriber_id, queue in subscribers.items():
+                            try:
+                                # 如果队列已满，则丢弃旧帧
+                                if queue.full():
+                                    try:
+                                        _ = queue.get_nowait()
+                                    except:
+                                        pass
 
-                # 短暂休眠，避免CPU占用过高
-                await asyncio.sleep(0.001)
+                                # 放入新帧
+                                await queue.put((frame, timestamp))
+                            except Exception as e:
+                                normal_logger.error(f"向订阅者 {subscriber_id} 分发帧时出错: {str(e)}")
+
+                        # 更新统计
+                        self._stats["frames_processed"] += 1
+
+                    # 更新最后处理的帧索引和分发时间
+                    last_frame_index = current_frame_count - 1
+                    last_distribute_time = time.time()
+
+                # 短暂休眠，避免CPU占用过高，但保持较高响应性
+                await asyncio.sleep(min_frame_interval)
 
         except Exception as e:
             normal_logger.error(f"帧处理任务异常: {str(e)}")

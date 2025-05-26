@@ -208,12 +208,92 @@ class YOLODetector:
         confidence = kwargs.get("confidence", 0.25)
         iou_threshold = kwargs.get("iou_threshold", 0.45)
         max_detections = kwargs.get("max_detections", 100)
-        classes = kwargs.get("classes")
+        class_names_to_filter = kwargs.get("classes") # 这是字符串列表，如 ['person', 'car'] 或 []
         return_image = kwargs.get("return_image", False)
         
+        class_indices_to_filter = None # 默认为 None，表示检测所有类别
+
+        # 检查 class_names_to_filter 是否明确地是一个空列表，如果是，则意图是检测所有
+        if class_names_to_filter == []: # 用户明确传入空列表
+            normal_logger.info("请求中的 'classes' 为空列表，将检测所有类别。")
+            class_indices_to_filter = None # 显式设置为None
+        elif class_names_to_filter and self.model and hasattr(self.model, 'names') and self.model.names:
+            # 处理非空的 class_names_to_filter
+            model_class_names_list = []
+            # self.model.names 可以是 list [name1, name2, ...] 或 dict {id1: name1, id2: name2, ...}
+            if isinstance(self.model.names, list):
+                model_class_names_list = self.model.names
+            elif isinstance(self.model.names, dict):
+                try:
+                    max_idx = -1
+                    valid_keys = [k for k in self.model.names.keys() if isinstance(k, int)]
+                    if valid_keys:
+                        max_idx = max(valid_keys)
+                    
+                    if max_idx != -1:
+                        model_class_names_list = [""] * (max_idx + 1) 
+                        for idx, name in self.model.names.items():
+                            if isinstance(idx, int) and 0 <= idx <= max_idx:
+                                model_class_names_list[idx] = name
+                    else: 
+                        normal_logger.warning(f"模型类别名称字典 (self.model.names) 键不符合预期: {self.model.names}，尝试直接从值构建查找。")
+                        # 如果字典的键不是预期的整数索引，尝试直接使用值的列表进行查找，但顺序不保证
+                        # model_class_names_list = list(self.model.names.values()) # 这可能不是最佳选择
+                except Exception as e_names:
+                    normal_logger.warning(f"处理 self.model.names (字典类型) 时出错: {e_names}。类别过滤可能不准确。")
+            
+            temp_indices_list = []
+            processed_indices_set = set()
+
+            if model_class_names_list: # 如果成功从列表转换 (或字典成功转为有序列表)
+                for name_to_filter in class_names_to_filter:
+                    try:
+                        idx = model_class_names_list.index(name_to_filter)
+                        if idx not in processed_indices_set:
+                           temp_indices_list.append(idx)
+                           processed_indices_set.add(idx)
+                    except ValueError:
+                        normal_logger.warning(f"类别 '{name_to_filter}' 在模型类别列表 {model_class_names_list} 中未找到，将被忽略。")
+            elif isinstance(self.model.names, dict): # 如果是字典且列表转换不理想/未发生，尝试直接从字典查找
+                name_to_index_map = {name: idx for idx, name in self.model.names.items() if isinstance(idx, int)} # 确保键是整数
+                if not name_to_index_map and self.model.names: # 如果上面的构建失败（例如键不是整数），尝试更通用的反向查找
+                     name_to_index_map = {v: k for k, v in self.model.names.items()}
+
+                for name_to_filter in class_names_to_filter:
+                    if name_to_filter in name_to_index_map:
+                        idx = name_to_index_map[name_to_filter]
+                        if isinstance(idx, int) and idx not in processed_indices_set: # 确保索引是整数
+                           temp_indices_list.append(idx)
+                           processed_indices_set.add(idx)
+                        elif not isinstance(idx, int):
+                            normal_logger.warning(f"类别 '{name_to_filter}' 对应的索引 '{idx}' 不是整数，将被忽略。")
+                    else:
+                        normal_logger.warning(f"类别 '{name_to_filter}' 在模型类别字典 {self.model.names} 中未找到，将被忽略。")
+            
+            if temp_indices_list: # 如果找到任何有效的类别索引
+                class_indices_to_filter = temp_indices_list
+                normal_logger.info(f"将过滤以下类别索引: {class_indices_to_filter} (来自名称: {class_names_to_filter})")
+            else: # 如果没有找到任何有效类别索引 (class_names_to_filter 非空但所有名称都无效)
+                normal_logger.warning(f"提供的所有类别名称 {class_names_to_filter} 均无效或未在模型中找到。将检测所有类别。")
+                class_indices_to_filter = None # 设置为None以检测所有
+
+        elif class_names_to_filter: # class_names_to_filter 非空，但模型信息不足 (self.model is None or self.model.names is empty/None)
+             normal_logger.warning(f"提供了类别名称 {class_names_to_filter} 用于过滤，但无法访问模型类别信息。将检测所有类别。")
+             class_indices_to_filter = None # 设置为None以检测所有
+        # 如果 class_names_to_filter 原本就是 None (kwargs.get返回None), class_indices_to_filter 保持为 None
+
         # 记录时间
         start_time = time.time()
         
+        # Log model names and the actual class indices being used for filtering
+        if self.model and hasattr(self.model, 'names'):
+            normal_logger.info(f"模型类别名称 (self.model.names): {self.model.names}")
+        else:
+            normal_logger.warning("无法访问 self.model.names")
+        normal_logger.info(f"传递给 model.predict 的 confidence: {confidence}, iou: {iou_threshold}, max_det: {max_detections}")
+        # 修改：始终传递 classes=None 给 predict，后续手动过滤
+        normal_logger.info(f"内部调用 model.predict 时将传递 classes=None，agnostic_nms=True。原始请求的类别过滤将在之后应用。原始 class_indices_to_filter: {class_indices_to_filter}")
+
         normal_logger.info(f"开始执行YOLO检测，图像大小：{image.shape}，参数：conf={confidence}, iou={iou_threshold}, max_det={max_detections}")
         
         try:
@@ -223,7 +303,8 @@ class YOLODetector:
                 conf=confidence, 
                 iou=iou_threshold,
                 max_det=max_detections,
-                classes=classes,
+                classes=None,  # 修改：始终传递 None，避免内部 buggy 过滤
+                agnostic_nms=True, # 保持类别无关的NMS
                 verbose=False
             )
             
@@ -238,6 +319,10 @@ class YOLODetector:
                 # 获取类别
                 class_id = int(box.cls.item())
                 
+                # 手动应用类别过滤
+                if class_indices_to_filter is not None and class_id not in class_indices_to_filter:
+                    continue # 跳过不符合指定类别的检测
+
                 # 获取置信度
                 conf = float(box.conf.item())
                 
