@@ -19,6 +19,8 @@ sys.path.append(str(ROOT_DIR))
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from run.middlewares import setup_exception_handlers, RequestLoggingMiddleware
+from run.signal_handler import signal_handler
+from run.zlm_exit_handler import zlm_exit_handler
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -110,6 +112,9 @@ async def lifespan(app: FastAPI):
     show_service_banner("analysis_service") # Banner会通过normal_logger打印
     normal_logger.info("开始分析服务生命周期管理...")
 
+    # 设置信号处理器
+    signal_handler.setup_signal_handlers()
+
     # 记录启动时间
     app.state.start_time = time.time()
 
@@ -133,6 +138,13 @@ async def lifespan(app: FastAPI):
         from core.media_kit.zlm_manager import zlm_manager
         await zlm_manager.initialize()
         app.state.zlm_manager = zlm_manager
+        
+        # 将 ZLMediaKit 管理器注册到信号处理器
+        signal_handler.set_zlm_manager(zlm_manager)
+        
+        # 注册到退出处理器
+        zlm_exit_handler.register_zlm_manager(zlm_manager)
+        
         normal_logger.info("ZLMediaKit初始化成功。")
     except Exception as e:
         exception_logger.exception("ZLMediaKit初始化失败。将继续使用OpenCV进行视频处理。")
@@ -234,18 +246,68 @@ async def lifespan(app: FastAPI):
         try:
             normal_logger.info("正在关闭ZLMediaKit...")
             try:
-                await asyncio.wait_for(app.state.zlm_manager.shutdown(), timeout=5.0)
+                await asyncio.wait_for(app.state.zlm_manager.shutdown(), timeout=10.0)
                 normal_logger.info("ZLMediaKit已正常关闭。")
             except asyncio.TimeoutError:
                 exception_logger.warning("等待ZLMediaKit关闭超时。")
+                # 强制标记为关闭状态
+                if hasattr(app.state.zlm_manager, '_is_shutting_down'):
+                    app.state.zlm_manager._is_shutting_down = True
             except Exception as inner_e:
                 exception_logger.exception("ZLMediaKit关闭过程中出错。")
         except Exception as e:
             exception_logger.exception("关闭ZLMediaKit时出错。")
         finally:
+            # 确保清理库引用
+            try:
+                if hasattr(app.state.zlm_manager, '_lib'):
+                    app.state.zlm_manager._lib = None
+                # 强制垃圾回收
+                import gc
+                gc.collect()
+            except:
+                pass
             normal_logger.info("ZLMediaKit关闭流程已完成。")
 
+    # 清理信号处理器
+    signal_handler.cleanup()
+
     normal_logger.info("分析服务已停止。")
+    
+    # 强制退出进程以避免 ZLMediaKit 析构错误
+    # 这是解决 recursive_mutex lock failed 错误的最有效方法
+    normal_logger.info("强制退出进程以避免 ZLMediaKit C++ 析构错误")
+    
+    # 给多进程资源一些时间进行正常清理
+    time.sleep(0.1)
+    
+    # 尝试手动触发多进程资源清理
+    try:
+        import multiprocessing.util
+        # 先让现有的清理器运行
+        for finalizer in list(multiprocessing.util._finalizer_registry.values()):
+            try:
+                if finalizer.still_active():
+                    finalizer()
+            except:
+                pass
+        # 然后清空注册表
+        multiprocessing.util._finalizer_registry.clear()
+    except:
+        pass
+    
+    # 禁用 atexit 处理器以避免额外的清理
+    try:
+        import atexit
+        atexit._clear()
+    except:
+        pass
+    
+    # 给一点时间让日志输出
+    time.sleep(0.02)
+    
+    # 强制退出，跳过所有析构函数和清理过程
+    os._exit(0)
 
 def parse_args():
     """解析命令行参数"""

@@ -9,6 +9,7 @@ import threading
 import ctypes
 import traceback
 from typing import Dict, Any, List, Optional, Callable
+import asyncio
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.config import settings
@@ -23,6 +24,7 @@ class ZLMediaKitManager:
 
     _instance = None
     _lock = threading.Lock()
+    _shutdown_lock = threading.Lock()
 
     def __new__(cls, config: Optional[ZLMConfig] = None):
         """单例模式"""
@@ -50,11 +52,16 @@ class ZLMediaKitManager:
         self._players = {}  # 播放器句柄到流ID的映射
         self._event_callbacks = {}  # 事件回调函数
 
+        # 回调函数引用，防止被垃圾回收并用于取消注册
+        self._log_callback_ref = None
+        self._event_callback_ref = None
+
         # 锁，用于保护流相关操作
         self._stream_lock = threading.Lock()
 
         # 初始化标记
         self._is_running = False
+        self._is_shutting_down = False
         self._initialized = True
 
         normal_logger.info(f"ZLMediaKit管理器初始化完成，API地址: {self._api_url}")
@@ -104,31 +111,106 @@ class ZLMediaKitManager:
             None
         """
         try:
-            if not self._is_running:
-                normal_logger.info("ZLMediaKit未运行，无需关闭")
-                return
+            with self._shutdown_lock:
+                if not self._is_running:
+                    normal_logger.info("ZLMediaKit未运行，无需关闭")
+                    return
 
-            normal_logger.info("正在关闭ZLMediaKit...")
+                if self._is_shutting_down:
+                    normal_logger.info("ZLMediaKit正在关闭中，跳过重复关闭")
+                    return
 
-            # 关闭所有流
-            with self._stream_lock:
-                stream_ids = list(self._streams.keys())
+                self._is_shutting_down = True
+                normal_logger.info("正在关闭ZLMediaKit...")
 
-            for stream_id in stream_ids:
-                await self.stop_stream(stream_id)
+                # 1. 首先停止所有流
+                with self._stream_lock:
+                    stream_ids = list(self._streams.keys())
 
-            # 注意：由于在关闭ZLMediaKit时可能出现段错误，我们暂时跳过这一步
-            # 只记录日志，不实际调用关闭函数
-            if self._lib and hasattr(self._lib, 'mk_stop_all_server'):
-                normal_logger.info("跳过ZLMediaKit关闭函数调用，避免段错误")
-                # self._lib.mk_stop_all_server()
+                for stream_id in stream_ids:
+                    try:
+                        await self.stop_stream(stream_id)
+                    except Exception as e:
+                        normal_logger.error(f"停止流 {stream_id} 时出错: {str(e)}")
 
-            # 标记为未运行
-            self._is_running = False
+                # 2. 等待所有流停止
+                await asyncio.sleep(1)
 
-            normal_logger.info("ZLMediaKit已关闭")
+                # 3. 取消注册所有回调函数
+                if self._lib:
+                    try:
+                        # 取消注册日志回调
+                        if hasattr(self._lib, 'mk_set_log_callback') and self._log_callback_ref:
+                            normal_logger.info("取消注册日志回调...")
+                            self._lib.mk_set_log_callback(None)
+                            self._log_callback_ref = None
+
+                        # 取消注册事件回调
+                        if hasattr(self._lib, 'mk_set_event_callback') and self._event_callback_ref:
+                            normal_logger.info("取消注册事件回调...")
+                            self._lib.mk_set_event_callback(None, None)
+                            self._event_callback_ref = None
+                    except Exception as e:
+                        normal_logger.error(f"取消注册回调时出错: {str(e)}")
+
+                # 4. 清理所有回调
+                self._event_callbacks.clear()
+
+                # 5. 释放所有播放器句柄（在停止服务前释放）
+                for handle in list(self._players.keys()):
+                    try:
+                        if self._lib and hasattr(self._lib, 'mk_proxy_player_release'):
+                            self._lib.mk_proxy_player_release(handle)
+                    except Exception as e:
+                        normal_logger.error(f"释放播放器句柄时出错: {str(e)}")
+
+                # 6. 停止ZLMediaKit服务
+                if self._lib and hasattr(self._lib, 'mk_stop_all_server'):
+                    try:
+                        normal_logger.info("正在停止ZLMediaKit服务...")
+                        self._lib.mk_stop_all_server()
+                        await asyncio.sleep(2)  # 给服务更多时间来清理资源
+                    except Exception as e:
+                        normal_logger.error(f"停止ZLMediaKit服务时出错: {str(e)}")
+
+                # 7. 设置日志写入器为 null（根据 GitHub issue #3458 的建议）
+                if self._lib:
+                    try:
+                        # 检查是否有设置日志写入器的函数
+                        if hasattr(self._lib, 'mk_set_log_writer'):
+                            normal_logger.info("设置ZLMediaKit日志写入器为null...")
+                            self._lib.mk_set_log_writer(None)
+                        else:
+                            normal_logger.info("ZLMediaKit库不支持mk_set_log_writer函数")
+                    except Exception as e:
+                        normal_logger.error(f"设置日志写入器时出错: {str(e)}")
+
+                # 8. 清理内部状态
+                self._players.clear()
+                self._streams.clear()
+                
+                # 9. 强制等待更长时间确保所有清理完成
+                await asyncio.sleep(2.0)
+                
+                # 10. 清理所有内部引用
+                self._log_callback_ref = None
+                self._event_callback_ref = None
+                
+                # 11. 尝试强制垃圾回收
+                import gc
+                gc.collect()
+                gc.collect()  # 执行两次确保彻底清理
+                
+                # 12. 清理库引用
+                self._lib = None
+                self._is_running = False
+                self._is_shutting_down = False
+
+                normal_logger.info("ZLMediaKit已关闭")
+
         except Exception as e:
             exception_logger.exception(f"关闭ZLMediaKit时出错: {str(e)}")
+            self._is_shutting_down = False
 
     def _load_library(self) -> None:
         """加载ZLMediaKit库"""
@@ -267,6 +349,11 @@ class ZLMediaKitManager:
                 @ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p)
                 def on_log(level, content):
                     try:
+                        # 检查是否正在关闭或者实例是否有效
+                        if (hasattr(self, '_is_shutting_down') and self._is_shutting_down) or \
+                           (hasattr(self, '_is_running') and not self._is_running):
+                            return
+                            
                         content_str = content.decode('utf-8') if content else ""
                         if level <= 1:  # ERROR
                             normal_logger.error(f"ZLM: {content_str}")
@@ -276,10 +363,13 @@ class ZLMediaKitManager:
                             normal_logger.info(f"ZLM: {content_str}")
                         else:  # DEBUG or TRACE
                             normal_logger.debug(f"ZLM: {content_str}")
-                    except Exception as e:
-                        exception_logger.exception(f"处理ZLM日志回调异常: {str(e)}")
+                    except Exception:
+                        # 在关闭过程中可能会出现异常，完全静默处理
+                        pass
 
-                self._lib.mk_set_log_callback(on_log)
+                # 保存回调引用
+                self._log_callback_ref = on_log
+                self._lib.mk_set_log_callback(self._log_callback_ref)
                 normal_logger.info("已注册ZLMediaKit日志回调")
 
             # 调用初始化函数
@@ -312,6 +402,11 @@ class ZLMediaKitManager:
                 @ctypes.CFUNCTYPE(None, ctypes.c_int, ctypes.c_char_p, ctypes.c_void_p)
                 def on_event(event_code, event_json, user_data):
                     try:
+                        # 检查是否正在关闭或者实例是否有效
+                        if (hasattr(self, '_is_shutting_down') and self._is_shutting_down) or \
+                           (hasattr(self, '_is_running') and not self._is_running):
+                            return
+                            
                         event_data = json.loads(event_json.decode('utf-8')) if event_json else {}
                         event_type = event_data.get("type", "unknown")
 
@@ -332,10 +427,13 @@ class ZLMediaKitManager:
                             # 服务器退出事件
                             normal_logger.warning("ZLMediaKit服务器已退出")
 
-                    except Exception as e:
-                        exception_logger.exception(f"处理ZLM事件回调异常: {str(e)}")
+                    except Exception:
+                        # 在关闭过程中可能会出现异常，完全静默处理
+                        pass
 
-                self._lib.mk_set_event_callback(on_event, None)
+                # 保存回调引用
+                self._event_callback_ref = on_event
+                self._lib.mk_set_event_callback(self._event_callback_ref, None)
                 normal_logger.info("已注册ZLMediaKit事件回调")
 
             normal_logger.info("ZLMediaKit初始化成功")

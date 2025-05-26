@@ -56,6 +56,8 @@ class ZLMVideoStream(BaseVideoStream):
         # 流控制
         self._frame_processed_event = asyncio.Event()
         self._frame_processed_event.set()
+        self._stop_lock = threading.Lock()
+        self._is_stopping = False
 
         # 任务
         self._pull_task = None
@@ -153,112 +155,97 @@ class ZLMVideoStream(BaseVideoStream):
         Returns:
             bool: 是否成功停止
         """
-        if not self._is_running:
-            normal_logger.warning(f"流 {self.stream_id} 未运行，无需停止")
+        with self._stop_lock:
+            if self._is_stopping:
+                normal_logger.info(f"流 {self.stream_id} 正在停止中，跳过重复停止")
+                return True
+            self._is_stopping = True
+
+        try:
+            normal_logger.info(f"正在停止流: {self.stream_id}")
+
+            # 1. 首先标记状态
+            self._status = StreamStatus.STOPPING
+            self._is_running = False
+
+            # 2. 取消所有任务
+            if self._pull_task and not self._pull_task.done():
+                self._pull_task.cancel()
+                try:
+                    await self._pull_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    normal_logger.error(f"取消拉流任务时出错: {str(e)}")
+
+            if self._frame_task and not self._frame_task.done():
+                self._frame_task.cancel()
+                try:
+                    await self._frame_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    normal_logger.error(f"取消帧处理任务时出错: {str(e)}")
+
+            # 3. 停止ZLM播放器
+            if self._player_handle:
+                try:
+                    if self.manager._lib:
+                        # 3.1 首先停止播放
+                        if hasattr(self.manager._lib, 'mk_player_stop'):
+                            try:
+                                normal_logger.info(f"停止播放器: {self.stream_id}")
+                                self.manager._lib.mk_player_stop(self._player_handle)
+                                await asyncio.sleep(0.5)  # 等待停止完成
+                            except Exception as e:
+                                normal_logger.error(f"停止播放器时出错: {str(e)}")
+
+                        # 3.2 然后释放播放器
+                        if hasattr(self.manager._lib, 'mk_proxy_player_release'):
+                            try:
+                                normal_logger.info(f"释放播放器: {self.stream_id}")
+                                self.manager._lib.mk_proxy_player_release(self._player_handle)
+                            except Exception as e:
+                                normal_logger.error(f"释放播放器时出错: {str(e)}")
+
+                    # 3.3 清除播放器相关引用
+                    self._player_handle = None
+                    self._frame_callback_registered = False
+                    self._frame_callback_ref = None
+                    self._play_result_callback_ref = None
+                    self._play_shutdown_callback_ref = None
+
+                except Exception as e:
+                    normal_logger.error(f"清理播放器资源时出错: {str(e)}")
+
+            # 4. 清理订阅者
+            async with self._subscriber_lock:
+                self._subscribers.clear()
+
+            # 5. 清理帧缓存
+            with self._frame_lock:
+                self._frame_buffer.clear()
+
+            # 6. 设置最终状态
+            self._status = StreamStatus.OFFLINE
+            self._health_status = StreamHealthStatus.OFFLINE
+            self._is_running = False
+            self._is_stopping = False
+
+            # 7. 通知健康监控器
+            try:
+                from core.task_management.stream.health_monitor import stream_health_monitor
+                stream_health_monitor.report_error(self.stream_id, "流已停止")
+            except Exception as e:
+                normal_logger.error(f"通知健康监控器时出错: {str(e)}")
+
+            normal_logger.info(f"流 {self.stream_id} 停止成功")
             return True
 
-        normal_logger.info(f"停止流 {self.stream_id}")
-
-        # 设置停止事件
-        self._stop_event.set()
-        self._is_running = False
-
-        # 等待任务结束
-        try:
-            if self._pull_task:
-                await asyncio.wait_for(self._pull_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            normal_logger.warning(f"等待流 {self.stream_id} 拉流任务停止超时")
         except Exception as e:
-            normal_logger.error(f"等待流 {self.stream_id} 拉流任务停止时出错: {str(e)}")
-
-        try:
-            if self._frame_task:
-                await asyncio.wait_for(self._frame_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            normal_logger.warning(f"等待流 {self.stream_id} 帧处理任务停止超时")
-        except Exception as e:
-            normal_logger.error(f"等待流 {self.stream_id} 帧处理任务停止时出错: {str(e)}")
-
-        # 停止ZLM播放器
-        if self._player_handle:
-            try:
-                # 注意：由于在释放播放器时遇到段错误，我们暂时跳过播放器释放步骤
-                # 只清除引用，让Python的垃圾回收机制处理
-                normal_logger.info(f"跳过播放器释放步骤，只清除引用: {self.stream_id}")
-
-                # 如果在未来需要重新启用播放器释放，可以取消注释以下代码
-                """
-                # 使用C API释放播放器
-                if self.manager._lib:
-                    try:
-                        # 先尝试停止播放
-                        if hasattr(self.manager._lib, 'mk_player_stop'):
-                            # 设置mk_player_stop的参数类型
-                            self.manager._lib.mk_player_stop.argtypes = [ctypes.c_void_p]
-
-                            normal_logger.info(f"使用C API停止播放器: {self.stream_id}")
-                            # 检查播放器句柄是否有效
-                            if self._player_handle and int(self._player_handle) != 0:
-                                self.manager._lib.mk_player_stop(self._player_handle)
-                                # 等待一小段时间，确保停止操作完成
-                                time.sleep(0.5)
-                            else:
-                                normal_logger.warning(f"播放器句柄无效，跳过停止: {self.stream_id}")
-
-                        # 然后释放播放器
-                        if hasattr(self.manager._lib, 'mk_player_release'):
-                            # 设置mk_player_release的参数类型
-                            self.manager._lib.mk_player_release.argtypes = [ctypes.c_void_p]
-
-                            normal_logger.info(f"使用C API释放播放器: {self.stream_id}")
-                            # 检查播放器句柄是否有效
-                            if self._player_handle and int(self._player_handle) != 0:
-                                # 将播放器句柄转换为整数，然后再转换为c_void_p
-                                handle_int = int(self._player_handle)
-                                handle_ptr = ctypes.c_void_p(handle_int)
-                                self.manager._lib.mk_player_release(handle_ptr)
-                            else:
-                                normal_logger.warning(f"播放器句柄无效，跳过释放: {self.stream_id}")
-                    except Exception as e:
-                        normal_logger.error(f"释放播放器时出错: {str(e)}")
-                        normal_logger.error(traceback.format_exc())
-                else:
-                    normal_logger.error(f"无法释放播放器: {self.stream_id}，C API不可用")
-                """
-
-                # 清除播放器句柄
-                self._player_handle = None
-                self._frame_callback_registered = False
-                self._frame_callback_ref = None
-                self._play_result_callback_ref = None
-                self._play_shutdown_callback_ref = None
-            except Exception as e:
-                normal_logger.error(f"停止ZLM播放器时出错: {str(e)}")
-                normal_logger.error(traceback.format_exc())
-
-        # 清理订阅者
-        async with self._subscriber_lock:
-            self._subscribers.clear()
-
-        # 清理帧缓存
-        with self._frame_lock:
-            self._frame_buffer.clear()
-
-        # 设置状态
-        self._status = StreamStatus.OFFLINE  # 使用OFFLINE代替STOPPED
-        self._health_status = StreamHealthStatus.OFFLINE  # 确保健康状态也被更新
-        self._is_running = False  # 确保运行状态被更新
-
-        # 通知健康监控器
-        try:
-            from core.task_management.stream.health_monitor import stream_health_monitor
-            stream_health_monitor.report_error(self.stream_id, "流已停止")
-        except Exception as e:
-            normal_logger.error(f"通知健康监控器时出错: {str(e)}")
-
-        normal_logger.info(f"流 {self.stream_id} 停止成功")
-        return True
+            exception_logger.exception(f"停止流 {self.stream_id} 时出错: {str(e)}")
+            self._is_stopping = False
+            return False
 
     async def get_info(self) -> Dict[str, Any]:
         """获取流信息
