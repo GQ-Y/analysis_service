@@ -186,10 +186,10 @@ class TaskService:
 
             # 创建任务
             result = await self.create_task(task)
-            
+
             if result["success"]:
                 test_logger.info("TEST_LOG_MARKER: TASK_CREATE_SUCCESS")
-                
+
             return result
 
         except Exception as e:
@@ -221,7 +221,7 @@ class TaskService:
             for task in batch_task.tasks:
                 # 生成任务ID
                 task_id = str(uuid.uuid4())
-                
+
                 # 设置全局回调
                 if batch_task.callback_urls and not task.callback_url:
                     task.callback_url = batch_task.callback_urls
@@ -245,7 +245,7 @@ class TaskService:
             # 统计成功和失败数量
             success_count = sum(1 for r in results if r.get("success", False))
             failed_count = len(results) - success_count
-            
+
             if success_count > 0:
                 test_logger.info("TEST_LOG_MARKER: BATCH_TASK_CREATE_SUCCESS")
 
@@ -296,7 +296,7 @@ class TaskService:
                 # 即使删除失败也返回停止成功，因为任务已经停止
             else:
                 normal_logger.info(f"任务已停止并删除: {task_id}")
-            
+
             test_logger.info("TEST_LOG_MARKER: TASK_STOP_SUCCESS")
 
             return {
@@ -373,7 +373,7 @@ class TaskService:
                 "duration": task.get("duration"),
                 "error_message": task.get("error_message")
             }
-            
+
             test_logger.info("TEST_LOG_MARKER: TASK_STATUS_CHECK_SUCCESS")
 
             return {
@@ -449,7 +449,7 @@ class TaskService:
                 serializable_task["error_message"] = task.get("error", None)
 
                 serializable_tasks.append(serializable_task)
-            
+
             test_logger.info("TEST_LOG_MARKER: TASK_LIST_SUCCESS")
 
             return {
@@ -575,8 +575,8 @@ class TaskService:
             callback_interval = task.callback_interval
             normal_logger.info(f"使用回调间隔值: {callback_interval}秒")
 
-        # 构建完整配置
-        task_config = {
+        # 构建参数配置（这是TaskManager期望的结构）
+        params_config = {
             "model": model_config,
             "subtask": subtask_config,
             "analysis": analysis_config,
@@ -585,23 +585,30 @@ class TaskService:
             "analysis_interval": final_interval,
             "callback_interval": callback_interval,
             "device": task.device if hasattr(task, "device") else "auto",
-            "save_images": task.save_images  # 直接添加save_images参数到顶层配置
+            "save_images": task.save_images
         }
 
         # 添加任务ID（如果有）
         if task_id:
-            task_config["task_id"] = task_id
+            params_config["task_id"] = task_id
 
         # 添加输出URL（如果有）
         if hasattr(task, "output_url") and task.output_url:
-            task_config["output_url"] = task.output_url
-
-        # 添加任务名称（如果有）
-        if hasattr(task, "task_name") and task.task_name:
-            task_config["task_name"] = task.task_name
+            params_config["output_url"] = task.output_url
 
         # 添加帧率设置（如果有）
         if hasattr(task, "frame_rate") and task.frame_rate:
-            task_config["frame_rate"] = task.frame_rate
+            params_config["frame_rate"] = task.frame_rate
+
+        # 添加任务名称到params中（如果有）
+        if hasattr(task, "task_name") and task.task_name:
+            params_config["task_name"] = task.task_name
+
+        # 构建完整的任务配置，包含TaskManager期望的结构
+        task_config = {
+            "params": params_config,  # TaskManager期望的params字段
+            "task_name": task.task_name if hasattr(task, "task_name") and task.task_name else "",
+            "type": task.analysis_type or "detection"
+        }
 
         return task_config
