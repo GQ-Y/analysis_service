@@ -1,8 +1,8 @@
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Dict, Any, Literal
 from pydantic import BaseModel, Field
 
-class DetectionConfig(BaseModel):
-    """检测配置"""
+class BaseAnalysisConfig(BaseModel):
+    """分析配置基类 - 包含所有分析类型的公共参数"""
     confidence: Optional[float] = Field(
         None,
         description="置信度阈值",
@@ -42,32 +42,42 @@ class DetectionConfig(BaseModel):
         description="输入图像尺寸",
         example={"width": 640, "height": 640}
     )
-    nested_detection: Optional[bool] = Field(
-        False,
-        description="是否进行嵌套检测（检查目标A是否在目标B内）"
-    )
-    engine: Optional[int] = Field(
-        1,
-        description="推理引擎：0=PyTorch, 1=ONNX, 2=TensorRT, 3=OpenVINO, 4=Pytron",
-        ge=0,
-        le=4,
-        example=1
-    )
-    yolo_version: Optional[int] = Field(
-        2,
-        description="YOLO版本：0=v8n, 1=v8s, 2=v8l, 3=v8x, 4=11s, 5=11m, 6=11l",
-        ge=0,
-        le=6,
-        example=2
-    )
     custom_weights_path: Optional[str] = Field(
         None,
         description="模型权重路径，支持HTTP/HTTPS URL、对象存储URL和本地路径",
         example="https://models.example.com/weights/yoloe-v8l-seg.pt"
     )
-    use_yoloe_analyzer: Optional[bool] = Field(
+    device: Optional[int] = Field(
+        1,
+        description="推理设备：0=CPU, 1=GPU, 2=AUTO",
+        ge=0,
+        le=2,
+        example=1
+    )
+    half_precision: Optional[bool] = Field(
         False,
-        description="是否使用YOLOE分析器，当设置为True时，将使用YOLOE专用分析器处理任务"
+        description="是否使用半精度(FP16)"
+    )
+    nms_type: Optional[int] = Field(
+        0,
+        description="NMS类型：0=默认, 1=软性, 2=加权, 3=DIoU NMS",
+        ge=0,
+        le=3,
+        example=0
+    )
+    max_detections: Optional[int] = Field(
+        100,
+        description="最大检测目标数量",
+        ge=1,
+        le=1000,
+        example=100
+    )
+
+class DetectionConfig(BaseAnalysisConfig):
+    """目标检测配置 - 继承公共参数，添加检测专用参数"""
+    nested_detection: Optional[bool] = Field(
+        False,
+        description="是否进行嵌套检测（检查目标A是否在目标B内）"
     )
     prompt_type: Optional[int] = Field(
         3,
@@ -96,81 +106,6 @@ class DetectionConfig(BaseModel):
             "use_as_mask": True
         }
     )
-    segmentation: Optional[bool] = Field(
-        False,
-        description="是否启用分割"
-    )
-    nms_type: Optional[int] = Field(
-        0,
-        description="NMS类型：0=默认, 1=软性, 2=加权, 3=DIoU NMS",
-        ge=0,
-        le=3,
-        example=0
-    )
-    max_detections: Optional[int] = Field(
-        100,
-        description="最大检测目标数量",
-        ge=1,
-        le=1000,
-        example=100
-    )
-    device: Optional[int] = Field(
-        1,
-        description="推理设备：0=CPU, 1=GPU, 2=AUTO",
-        ge=0,
-        le=2,
-        example=1
-    )
-    half_precision: Optional[bool] = Field(
-        False,
-        description="是否使用半精度(FP16)"
-    )
-    tracking_type: Optional[int] = Field(
-        0,
-        description="跟踪算法类型：0=DeepSORT, 1=ByteTrack, 2=StrongSORT, 3=BoTSORT",
-        ge=0,
-        le=3,
-        example=0
-    )
-    max_tracks: Optional[int] = Field(
-        50,
-        description="最大跟踪目标数",
-        ge=1,
-        le=1000,
-        example=50
-    )
-    max_lost_time: Optional[int] = Field(
-        30,
-        description="最大丢失时间(帧/秒)",
-        ge=1,
-        le=300,
-        example=30
-    )
-    feature_type: Optional[int] = Field(
-        0,
-        description="特征类型：0=基础特征, 1=ReID特征, 2=深度特征",
-        ge=0,
-        le=2,
-        example=0
-    )
-    related_cameras: Optional[List[int]] = Field(
-        None,
-        description="跨摄像头关联ID",
-        example=[]
-    )
-    counting_enabled: Optional[bool] = Field(
-        False,
-        description="是否启用计数功能"
-    )
-    time_threshold: Optional[float] = Field(
-        None,
-        description="时间阈值(秒)",
-        example=0.5
-    )
-    speed_estimation: Optional[bool] = Field(
-        False,
-        description="是否启用速度估计"
-    )
     object_filter: Optional[Dict[str, float]] = Field(
         None,
         description="目标过滤器",
@@ -180,42 +115,7 @@ class DetectionConfig(BaseModel):
         }
     )
 
-class TrackingConfig(BaseModel):
-    """目标跟踪配置"""
-    tracker_type: str = Field(
-        "sort",
-        description="跟踪器类型，支持 'sort'、'deepsort'、'bytetrack'",
-        example="sort"
-    )
-    max_age: int = Field(
-        30,
-        description="目标消失后保持跟踪的最大帧数",
-        ge=1,
-        le=100,
-        example=30
-    )
-    min_hits: int = Field(
-        3,
-        description="确认为有效目标所需的最小检测次数",
-        ge=1,
-        le=10,
-        example=3
-    )
-    iou_threshold: float = Field(
-        0.3,
-        description="跟踪器的IOU阈值",
-        gt=0,
-        lt=1,
-        example=0.3
-    )
-    visualization: Optional[Dict[str, bool]] = Field(
-        None,
-        description="可视化配置，控制跟踪结果的显示方式",
-        example={
-            "show_tracks": True,    # 显示轨迹
-            "show_track_ids": True  # 显示跟踪ID
-        }
-    )
+
 
 class ImageAnalysisRequest(BaseModel):
     """图片分析请求"""
@@ -292,14 +192,6 @@ class VideoAnalysisRequest(BaseModel):
         None,
         description="检测配置参数"
     )
-    enable_tracking: bool = Field(
-        False,
-        description="是否启用目标跟踪"
-    )
-    tracking_config: Optional[TrackingConfig] = Field(
-        None,
-        description="目标跟踪配置参数，仅在enable_tracking为true时有效"
-    )
 
     model_config = {"protected_namespaces": ()}
 
@@ -342,9 +234,9 @@ class StreamTask(BaseModel):
         False,
         description="是否保存图像"
     )
-    analysis_type: Optional[str] = Field(
+    analysis_type: Optional[Literal["detection"]] = Field(
         "detection",
-        description="分析类型：detection, tracking, segmentation, cross_camera, line_crossing",
+        description="分析类型：仅支持detection（目标检测）",
         example="detection"
     )
     frame_rate: Optional[int] = Field(
@@ -415,6 +307,11 @@ class StreamTask(BaseModel):
     )
 
     model_config = {"protected_namespaces": ()}
+    
+    def model_post_init(self, __context) -> None:
+        """验证分析类型"""
+        if self.analysis_type and self.analysis_type != "detection":
+            raise ValueError("analysis_type目前仅支持'detection'，其他分析类型将在后续版本中提供")
 
 class StreamAnalysisRequest(BaseModel):
     """流分析请求"""

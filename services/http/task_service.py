@@ -470,7 +470,8 @@ class TaskService:
 
     def _build_task_config(self, task: StreamTask, task_id: str = None) -> Dict[str, Any]:
         """
-        构建任务配置
+        构建任务配置 - 重构版
+        仅支持目标检测分析类型
 
         Args:
             task: 任务参数
@@ -487,10 +488,10 @@ class TaskService:
         }
 
         # 构建子任务配置
-        analysis_type = task.analysis_type or "detection"
-        # 如果启用了跟踪，将分析类型设置为 tracking
-        if task.config and hasattr(task.config, "tracking_type") and task.config.tracking_type > 0:
-            analysis_type = "tracking"
+        # 注意：重构后只支持detection类型
+        analysis_type = "detection"
+        if task.analysis_type and task.analysis_type != "detection":
+            normal_logger.warning(f"不支持的分析类型: {task.analysis_type}，使用默认类型: detection")
 
         subtask_config = {
             "type": analysis_type,
@@ -508,6 +509,11 @@ class TaskService:
                 # 跳过私有属性和方法
                 if attr_name.startswith('_') or callable(getattr(task.config, attr_name)):
                     continue
+                
+                # 跳过不再支持的跟踪相关参数
+                if attr_name in ["tracking_type", "max_lost_time", "min_hits", 
+                                "related_cameras", "feature_type"]:
+                    continue
 
                 # 获取属性值
                 attr_value = getattr(task.config, attr_name)
@@ -518,30 +524,6 @@ class TaskService:
 
                 # 添加到分析配置
                 analysis_config[attr_name] = attr_value
-
-            # 检查是否明确指定了使用YOLOE分析器
-            if hasattr(task.config, "use_yoloe_analyzer") and task.config.use_yoloe_analyzer:
-                normal_logger.info(f"任务明确指定使用YOLOE分析器")
-                analysis_config["use_yoloe_analyzer"] = True
-
-            # 跟踪配置
-            if hasattr(task.config, "tracking_type") and task.config.tracking_type > 0:
-                track_config = {
-                    "enabled": True,
-                    "tracker_type": "sort",
-                    "max_age": task.config.max_lost_time if hasattr(task.config, "max_lost_time") else 30,
-                    "min_hits": task.config.min_hits if hasattr(task.config, "min_hits") else 3,
-                    "iou_threshold": task.config.iou_threshold if hasattr(task.config, "iou_threshold") else 0.45
-                }
-
-                # 添加跨摄像头跟踪相关配置
-                if hasattr(task.config, "related_cameras") and task.config.related_cameras:
-                    track_config["related_cameras"] = task.config.related_cameras
-
-                if hasattr(task.config, "feature_type"):
-                    track_config["feature_type"] = task.config.feature_type
-
-                analysis_config["track_config"] = track_config
 
         # 构建结果配置
         result_config = {
@@ -608,7 +590,7 @@ class TaskService:
         task_config = {
             "params": params_config,  # TaskManager期望的params字段
             "task_name": task.task_name if hasattr(task, "task_name") and task.task_name else "",
-            "type": task.analysis_type or "detection"
+            "type": "detection"  # 重构后只支持detection类型
         }
 
         return task_config

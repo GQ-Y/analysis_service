@@ -1,183 +1,116 @@
 """
-分析器工厂模块
-负责创建不同类型的分析器实例
+分析器工厂模块 - 重构版
+负责创建不同类型的分析器实例，使用插件化的自动发现和注册机制
 """
 from typing import Dict, Any, Optional, Union, Type
 
 # 使用新的日志记录器
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from core.analyzer.base_analyzer import (
-    BaseAnalyzer,
-    DetectionAnalyzer,
-    TrackingAnalyzer,
-    SegmentationAnalyzer,
-    CrossCameraTrackingAnalyzer,
-    LineCrossingAnalyzer
-)
-from core.analyzer.detection import YOLODetectionAnalyzer
+from core.analyzer.base_analyzer import BaseAnalyzer
+from core.analyzer.registry import AnalyzerRegistry
+from core.analyzer.discovery import discover_analyzers
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
 
 class AnalyzerFactory:
-    """分析器工厂类"""
+    """分析器工厂类 - 重构版，使用注册表"""
 
-    # 分析类型映射
+    # 是否已初始化
+    _initialized = False
+
+    # 分析类型名称映射表
     ANALYSIS_TYPE_MAP = {
-        "detection": 1,
-        "tracking": 2,
-        "segmentation": 3,
-        "cross_camera_tracking": 4,
-        "line_crossing": 5
+        "detection": "detection"
     }
-
-    # 分析类型名称映射
-    ANALYSIS_TYPE_NAME_MAP = {
-        1: "detection",
-        2: "tracking",
-        3: "segmentation",
-        4: "cross_camera_tracking",
-        5: "line_crossing"
-    }
-
-    # 分析器类映射
-    ANALYZER_CLASS_MAP = {
-        1: YOLODetectionAnalyzer,  # 使用具体的YOLO检测分析器实现
-        2: TrackingAnalyzer,
-        3: SegmentationAnalyzer,
-        4: CrossCameraTrackingAnalyzer,
-        5: LineCrossingAnalyzer
-    }
+    
+    @classmethod
+    def initialize(cls):
+        """初始化工厂，扫描并加载所有可用的分析器"""
+        if not cls._initialized:
+            discover_analyzers()
+            cls._initialized = True
+            
+            # 输出可用的分析器列表
+            analyzers = AnalyzerRegistry.list_analyzers()
+            normal_logger.info(f"可用分析器: {analyzers}")
 
     @classmethod
-    def create_analyzer(cls, analysis_type: Union[int, str], model_code: Optional[str] = None,
-                       engine_type: int = 0, yolo_version: int = 0, **kwargs) -> BaseAnalyzer:
+    def create_analyzer(cls, analysis_type: Union[int, str], model_code: Optional[str] = None, **kwargs) -> BaseAnalyzer:
         """
         创建分析器实例
-
+        
         Args:
-            analysis_type: 分析类型 (1=检测, 2=跟踪, 3=分割, 4=跨摄像头跟踪, 5=越界检测)
-                          或者对应的字符串名称
+            analysis_type: 分析类型，只支持"detection"
             model_code: 模型代码
-            engine_type: 推理引擎类型 (0=PyTorch, 1=ONNX, 2=TensorRT, 3=OpenVINO, 4=Pytron)
-            yolo_version: YOLO版本 (0=v8n, 1=v8s, 2=v8l, 3=v8x, 4=11s, 5=11m, 6=11l)
-            **kwargs: 其他参数
-                - use_yoloe_analyzer: 是否使用YOLOE分析器，默认为False
-
+            **kwargs: 其他参数，将直接传递给分析器构造函数
+                可选参数包括：
+                - analyzer_name: 特定分析器名称，如果提供则使用指定的分析器实现
+                - device: 推理设备
+                - custom_weights_path: 自定义权重路径
+                - half_precision: 是否使用半精度
+                - 以及其他分析器特定参数
+        
         Returns:
             BaseAnalyzer: 分析器实例
-
+            
         Raises:
-            ValueError: 当分析类型不支持时
+            ValueError: 当分析类型不支持或创建分析器失败时
         """
-        # 如果分析类型是字符串，转换为整数
-        if isinstance(analysis_type, str):
-            type_name_lower = analysis_type.lower()
-            analysis_type_id = cls.ANALYSIS_TYPE_MAP.get(type_name_lower)
-            if analysis_type_id is None:
-                exception_logger.error(f"尝试将字符串分析类型转换为ID失败: 未知类型名称 '{analysis_type}'")
-                raise ValueError(f"不支持的分析类型名称: {analysis_type}")
-            analysis_type = analysis_type_id # 更新为整数ID
-
-        # 获取分析器类
-        analyzer_class = cls.ANALYZER_CLASS_MAP.get(analysis_type)
-        if analyzer_class is None:
-            exception_logger.error(f"获取分析器类失败: 未知类型ID {analysis_type}")
-            raise ValueError(f"不支持的分析类型: {analysis_type}")
-
-        # 检查是否明确指定了使用YOLOE分析器
-        use_yoloe_analyzer = kwargs.get("use_yoloe_analyzer", False)
-
-        # 如果明确指定了使用YOLOE分析器，或者根据模型代码判断需要使用YOLOE分析器（向后兼容）
-        if use_yoloe_analyzer or (model_code and "yoloe" in model_code.lower()):
-            normal_logger.info(f"创建YOLOE分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
-                       f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
-            return cls._create_yoloe_analyzer(analysis_type, model_code, engine_type, yolo_version, **kwargs)
-
-        # 创建标准分析器实例
-        normal_logger.info(f"创建标准分析器: 类型={cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, analysis_type)}, "
-                   f"模型={model_code}, 引擎={engine_type}, YOLO版本={yolo_version}")
-
-        return analyzer_class(model_code, engine_type, yolo_version, **kwargs)
-
-    @classmethod
-    def _create_yoloe_analyzer(cls, analysis_type: int, model_code: str,
-                              engine_type: int, yolo_version: int, **kwargs) -> BaseAnalyzer:
-        """
-        创建YOLOE分析器实例
-
-        Args:
-            analysis_type: 分析类型
-            model_code: 模型代码
-            engine_type: 推理引擎类型
-            yolo_version: YOLO版本
-            **kwargs: 其他参数
-
-        Returns:
-            BaseAnalyzer: YOLOE分析器实例
-        """
-        # 导入YOLOE分析器
+        # 确保工厂已初始化
+        if not cls._initialized:
+            cls.initialize()
+            
+        # 如果分析类型是整数ID，转换为字符串(向后兼容)
+        if isinstance(analysis_type, int):
+            if analysis_type != 1:  # 只支持detection (ID=1)
+                raise ValueError(f"不支持的分析类型ID: {analysis_type}，只支持detection(ID=1)")
+            analysis_type = "detection"
+        
+        # 将分析类型转换为标准格式
+        analysis_type = cls.ANALYSIS_TYPE_MAP.get(analysis_type, analysis_type)
+        
+        # 检查分析类型是否为detection
+        if analysis_type != "detection":
+            raise ValueError(f"不支持的分析类型: {analysis_type}，只支持detection")
+        
+        # 获取特定分析器名称（如果提供）
+        analyzer_name = kwargs.pop("analyzer_name", None)
+        
         try:
-            from core.analyzer.yoloe.yoloe_analyzer import (
-                YOLOEDetectionAnalyzer,
-                YOLOESegmentationAnalyzer,
-                YOLOETrackingAnalyzer
-            )
-
-            # 根据分析类型创建YOLOE分析器
-            if analysis_type == 1:  # 检测
-                return YOLOEDetectionAnalyzer(model_code, engine_type, yolo_version, **kwargs)
-            elif analysis_type == 2:  # 跟踪
-                return YOLOETrackingAnalyzer(model_code, engine_type, yolo_version, **kwargs)
-            elif analysis_type == 3:  # 分割
-                return YOLOESegmentationAnalyzer(model_code, engine_type, yolo_version, **kwargs)
-            else:
-                # 对于其他分析类型，使用标准分析器
-                normal_logger.warning(f"YOLOE模型不支持分析类型 {analysis_type}，使用标准分析器")
-                analyzer_class = cls.ANALYZER_CLASS_MAP.get(analysis_type)
-                return analyzer_class(model_code, engine_type, yolo_version, **kwargs)
-
-        except ImportError:
-            exception_logger.warning("YOLOE分析器模块未找到或导入失败，将使用标准分析器。可能原因：相关依赖未安装。")
-            analyzer_class = cls.ANALYZER_CLASS_MAP.get(analysis_type)
-            if not analyzer_class:
-                 exception_logger.error(f"标准分析器也无法为类型 {analysis_type} 创建。")
-                 raise ValueError(f"无法为类型 {analysis_type} 创建任何分析器。")
-            return analyzer_class(model_code, engine_type, yolo_version, **kwargs)
-
+            # 从注册表获取分析器类
+            analyzer_class = AnalyzerRegistry.get_analyzer(analysis_type, analyzer_name)
+            
+            # 创建分析器实例
+            normal_logger.info(f"创建分析器: 类型={analysis_type}, 实现={analyzer_class.__name__}, 模型={model_code}")
+            analyzer = analyzer_class(model_code=model_code, **kwargs)
+            return analyzer
+            
+        except ValueError as e:
+            exception_logger.error(f"创建分析器失败: {e}")
+            raise
+            
+        except Exception as e:
+            exception_logger.exception(f"创建分析器出错: {e}")
+            raise ValueError(f"创建分析器出错: {e}")
+            
     @classmethod
-    def get_analysis_type_name(cls, analysis_type: int) -> str:
+    def list_available_analyzers(cls):
         """
-        获取分析类型名称
-
-        Args:
-            analysis_type: 分析类型ID
-
+        列出所有可用的分析器
+        
         Returns:
-            str: 分析类型名称
+            Dict[str, List[str]]: {分析类型: [分析器名称列表]}
         """
-        return cls.ANALYSIS_TYPE_NAME_MAP.get(analysis_type, f"未知类型({analysis_type})")
+        # 确保工厂已初始化
+        if not cls._initialized:
+            cls.initialize()
+            
+        return AnalyzerRegistry.list_analyzers()
 
-    @classmethod
-    def get_analysis_type_id(cls, analysis_type_name: str) -> int:
-        """
-        获取分析类型ID
-
-        Args:
-            analysis_type_name: 分析类型名称
-
-        Returns:
-            int: 分析类型ID
-
-        Raises:
-            ValueError: 当分析类型名称不支持时
-        """
-        analysis_type_id = cls.ANALYSIS_TYPE_MAP.get(analysis_type_name.lower())
-        if analysis_type_id is None:
-            exception_logger.error(f"从名称获取分析类型ID失败: 未知类型名称 '{analysis_type_name}'")
-            raise ValueError(f"不支持的分析类型名称: {analysis_type_name}")
-        return analysis_type_id
-
-# 创建分析器工厂实例
+# 创建工厂实例
 analyzer_factory = AnalyzerFactory()
+
+# 初始化工厂 - 在导入时自动运行
+AnalyzerFactory.initialize()

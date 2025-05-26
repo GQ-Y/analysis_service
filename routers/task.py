@@ -96,13 +96,7 @@ async def start_task(
             if hasattr(task.config, "image_size") and task.config.image_size:
                 config["image_size"] = task.config.image_size
 
-            # 处理推理引擎
-            if hasattr(task.config, "engine") and task.config.engine is not None:
-                config["engine"] = task.config.engine
 
-            # 处理YOLO版本
-            if hasattr(task.config, "yolo_version") and task.config.yolo_version is not None:
-                config["yolo_version"] = task.config.yolo_version
 
             # 处理自定义权重路径
             if hasattr(task.config, "custom_weights_path") and task.config.custom_weights_path:
@@ -117,9 +111,7 @@ async def start_task(
                 elif task.config.prompt_type == 2 and hasattr(task.config, "visual_prompt") and task.config.visual_prompt:
                     config["visual_prompt"] = task.config.visual_prompt
 
-            # 处理分割
-            if hasattr(task.config, "segmentation"):
-                config["segmentation"] = task.config.segmentation
+
 
             # 处理NMS类型
             if hasattr(task.config, "nms_type") and task.config.nms_type is not None:
@@ -137,31 +129,7 @@ async def start_task(
             if hasattr(task.config, "half_precision"):
                 config["half_precision"] = task.config.half_precision
 
-            # 处理跟踪相关参数
-            if hasattr(task.config, "tracking_type") and task.config.tracking_type is not None:
-                config["tracking_type"] = task.config.tracking_type
 
-            if hasattr(task.config, "max_tracks") and task.config.max_tracks is not None:
-                config["max_tracks"] = task.config.max_tracks
-
-            if hasattr(task.config, "max_lost_time") and task.config.max_lost_time is not None:
-                config["max_lost_time"] = task.config.max_lost_time
-
-            if hasattr(task.config, "feature_type") and task.config.feature_type is not None:
-                config["feature_type"] = task.config.feature_type
-
-            if hasattr(task.config, "related_cameras") and task.config.related_cameras:
-                config["related_cameras"] = task.config.related_cameras
-
-            # 处理计数和速度估计
-            if hasattr(task.config, "counting_enabled"):
-                config["counting_enabled"] = task.config.counting_enabled
-
-            if hasattr(task.config, "time_threshold") and task.config.time_threshold is not None:
-                config["time_threshold"] = task.config.time_threshold
-
-            if hasattr(task.config, "speed_estimation"):
-                config["speed_estimation"] = task.config.speed_estimation
 
             if hasattr(task.config, "object_filter") and task.config.object_filter:
                 config["object_filter"] = task.config.object_filter
@@ -284,13 +252,7 @@ async def start_batch_tasks(
                 if hasattr(task.config, "image_size") and task.config.image_size:
                     config["image_size"] = task.config.image_size
 
-                # 处理推理引擎
-                if hasattr(task.config, "engine") and task.config.engine is not None:
-                    config["engine"] = task.config.engine
 
-                # 处理YOLO版本
-                if hasattr(task.config, "yolo_version") and task.config.yolo_version is not None:
-                    config["yolo_version"] = task.config.yolo_version
 
                 # 处理自定义权重路径
                 if hasattr(task.config, "custom_weights_path") and task.config.custom_weights_path:
@@ -305,9 +267,7 @@ async def start_batch_tasks(
                     elif task.config.prompt_type == 2 and hasattr(task.config, "visual_prompt") and task.config.visual_prompt:
                         config["visual_prompt"] = task.config.visual_prompt
 
-                # 处理分割
-                if hasattr(task.config, "segmentation"):
-                    config["segmentation"] = task.config.segmentation
+
 
                 # 处理NMS类型
                 if hasattr(task.config, "nms_type") and task.config.nms_type is not None:
@@ -325,31 +285,7 @@ async def start_batch_tasks(
                 if hasattr(task.config, "half_precision"):
                     config["half_precision"] = task.config.half_precision
 
-                # 处理跟踪相关参数
-                if hasattr(task.config, "tracking_type") and task.config.tracking_type is not None:
-                    config["tracking_type"] = task.config.tracking_type
 
-                if hasattr(task.config, "max_tracks") and task.config.max_tracks is not None:
-                    config["max_tracks"] = task.config.max_tracks
-
-                if hasattr(task.config, "max_lost_time") and task.config.max_lost_time is not None:
-                    config["max_lost_time"] = task.config.max_lost_time
-
-                if hasattr(task.config, "feature_type") and task.config.feature_type is not None:
-                    config["feature_type"] = task.config.feature_type
-
-                if hasattr(task.config, "related_cameras") and task.config.related_cameras:
-                    config["related_cameras"] = task.config.related_cameras
-
-                # 处理计数和速度估计
-                if hasattr(task.config, "counting_enabled"):
-                    config["counting_enabled"] = task.config.counting_enabled
-
-                if hasattr(task.config, "time_threshold") and task.config.time_threshold is not None:
-                    config["time_threshold"] = task.config.time_threshold
-
-                if hasattr(task.config, "speed_estimation"):
-                    config["speed_estimation"] = task.config.speed_estimation
 
                 if hasattr(task.config, "object_filter") and task.config.object_filter:
                     config["object_filter"] = task.config.object_filter

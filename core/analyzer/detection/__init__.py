@@ -1,6 +1,6 @@
 """
-目标检测子模块
-提供基于YOLO和YOLOE的对象检测功能
+目标检测子模块 - 重构版
+提供基于YOLO的对象检测功能
 """
 
 from .yolo_detector import YOLODetector
