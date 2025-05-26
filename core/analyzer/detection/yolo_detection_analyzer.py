@@ -50,9 +50,9 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
         self.nested_detection = kwargs.get("nested_detection", False)
         
         # 检测统计
-        self.detection_count = 0
-        self.total_detection_time = 0
-        self.frame_count = 0
+        self._detection_count = 0
+        self._total_detection_time = 0
+        self._frame_count = 0
         
         normal_logger.info(f"YOLO检测分析器初始化: 置信度={self.confidence}, IoU阈值={self.iou_threshold}")
         if self.nested_detection:
@@ -79,68 +79,93 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
             exception_logger.exception(f"YOLO检测分析器加载模型失败: {e}")
             return False
 
-    async def detect(self, image: np.ndarray, **kwargs) -> Dict[str, Any]:
+    async def detect(self, frame: np.ndarray, **kwargs) -> Dict[str, Any]:
         """
         检测图像中的目标
-        
+
         Args:
-            image: 输入图像
-            **kwargs: 其他参数，可覆盖初始化时的参数
-                - confidence: 置信度阈值
-                - iou_threshold: IoU阈值
-                - max_detections: 最大检测目标数
-                - classes: 类别列表
-                - nested_detection: 是否启用嵌套检测
-                
+            frame: 输入图像
+            **kwargs: 其他参数，包括：
+                - confidence: 置信度阈值，覆盖初始化时设置的值
+                - iou_threshold: IoU阈值，覆盖初始化时设置的值
+                - max_detections: 最大检测目标数，覆盖初始化时设置的值
+                - classes: 类别列表，限制只检测特定类别
+                - return_image: 是否返回标注后的图像
+
         Returns:
             Dict[str, Any]: 检测结果
         """
+        # 记录开始时间，用于性能统计
         start_time = time.time()
+        frame_count = self._frame_count + 1
         
-        # 更新参数（如果提供）
+        # 输出更详细的日志
+        normal_logger.info(f"开始检测第{frame_count}帧，帧大小: {frame.shape}")
+        
+        # 获取参数
         confidence = kwargs.get("confidence", self.confidence)
         iou_threshold = kwargs.get("iou_threshold", self.iou_threshold)
         max_detections = kwargs.get("max_detections", self.max_detections)
-        classes = kwargs.get("classes", self.classes)
-        nested_detection = kwargs.get("nested_detection", self.nested_detection)
         
+        # 检查模型是否已加载
+        if not self.loaded:
+            normal_logger.warning(f"模型未加载，无法执行检测")
+            return {
+                "success": False,
+                "error": "模型未加载",
+                "detections": [],
+                "stats": {
+                    "detection_time": time.time() - start_time,
+                    "average_time": time.time() - start_time,
+                    "detection_count": frame_count
+                }
+            }
+        
+        # 使用检测器进行检测
         try:
-            # 使用检测器执行检测
-            result = await self.detector.detect(
-                image, 
+            # 调用YOLO检测器的detect方法
+            detect_result = await self.detector.detect(
+                frame,
                 confidence=confidence,
                 iou_threshold=iou_threshold,
                 max_detections=max_detections,
-                classes=classes
+                **kwargs
             )
             
-            # 统计
-            self.detection_count += 1
-            elapsed_time = time.time() - start_time
-            self.total_detection_time += elapsed_time
+            # 检查检测结果
+            if not detect_result["success"]:
+                normal_logger.warning(f"检测失败: {detect_result.get('error', '未知错误')}")
+                return detect_result
+                
+            # 获取检测结果
+            detections = detect_result["detections"]
             
-            # 如果启用嵌套检测，处理嵌套关系
-            if nested_detection and "detections" in result:
-                result["detections"] = self._process_nested_detections(result["detections"])
-                
-            # 添加性能信息
-            result["stats"] = {
-                "detection_time": elapsed_time,
-                "average_time": self.total_detection_time / self.detection_count if self.detection_count > 0 else 0,
-                "detection_count": self.detection_count,
-            }
-                
-            return result
+            # 添加检测结果到统计信息
+            self._detection_count = frame_count
+            self._total_detection_time += time.time() - start_time
+            
+            # 记录检测统计信息
+            detect_result["stats"]["detection_time"] = time.time() - start_time
+            detect_result["stats"]["average_time"] = self._total_detection_time / self._detection_count
+            detect_result["stats"]["detection_count"] = self._detection_count
+            
+            # 输出检测结果
+            normal_logger.info(f"成功检测第{frame_count}帧，耗时: {time.time() - start_time:.4f}秒，检测到{len(detections)}个目标")
+            if len(detections) > 0:
+                normal_logger.info(f"检测结果: {detections[:3] if len(detections) > 3 else detections}")
+            
+            return detect_result
             
         except Exception as e:
-            exception_logger.exception(f"YOLO检测分析器检测失败: {e}")
+            exception_logger.exception(f"YOLO检测分析器执行检测时出错: {e}")
             return {
                 "success": False,
                 "error": str(e),
                 "detections": [],
                 "stats": {
                     "detection_time": time.time() - start_time,
-                    "error": str(e)
+                    "average_time": self._total_detection_time / (self._detection_count or 1),
+                    "detection_count": self._detection_count
                 }
             }
 
@@ -157,14 +182,14 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
             Dict[str, Any]: 处理结果
         """
         # 更新帧计数
-        self.frame_count += 1
+        self._frame_count += 1
         
         # 执行检测
         result = await self.detect(frame, **kwargs)
         
         # 添加帧信息
         result["frame_index"] = frame_index
-        result["frame_count"] = self.frame_count
+        result["frame_count"] = self._frame_count
         
         return result
 

@@ -165,7 +165,7 @@ class ZLMVideoStream(BaseVideoStream):
             normal_logger.info(f"正在停止流: {self.stream_id}")
 
             # 1. 首先标记状态
-            self._status = StreamStatus.STOPPING
+            self._status = StreamStatus.STOPPED
             self._is_running = False
 
             # 2. 取消所有任务

@@ -201,6 +201,7 @@ class YOLODetector:
             Dict[str, Any]: 检测结果
         """
         if self.model is None:
+            normal_logger.warning("YOLO检测器模型未加载，无法进行检测")
             return {"success": False, "error": "模型未加载", "detections": []}
             
         # 获取参数
@@ -212,6 +213,8 @@ class YOLODetector:
         
         # 记录时间
         start_time = time.time()
+        
+        normal_logger.info(f"开始执行YOLO检测，图像大小：{image.shape}，参数：conf={confidence}, iou={iou_threshold}, max_det={max_detections}")
         
         try:
             # 进行推理
@@ -260,6 +263,8 @@ class YOLODetector:
                 
             # 计算总时间
             total_time = time.time() - start_time
+            
+            normal_logger.info(f"YOLO检测完成，耗时：{total_time:.4f}秒，检测到{len(detections)}个目标")
             
             # 构建返回结果
             result_dict = {

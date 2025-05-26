@@ -834,3 +834,56 @@ class TaskProcessor:
         except Exception as e:
             normal_logger.error(f"结果处理器发生错误: {str(e)}")
             normal_logger.error(traceback.format_exc())
+
+    async def process_frame(self, task_id: str, frame: np.ndarray, frame_index: int) -> Dict[str, Any]:
+        """
+        处理单帧图像
+        
+        Args:
+            task_id: 任务ID
+            frame: 图像帧
+            frame_index: 帧索引
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        normal_logger.info(f"处理任务 {task_id} 的第 {frame_index} 帧，帧大小: {frame.shape}")
+        
+        # 获取任务参数
+        task_params = self.get_task_params(task_id)
+        if not task_params:
+            normal_logger.warning(f"找不到任务参数: {task_id}")
+            return {"success": False, "error": "找不到任务参数"}
+            
+        # 获取分析器
+        analyzer = self.get_analyzer(task_id)
+        if not analyzer:
+            normal_logger.warning(f"找不到分析器: {task_id}")
+            return {"success": False, "error": "找不到分析器"}
+            
+        # 检查模型加载状态
+        normal_logger.info(f"分析器状态: {analyzer.model_info}")
+        
+        # 执行分析
+        try:
+            start_time = time.time()
+            result = await analyzer.process_video_frame(frame, frame_index)
+            process_time = time.time() - start_time
+            
+            # 添加处理时间
+            if "stats" not in result:
+                result["stats"] = {}
+            result["stats"]["process_time"] = process_time
+            
+            # 输出分析结果摘要
+            detections_count = len(result.get("detections", []))
+            normal_logger.info(f"任务 {task_id} 第 {frame_index} 帧分析完成，检测到 {detections_count} 个目标，耗时: {process_time:.4f}秒")
+            
+            if detections_count > 0:
+                normal_logger.info(f"检测结果示例: {result.get('detections', [])[:2]}")
+            
+            return result
+            
+        except Exception as e:
+            exception_logger.exception(f"处理帧时出错: {e}")
+            return {"success": False, "error": str(e)}
