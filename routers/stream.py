@@ -43,7 +43,10 @@ async def get_streams() -> BaseResponse:
             success=True,
             message="获取所有流信息成功",
             code=200,
-            data=streams
+            data={
+                "streams": streams,
+                "total": len(streams)
+            }
         )
     except Exception as e:
         exception_logger.exception(f"获取所有流信息失败: {str(e)}")

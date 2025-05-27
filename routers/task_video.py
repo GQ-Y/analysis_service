@@ -1,6 +1,6 @@
 """
 任务视频编码路由
-提供任务的视频编码功能，支持MP4和FLV格式
+提供任务的视频直播流功能，支持RTMP、HLS、FLV格式
 """
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response, Query
 from fastapi.responses import FileResponse, HTMLResponse
@@ -24,7 +24,7 @@ exception_logger = get_exception_logger(__name__)
 # 创建路由
 router = APIRouter(
     prefix="/api/v1/tasks",
-    tags=["视频编码"],
+    tags=["视频直播流"],
     responses={404: {"description": "Not found"}},
 )
 
@@ -42,22 +42,22 @@ async def get_video_encoder_service(request: Request) -> VideoEncoderService:
         request.app.state.video_encoder_service = VideoEncoderService()
     return request.app.state.video_encoder_service
 
-@router.post("/video", response_model=BaseResponse, summary="开启/关闭实时分析视频编码")
-async def toggle_task_video_encoding(
+@router.post("/video", response_model=BaseResponse, summary="启动实时分析视频直播流")
+async def start_task_video_stream(
     encoding_request: VideoEncodingRequest,
     task_service: TaskService = Depends(get_task_service),
     video_encoder_service: VideoEncoderService = Depends(get_video_encoder_service)
 ) -> BaseResponse:
     """
-    开启或关闭实时分析视频编码
+    启动实时分析视频直播流
     
-    通过任务ID开启或关闭实时分析视频编码功能。开启后，系统将实时分析的结果和视频编码为MP4或FLV格式，
-    并返回一个可以直接下载的URL地址。
+    使用ffmpeg将分析结果和识别目标合成，然后通过ZLMediaKit构建直播流播放地址。
+    系统将实时分析的结果绘制在视频上，并推送到ZLM服务器作为直播流。
     
     支持的参数包括：
     - task_id: 任务ID，必填
     - enable_encoding: 是否开启编码，默认为true
-    - format: 视频格式，支持"mp4"或"flv"，默认为"mp4"
+    - format: 视频格式，支持"rtmp"、"hls"、"flv"，默认为"rtmp"
     - quality: 视频质量(1-100)，默认80
     - width: 视频宽度，为空则使用原始宽度
     - height: 视频高度，为空则使用原始高度
@@ -67,7 +67,7 @@ async def toggle_task_video_encoding(
         encoding_request: 编码请求参数
         
     Returns:
-        BaseResponse: 响应结果，包含视频URL
+        BaseResponse: 响应结果，包含直播流播放地址
     """
     request_id = str(uuid.uuid4())
     try:
@@ -87,11 +87,11 @@ async def toggle_task_video_encoding(
         
         # 根据请求开启或关闭编码
         if encoding_request.enable_encoding:
-            # 开启编码
-            result = await video_encoder_service.start_encoding(
+            # 开启直播流编码，使用ZLM作为流媒体服务器
+            result = await video_encoder_service.start_live_stream(
                 task_id=encoding_request.task_id,
                 task_manager=task_manager,
-                format=encoding_request.format,
+                format=encoding_request.format or "rtmp",  # 默认使用RTMP格式
                 quality=encoding_request.quality,
                 width=encoding_request.width,
                 height=encoding_request.height,
@@ -112,16 +112,17 @@ async def toggle_task_video_encoding(
                 requestId=request_id,
                 path="/api/v1/tasks/video",
                 success=True,
-                message="视频编码已开启",
+                message="视频直播流已启动",
                 code=200,
                 data={
                     "task_id": encoding_request.task_id,
-                    "video_url": result["video_url"]
+                    "stream_info": result["stream_info"],
+                    "play_urls": result["play_urls"]
                 }
             )
         else:
-            # 关闭编码
-            result = await video_encoder_service.stop_encoding(encoding_request.task_id)
+            # 关闭直播流编码
+            result = await video_encoder_service.stop_live_stream(encoding_request.task_id)
             
             if not result["success"]:
                 return BaseResponse(
@@ -137,60 +138,18 @@ async def toggle_task_video_encoding(
                 requestId=request_id,
                 path="/api/v1/tasks/video",
                 success=True,
-                message="视频编码已关闭",
+                message="视频直播流已关闭",
                 code=200,
                 data=None
             )
     
     except Exception as e:
-        exception_logger.exception(f"处理视频编码请求失败: {str(e)}")
+        exception_logger.exception(f"处理视频直播流请求失败: {str(e)}")
         return BaseResponse(
             requestId=request_id,
             path="/api/v1/tasks/video",
             success=False,
-            message=f"处理视频编码请求失败: {str(e)}",
+            message=f"处理视频直播流请求失败: {str(e)}",
             code=500,
             data=None
         )
-
-@router.get("/video/{encoding_id}/{file_name}", response_model=None, summary="获取编码视频文件")
-async def get_video_file(
-    encoding_id: str = Path(..., description="编码ID"),
-    file_name: str = Path(..., description="文件名"),
-    video_encoder_service: VideoEncoderService = Depends(get_video_encoder_service)
-) -> FileResponse:
-    """
-    获取编码视频文件
-    
-    返回编码后的视频文件（MP4或FLV）。
-    
-    Args:
-        encoding_id: 编码ID
-        file_name: 文件名
-        
-    Returns:
-        FileResponse: 视频文件响应
-    """
-    try:
-        # 构建文件路径
-        file_path = os.path.join(video_encoder_service.output_base_dir, encoding_id, file_name)
-        
-        # 检查文件是否存在
-        if not os.path.exists(file_path):
-            raise HTTPException(status_code=404, detail=f"视频文件不存在: {file_name}")
-        
-        # 确定内容类型
-        content_type = "video/mp4" if file_name.endswith(".mp4") else "video/x-flv"
-        
-        # 返回文件
-        return FileResponse(
-            path=file_path,
-            media_type=content_type,
-            filename=file_name
-        )
-    
-    except HTTPException:
-        raise
-    except Exception as e:
-        exception_logger.exception(f"获取视频文件失败: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"获取视频文件失败: {str(e)}")

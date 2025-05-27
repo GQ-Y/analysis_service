@@ -163,6 +163,41 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
                 normal_logger.info(f"YOLODetectionAnalyzer: 部分检测结果: {log_dets}")
             
             # 直接返回从 YOLODetector 获得的完整结果，其中已包含详细信息
+            # 如果启用了嵌套检测，则处理嵌套关系
+            if self.nested_detection and detector_result.get("detections"):
+                normal_logger.info(f"YOLODetectionAnalyzer: 启用嵌套检测，处理 {len(detector_result['detections'])} 个检测结果")
+                try:
+                    # 转换检测结果格式用于嵌套检测处理
+                    detections_for_nested = []
+                    for det in detector_result["detections"]:
+                        # 使用像素坐标bbox进行嵌套检测
+                        if "bbox_pixels" in det:
+                            bbox = det["bbox_pixels"]  # [x1, y1, x2, y2]
+                            nested_det = {
+                                "bbox": bbox,
+                                "class_id": det.get("class_id", 0),
+                                "class_name": det.get("class_name", "unknown"),
+                                "confidence": det.get("confidence", 0),
+                                "id": det.get("id", 0)
+                            }
+                            detections_for_nested.append(nested_det)
+                    
+                    # 处理嵌套检测关系
+                    if detections_for_nested:
+                        processed_nested = self._process_nested_detections(detections_for_nested)
+                        
+                        # 将嵌套关系信息合并回原始检测结果
+                        for i, det in enumerate(detector_result["detections"]):
+                            if i < len(processed_nested):
+                                det["contains"] = processed_nested[i].get("contains", [])
+                                det["contained_by"] = processed_nested[i].get("contained_by", [])
+                                
+                        normal_logger.info(f"YOLODetectionAnalyzer: 嵌套检测处理完成")
+                    
+                except Exception as e:
+                    exception_logger.exception(f"YOLODetectionAnalyzer: 嵌套检测处理失败: {str(e)}")
+                    # 嵌套检测失败不影响主要检测结果
+            
             return detector_result
             
         except Exception as e:

@@ -162,6 +162,11 @@ class TaskProcessor:
             result_handler = asyncio.create_task(self._handle_results(task_id, result_queue))
             self.result_handlers[task_id] = result_handler
 
+            # **重要：更新TaskManager中的任务状态为PROCESSING**
+            if self.task_manager:
+                self.task_manager.update_task_status(task_id, TaskStatus.PROCESSING)
+                normal_logger.info(f"TaskManager中任务状态已更新为PROCESSING: {task_id}")
+
             normal_logger.info(f"流处理进程已启动: {task_id}")
             method_end_time = time.perf_counter()
             normal_logger.info(f"TaskProcessor.start_stream_analysis RETURNED (success): task_id={task_id}, 耗时: {(method_end_time - method_start_time) * 1000:.2f} ms")
@@ -220,6 +225,11 @@ class TaskProcessor:
             if task_id in self.running_tasks:
                 self.running_tasks[task_id]["status"] = TaskStatus.STOPPED
                 self.running_tasks[task_id]["end_time"] = time.time()
+
+            # **重要：更新TaskManager中的任务状态为STOPPED**
+            if self.task_manager:
+                self.task_manager.update_task_status(task_id, TaskStatus.STOPPED)
+                normal_logger.info(f"TaskManager中任务状态已更新为STOPPED: {task_id}")
 
             # 清理资源
             if task_id in self.stop_events:
