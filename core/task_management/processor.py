@@ -40,11 +40,11 @@ test_logger = get_test_logger()
 def _format_callback_data(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     统一的回调数据格式化函数
-    
+
     Args:
         task_id: 任务ID
         payload: 回调数据载荷
-        
+
     Returns:
         Dict[str, Any]: 格式化后的回调数据
     """
@@ -488,7 +488,7 @@ class TaskProcessor:
             if not isinstance(analysis_interval, int) or analysis_interval < 1:
                 normal_logger.warning(f"任务 {task_id}: 无效的 analysis_interval 值 '{analysis_interval}'，将使用默认值 1。")
                 analysis_interval = 1
-            
+
             if analysis_interval > 1:
                 normal_logger.info(f"任务 {task_id}: 使用分析间隔: {analysis_interval} (处理第 1, {1 + analysis_interval}, {1 + 2 * analysis_interval}... 帧)")
             else:
@@ -505,7 +505,7 @@ class TaskProcessor:
                     # 从帧队列获取帧，增加超时时间
                     frame_data = await asyncio.wait_for(frame_queue.get(), timeout=15.0)
                     stream_frame_counter += 1 # 递增流帧计数器
-                    
+
                     if frame_data and isinstance(frame_data, tuple) and len(frame_data) >= 2:
                         frame, timestamp = frame_data[:2]
                     else:
@@ -535,9 +535,9 @@ class TaskProcessor:
                     if analyzer:
                         try:
                             analysis_data = await analyzer.process_video_frame(
-                                frame, 
+                                frame,
                                 frame_index=analyzed_frame_counter, # 使用实际分析的帧计数
-                                **analyzer_kwargs 
+                                **analyzer_kwargs
                             )
                         except Exception as analysis_exc:
                             normal_logger.error(f"任务 {task_id}: 帧 {analyzed_frame_counter} (流帧 {stream_frame_counter}) 分析时发生错误: {analysis_exc}")
@@ -545,23 +545,23 @@ class TaskProcessor:
                             analysis_data = {
                                 "success": False,
                                 "error": f"帧分析错误: {str(analysis_exc)}",
-                                "detections": [], 
+                                "detections": [],
                                 "frame_index": analyzed_frame_counter, # 保持帧号一致性
                                 "stream_frame_index": stream_frame_counter, # 添加流帧号以供调试
                                 "task_id": task_id,
-                                "timestamp": time.time() 
+                                "timestamp": time.time()
                             }
                     else:
                         analysis_data = {
-                            "success": True, 
+                            "success": True,
                             "task_id": task_id,
-                            "timestamp": timestamp, 
+                            "timestamp": timestamp,
                             "frame_index": analyzed_frame_counter, # 实际送去"分析"的帧号
                             "stream_frame_index": stream_frame_counter, # 原始流中的帧号
                             "frame_shape": frame.shape if frame is not None else None,
                             "message": "成功获取帧 (分析器未配置或初始化失败)"
                         }
-                    
+
                     result_queue.put(analysis_data)
 
                 except asyncio.TimeoutError:
@@ -705,7 +705,7 @@ class TaskProcessor:
                                 continue
 
                             # 获取类别和置信度
-                            class_name = det.get("class_name", "未知")
+                            class_name = det.get("class_name", "unknown")
                             confidence = float(det.get("confidence", 0))
 
                             # 绘制边界框
@@ -763,7 +763,7 @@ class TaskProcessor:
                                 continue
 
                             # 获取跟踪ID
-                            track_id = track.get("track_id", "未知")
+                            track_id = track.get("track_id", "unknown")
 
                             # 绘制边界框
                             cv2.rectangle(preview_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
@@ -1000,7 +1000,7 @@ class TaskProcessor:
                             # 为Socket回调准备专门的payload
                             # Socket回调的策略：总是包含完整的数据，包括base64图像（如果可用）
                             socket_payload = callback_json.copy()
-                            
+
                             # Socket回调总是包含base64图像数据（如果原始数据可用），不受保存设置影响
                             if annotated_image_b64_data:
                                 socket_payload["annotated_image_base64"] = annotated_image_b64_data
@@ -1018,12 +1018,55 @@ class TaskProcessor:
                                 normal_logger.info(f"任务 {task_id}: Socket回调数据发送成功。")
                             else:
                                 normal_logger.warning(f"任务 {task_id}: Socket回调数据发送失败。")
+
                         elif socket_manager and socket_manager._client and not socket_manager._client.connected:
                             normal_logger.warning(f"任务 {task_id}: Socket客户端已初始化但未连接，不发送Socket回调。")
                         elif not socket_manager or not socket_manager._client:
                              normal_logger.warning(f"任务 {task_id}: Socket管理器或客户端未初始化，不发送Socket回调。")
                     except Exception as e_socket_cb:
                         exception_logger.error(f"任务 {task_id}: 发送Socket回调时发生错误: {e_socket_cb}")
+
+                # --- 通知视频编码服务更新分析结果（独立于Socket回调）---
+                try:
+                    from services.video.video_service import VideoService
+                    
+                    # 尝试获取全局视频服务实例
+                    video_service = None
+                    
+                    # 方法1：尝试从task_manager获取
+                    if hasattr(self.task_manager, 'app_state') and hasattr(self.task_manager.app_state, 'video_service'):
+                        video_service = self.task_manager.app_state.video_service
+                        normal_logger.debug(f"使用task_manager中的video_service实例: {task_id}")
+                    
+                    # 方法2：尝试从应用全局状态获取（通过导入）
+                    if not video_service:
+                        try:
+                            from app import app_state
+                            if hasattr(app_state, 'video_service'):
+                                video_service = app_state.video_service
+                                normal_logger.debug(f"使用app_state中的video_service实例: {task_id}")
+                        except ImportError:
+                            pass
+                    
+                    # 方法3：创建临时实例
+                    if not video_service:
+                        video_service = VideoService()
+                        normal_logger.debug(f"创建临时video_service实例: {task_id}")
+                    
+                    # 构建分析结果数据
+                    analysis_result = {
+                        "task_id": task_id,
+                        "frame_index": raw_result.get("frame_index", 0),
+                        "detections": raw_result.get("detections", []),
+                        "tracked_objects": raw_result.get("tracked_objects", []),
+                        "timestamp": raw_result.get("timestamp", time.time())
+                    }
+                    video_service.update_analysis_result(task_id, analysis_result)
+                    normal_logger.info(f"已通知视频编码服务更新分析结果: {task_id}, 检测数量: {len(analysis_result.get('detections', []))}")
+                except Exception as e_video_encoder:
+                    normal_logger.warning(f"通知视频编码服务时出错: {str(e_video_encoder)}")
+                    import traceback
+                    normal_logger.warning(f"详细错误信息: {traceback.format_exc()}")
 
                 # --- 原有的HTTP回调逻辑 ---
                 if enable_callback_flag and callback_url_from_config:

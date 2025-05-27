@@ -191,11 +191,11 @@ async def lifespan(app: FastAPI):
 
             from services.http.task_service import TaskService
             from services.analysis_service import AnalysisService
-            from services.http.video_encoder_service import VideoEncoderService
+            from services.video.video_service import VideoService
 
             app.state.task_service = TaskService(task_manager)
             app.state.analysis_service = AnalysisService()
-            app.state.video_encoder_service = VideoEncoderService()
+            app.state.video_service = VideoService()
 
             normal_logger.info("任务管理器和服务初始化成功。")
 

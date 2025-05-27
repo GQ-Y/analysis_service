@@ -7,6 +7,7 @@ aiohttp>=3.8.0
 PyYAML>=5.4.0
 opencv-python>=4.8.1.78
 numpy>=1.26.2
+Pillow>=8.0.0
 ultralytics>=8.0.0,<8.4.0
 redis[hiredis]>=5.0.1
 aioredis>=2.0.0
