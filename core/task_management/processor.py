@@ -37,6 +37,23 @@ normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
 test_logger = get_test_logger()
 
+def _format_callback_data(task_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    统一的回调数据格式化函数
+    
+    Args:
+        task_id: 任务ID
+        payload: 回调数据载荷
+        
+    Returns:
+        Dict[str, Any]: 格式化后的回调数据
+    """
+    return {
+        "task_id": task_id,
+        "timestamp": datetime.now().isoformat(),
+        "data": payload
+    }
+
 class TaskProcessor:
     """任务处理器"""
 
@@ -971,20 +988,22 @@ class TaskProcessor:
                         socket_manager = await get_socket_manager()
                         if socket_manager and socket_manager._client and socket_manager._client.connected:
                             # 为Socket回调准备专门的payload
+                            # Socket回调的策略：总是包含完整的数据，包括base64图像（如果可用）
                             socket_payload = callback_json.copy()
-                            if annotated_image_b64_data: # 如果原始的base64数据存在
+                            
+                            # Socket回调总是包含base64图像数据（如果原始数据可用），不受保存设置影响
+                            if annotated_image_b64_data:
                                 socket_payload["annotated_image_base64"] = annotated_image_b64_data
-                            # 即使图像或JSON已保存，Socket回调仍然包含base64 (如果原始数据存在)
-
-                            normal_logger.info(f"任务 {task_id}: 准备通过Socket发送回调数据 (将包含base64图像，如果可用)。")
-                            # 添加更详细的 socket_payload 诊断日志
-                            if "annotated_image_base64" in socket_payload and socket_payload["annotated_image_base64"]:
-                                normal_logger.info(f"任务 {task_id} [Socket DIAGNOSTIC]: socket_payload 包含 annotated_image_base64。长度: {len(socket_payload['annotated_image_base64'])}")
+                                normal_logger.info(f"任务 {task_id} [Socket]: 包含base64图像数据，长度: {len(annotated_image_b64_data)}")
                             else:
-                                normal_logger.warning(f"任务 {task_id} [Socket DIAGNOSTIC]: socket_payload 未能包含有效的 annotated_image_base64。annotated_image_base64 原始变量是否有值: {bool(annotated_image_b64_data)}")
-                                normal_logger.debug(f"任务 {task_id} [Socket DIAGNOSTIC]: socket_payload keys: {list(socket_payload.keys())}")
+                                normal_logger.info(f"任务 {task_id} [Socket]: 原始分析结果中无base64图像数据")
 
-                            socket_send_success = await socket_manager.send_socket_callback(socket_payload)
+                            # 使用统一的格式化函数，确保与HTTP回调格式一致
+                            formatted_socket_data = _format_callback_data(task_id, socket_payload)
+
+                            normal_logger.info(f"任务 {task_id}: 准备通过Socket发送回调数据 (总是包含完整数据)。")
+
+                            socket_send_success = await socket_manager.send_socket_callback(formatted_socket_data)
                             if socket_send_success:
                                 normal_logger.info(f"任务 {task_id}: Socket回调数据发送成功。")
                             else:
@@ -1003,10 +1022,12 @@ class TaskProcessor:
                         normal_logger.warning(f"任务 {task_id}: enable_callback is true, but no valid URLs found in callback_url string: '{callback_url_from_config}'")
                     else:
                         for single_url in urls_to_send:
+                            # HTTP回调也使用统一的格式化函数
+                            formatted_http_data = _format_callback_data(task_id, final_callback_payload)
                             await callback_service.enqueue_callback(
                                 task_id=task_id,
                                 url=single_url,
-                                payload=final_callback_payload,
+                                payload=formatted_http_data,
                                 callback_interval_seconds=task_callback_interval
                             )
                             normal_logger.info(f"任务 {task_id}: 已为URL '{single_url}' 创建回调任务。")

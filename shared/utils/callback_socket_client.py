@@ -121,11 +121,23 @@ class CallbackSocketClient:
 
         try:
             json_data = json.dumps(data, ensure_ascii=False)
+            
+            # 添加调试日志
+            self.logger.info(f"准备发送JSON数据，长度: {len(json_data)} 字符")
+            self.logger.debug(f"JSON数据包含的顶层字段: {list(data.keys())}")
+            if 'data' in data:
+                self.logger.debug(f"data字段包含的子字段: {list(data['data'].keys())}")
+            
+            # 添加换行符作为消息分隔符，便于接收端识别消息边界
+            message_bytes = (json_data + '\n').encode('utf-8')
+            
+            self.logger.info(f"编码后的消息长度: {len(message_bytes)} 字节")
+
             # Use socket.sendall for ensuring all data is sent, run in executor
             loop = asyncio.get_running_loop()
             # Set a timeout for sending data
             self.socket.settimeout(settings.SOCKET_SEND_TIMEOUT)
-            await loop.run_in_executor(None, self.socket.sendall, json_data.encode('utf-8'))
+            await loop.run_in_executor(None, self.socket.sendall, message_bytes)
             self.socket.settimeout(None) # Reset timeout
 
             # Note: Original code expected a response. 
@@ -135,7 +147,7 @@ class CallbackSocketClient:
             # response_data = json.loads(response.decode('utf-8'))
             # self.logger.info(f"✅ 回调数据发送成功，服务器响应: {response_data}")
 
-            self.logger.info(f"✅ 回调数据发送成功。")
+            self.logger.info(f"✅ 回调数据发送成功，已发送 {len(message_bytes)} 字节。")
             return True
 
         except socket.timeout:

@@ -103,7 +103,7 @@ class CallbackService:
 
         Args:
             task_id: 任务ID
-            data: 回调数据
+            data: 回调数据（已经格式化的数据，包含task_id、timestamp和data字段）
             object_id: 对象ID，用于对象级回调间隔控制
 
         Returns:
@@ -160,12 +160,8 @@ class CallbackService:
                 self.last_callback_times[task_id] = {}
             self.last_callback_times[task_id]["default"] = current_time
         
-        # 准备回调数据
-        callback_data = {
-            "task_id": task_id,
-            "timestamp": datetime.now().isoformat(),
-            "data": data
-        }
+        # 直接使用传入的数据，因为它已经是格式化后的数据
+        callback_data = data
         
         # 发送回调
         try:
