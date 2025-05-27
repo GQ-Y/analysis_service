@@ -192,10 +192,26 @@ async def lifespan(app: FastAPI):
             from services.http.task_service import TaskService
             from services.analysis_service import AnalysisService
             from services.video.video_service import VideoService
+            from shared.utils.app_state import app_state_manager
 
-            app.state.task_service = TaskService(task_manager)
-            app.state.analysis_service = AnalysisService()
-            app.state.video_service = VideoService()
+            # 初始化全局应用状态管理器
+            app_state_manager.initialize()
+            
+            # 创建服务实例
+            task_service = TaskService(task_manager)
+            analysis_service = AnalysisService()
+            video_service = VideoService()
+            
+            # 注册到FastAPI应用状态（向后兼容）
+            app.state.task_service = task_service
+            app.state.analysis_service = analysis_service
+            app.state.video_service = video_service
+            
+            # 注册到全局应用状态管理器
+            app_state_manager.register_task_manager(task_manager)
+            app_state_manager.register_video_service(video_service)
+            app_state_manager.register_service('analysis_service', analysis_service)
+            app_state_manager.register_service('task_service', task_service)
 
             normal_logger.info("任务管理器和服务初始化成功。")
 
@@ -315,6 +331,14 @@ async def lifespan(app: FastAPI):
                 normal_logger.warning("ZLMediaKit服务进程停止失败，请检查进程状态")
         except Exception as e:
             exception_logger.exception("停止ZLMediaKit服务进程时出错")
+
+        # 清理全局应用状态管理器
+        try:
+            from shared.utils.app_state import app_state_manager
+            app_state_manager.shutdown()
+            normal_logger.info("全局应用状态管理器已清理。")
+        except Exception as e:
+            exception_logger.exception("清理全局应用状态管理器时出错")
 
         # 清理信号处理器
         signal_handler.cleanup()

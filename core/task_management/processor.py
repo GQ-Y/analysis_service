@@ -1028,30 +1028,17 @@ class TaskProcessor:
 
                 # --- 通知视频编码服务更新分析结果（独立于Socket回调）---
                 try:
-                    from services.video.video_service import VideoService
+                    # 通过全局应用状态管理器获取视频服务实例
+                    from shared.utils.app_state import app_state_manager
+                    video_service = app_state_manager.get_video_service()
                     
-                    # 尝试获取全局视频服务实例
-                    video_service = None
-                    
-                    # 方法1：尝试从task_manager获取
-                    if hasattr(self.task_manager, 'app_state') and hasattr(self.task_manager.app_state, 'video_service'):
-                        video_service = self.task_manager.app_state.video_service
-                        normal_logger.debug(f"使用task_manager中的video_service实例: {task_id}")
-                    
-                    # 方法2：尝试从应用全局状态获取（通过导入）
                     if not video_service:
-                        try:
-                            from app import app_state
-                            if hasattr(app_state, 'video_service'):
-                                video_service = app_state.video_service
-                                normal_logger.debug(f"使用app_state中的video_service实例: {task_id}")
-                        except ImportError:
-                            pass
-                    
-                    # 方法3：创建临时实例
-                    if not video_service:
+                        # 如果没有全局实例，创建一个临时实例
+                        from services.video.video_service import VideoService
                         video_service = VideoService()
                         normal_logger.debug(f"创建临时video_service实例: {task_id}")
+                    else:
+                        normal_logger.debug(f"使用全局video_service实例: {task_id}")
                     
                     # 构建分析结果数据
                     analysis_result = {
