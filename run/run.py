@@ -21,6 +21,7 @@ from shared.utils.logger import get_normal_logger, get_exception_logger
 from run.middlewares import setup_exception_handlers, RequestLoggingMiddleware
 from run.signal_handler import signal_handler
 from run.zlm_exit_handler import zlm_exit_handler
+from shared.utils.socket_manager import startup_socket_manager, shutdown_socket_manager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -183,16 +184,17 @@ async def lifespan(app: FastAPI):
             app.state.stream_task_bridge = stream_task_bridge
             normal_logger.info("流任务桥接器初始化完成。")
 
+            # 初始化Socket回调管理器
+            normal_logger.info("正在初始化Socket回调管理器...")
+            await startup_socket_manager()
+            normal_logger.info("Socket回调管理器初始化完成。")
+
             from services.http.task_service import TaskService
             from services.analysis_service import AnalysisService
-            from core.task_management.callback_service import CallbackService
             from services.http.video_encoder_service import VideoEncoderService
-            from core.task_management.callback_service import callback_service
 
             app.state.task_service = TaskService(task_manager)
             app.state.analysis_service = AnalysisService()
-            await callback_service.start()
-            app.state.callback_service = callback_service
             app.state.video_encoder_service = VideoEncoderService()
 
             normal_logger.info("任务管理器和服务初始化成功。")
@@ -214,22 +216,17 @@ async def lifespan(app: FastAPI):
         normal_logger.info("正在关闭分析服务...")
         sys.stdout.flush(); sys.stderr.flush()
 
-        # 1. CallbackService
-        if hasattr(app.state, "callback_service") and app.state.callback_service:
-            try:
-                normal_logger.info("RUN.PY LIFESPAN: ====> [START] 正在停止回调服务...")
-                sys.stdout.flush(); sys.stderr.flush()
-                await app.state.callback_service.stop()
-                normal_logger.info("RUN.PY LIFESPAN: ====> [END] 回调服务已停止。")
-                sys.stdout.flush(); sys.stderr.flush()
-            except Exception as e:
-                exception_logger.exception("停止回调服务时出错。")
-                sys.stdout.flush(); sys.stderr.flush()
-        else:
-            normal_logger.warning("RUN.PY LIFESPAN: CallbackService not found in app.state or not active.")
-            sys.stdout.flush(); sys.stderr.flush()
+        # 优先关闭回调服务
+        # normal_logger.info("正在关闭回调服务 (lifespan finally)...") # Old log
+        # await shutdown_callback_service() # Old call
+        # normal_logger.info("回调服务已关闭 (lifespan finally)。") # Old log
 
-        # 2. TaskManager
+        # 关闭Socket回调管理器
+        normal_logger.info("正在关闭Socket回调管理器 (lifespan finally)...")
+        await shutdown_socket_manager()
+        normal_logger.info("Socket回调管理器已关闭 (lifespan finally)。")
+
+        # 1. TaskManager
         if hasattr(app.state, "task_manager") and app.state.task_manager:
             try:
                 normal_logger.info("正在停止任务管理器...")

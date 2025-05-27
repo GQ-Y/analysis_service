@@ -29,6 +29,8 @@ from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 from core.redis_manager import RedisManager
 from core.analyzer.analyzer_factory import AnalyzerFactory
 from core.task_management.callback_service import callback_service
+# 新增: 导入 Socket 管理器
+from shared.utils.socket_manager import get_socket_manager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -857,6 +859,13 @@ class TaskProcessor:
                 # 7. 提取 annotated_image_base64 (来自分析器结果)
                 annotated_image_b64_data = raw_result.get("annotated_image_base64")
 
+                # 添加诊断日志，检查 annotated_image_b64_data 的状态
+                if annotated_image_b64_data:
+                    normal_logger.info(f"任务 {task_id} [_handle_results DIAGNOSTIC]: raw_result 中获取到 annotated_image_base64 数据。长度: {len(annotated_image_b64_data)}")
+                else:
+                    normal_logger.warning(f"任务 {task_id} [_handle_results DIAGNOSTIC]: raw_result 中未能获取到 annotated_image_base64 数据 (值为 None 或空)。")
+                    normal_logger.debug(f"任务 {task_id} [_handle_results DIAGNOSTIC]: 完整的 raw_result 内容: {json.dumps(raw_result, indent=2, ensure_ascii=False)}")
+
                 # 8. 准备 storage_info
                 storage_info_payload = {
                     "json_result_path": None,
@@ -947,19 +956,52 @@ class TaskProcessor:
                         if callback_json.get("error_log") is None: callback_json["error_log"] = []
                         callback_json["error_log"].append("save_images was true, but no annotated_image_base64 found in result.")
 
-                # --- 发送HTTP回调 ---
-                # 使用从 task_full_config 正确路径获取的 enable_callback_flag 和 callback_url_from_config
+                # --- 发送回调 ---
+                final_callback_payload = callback_json.copy()
+                # 根据是否保存了图像/JSON，决定是否在回调中发送base64图像数据
+                if annotated_image_b64_data and not save_images_enabled and not save_json_enabled:
+                    final_callback_payload["annotated_image_base64"] = annotated_image_b64_data
+                elif "annotated_image_base64" in final_callback_payload and (save_images_enabled or save_json_enabled) :
+                    # 如果图像或JSON已保存，则从回调中删除base64数据以减小体积
+                    del final_callback_payload["annotated_image_base64"]
+
+                # --- 新增: 发送Socket回调 (在HTTP回调之前) ---
+                if settings.SOCKET_CALLBACK_ENABLED: # 检查全局设置是否启用Socket回调
+                    try:
+                        socket_manager = await get_socket_manager()
+                        if socket_manager and socket_manager._client and socket_manager._client.connected:
+                            # 为Socket回调准备专门的payload
+                            socket_payload = callback_json.copy()
+                            if annotated_image_b64_data: # 如果原始的base64数据存在
+                                socket_payload["annotated_image_base64"] = annotated_image_b64_data
+                            # 即使图像或JSON已保存，Socket回调仍然包含base64 (如果原始数据存在)
+
+                            normal_logger.info(f"任务 {task_id}: 准备通过Socket发送回调数据 (将包含base64图像，如果可用)。")
+                            # 添加更详细的 socket_payload 诊断日志
+                            if "annotated_image_base64" in socket_payload and socket_payload["annotated_image_base64"]:
+                                normal_logger.info(f"任务 {task_id} [Socket DIAGNOSTIC]: socket_payload 包含 annotated_image_base64。长度: {len(socket_payload['annotated_image_base64'])}")
+                            else:
+                                normal_logger.warning(f"任务 {task_id} [Socket DIAGNOSTIC]: socket_payload 未能包含有效的 annotated_image_base64。annotated_image_base64 原始变量是否有值: {bool(annotated_image_b64_data)}")
+                                normal_logger.debug(f"任务 {task_id} [Socket DIAGNOSTIC]: socket_payload keys: {list(socket_payload.keys())}")
+
+                            socket_send_success = await socket_manager.send_socket_callback(socket_payload)
+                            if socket_send_success:
+                                normal_logger.info(f"任务 {task_id}: Socket回调数据发送成功。")
+                            else:
+                                normal_logger.warning(f"任务 {task_id}: Socket回调数据发送失败。")
+                        elif socket_manager and socket_manager._client and not socket_manager._client.connected:
+                            normal_logger.warning(f"任务 {task_id}: Socket客户端已初始化但未连接，不发送Socket回调。")
+                        elif not socket_manager or not socket_manager._client:
+                             normal_logger.warning(f"任务 {task_id}: Socket管理器或客户端未初始化，不发送Socket回调。")
+                    except Exception as e_socket_cb:
+                        exception_logger.error(f"任务 {task_id}: 发送Socket回调时发生错误: {e_socket_cb}")
+
+                # --- 原有的HTTP回调逻辑 ---
                 if enable_callback_flag and callback_url_from_config:
                     urls_to_send = [url.strip() for url in callback_url_from_config.split(',') if url.strip()]
                     if not urls_to_send:
                         normal_logger.warning(f"任务 {task_id}: enable_callback is true, but no valid URLs found in callback_url string: '{callback_url_from_config}'")
                     else:
-                        final_callback_payload = callback_json.copy()
-                        if annotated_image_b64_data and not save_images_enabled and not save_json_enabled:
-                            final_callback_payload["annotated_image_base64"] = annotated_image_b64_data
-                        elif "annotated_image_base64" in final_callback_payload and (save_images_enabled or save_json_enabled) :
-                            del final_callback_payload["annotated_image_base64"]
-
                         for single_url in urls_to_send:
                             await callback_service.enqueue_callback(
                                 task_id=task_id,

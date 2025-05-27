@@ -178,8 +178,8 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = os.getenv("ENVIRONMENT", "production")
 
     # 服务配置
-    SERVICES_HOST: str = "0.0.0.0"
-    SERVICES_PORT: int = 8002
+    SERVICES_HOST: str = os.getenv("SERVICES_HOST", "0.0.0.0")
+    SERVICES_PORT: int = int(os.getenv("SERVICES_PORT", "8002"))
 
     # Redis配置
     REDIS_HOST: str = "localhost"
@@ -225,6 +225,19 @@ class Settings(BaseSettings):
 
     # 通信模式，只支持http模式
     COMMUNICATION_MODE: str = "http"
+
+    # HTTP回调配置 (新增/确保存在)
+    CALLBACK_URL: str | None = os.getenv("CALLBACK_URL", None)
+    HTTP_CALLBACK_TIMEOUT: int = int(os.getenv("HTTP_CALLBACK_TIMEOUT", "10"))
+
+    # Socket回调配置 (新增)
+    SOCKET_CALLBACK_ENABLED: bool = os.getenv("SOCKET_CALLBACK_ENABLED", "true").lower() == "true"
+    SOCKET_CALLBACK_HOST: str = os.getenv("SOCKET_CALLBACK_HOST", "localhost")
+    SOCKET_CALLBACK_PORT: int = int(os.getenv("SOCKET_CALLBACK_PORT", "8089"))
+    SOCKET_CONNECT_TIMEOUT: int = int(os.getenv("SOCKET_CONNECT_TIMEOUT", "5"))
+    SOCKET_SEND_TIMEOUT: int = int(os.getenv("SOCKET_SEND_TIMEOUT", "10"))
+    SOCKET_MAX_CONNECT_ATTEMPTS: int = int(os.getenv("SOCKET_MAX_CONNECT_ATTEMPTS", "3"))
+    SOCKET_CONNECT_RETRY_DELAY: int = int(os.getenv("SOCKET_CONNECT_RETRY_DELAY", "5"))
 
 # 创建设置实例
 settings = Settings()
