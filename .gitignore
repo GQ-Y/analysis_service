@@ -27,4 +27,16 @@ docs/*
 string/*
 
 # Large binary files
+# Windows
 zlmos/windows/zlmediakit.lib
+zlmos/windows/zltoolkit.lib
+zlmos/windows/webrtc.lib
+zlmos/windows/ext-codec.lib
+
+# Linux
+zlmos/linux/libzlmediakit.a
+zlmos/linux/libmk_api.so
+
+# macOS
+zlmos/darwin/libzlmediakit.a
+zlmos/darwin/libmk_api.dylib
