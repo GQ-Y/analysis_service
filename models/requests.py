@@ -513,5 +513,10 @@ class VideoEncodingRequest(BaseModel):
         le=30,
         example=15
     )
+    stream_type: Optional[Literal["ffmpeg", "zlm"]] = Field(
+        "ffmpeg",
+        description="直播推流类型：ffmpeg=直接使用FFmpeg输出FLV格式带分析结果的视频流(默认), zlm=使用ZLMediaKit服务器进行推流",
+        example="ffmpeg"
+    )
 
     model_config = {"protected_namespaces": ()}

@@ -168,6 +168,13 @@ async def lifespan(app: FastAPI):
         callback_service.initialize()
         app_state_manager.register_service("callback_service", callback_service)
 
+        # 初始化视频服务并注册到全局状态管理器
+        from services.video.video_service import VideoService
+        video_service = VideoService()
+        app_state_manager.register_video_service(video_service)
+        app.state.video_service = video_service
+        normal_logger.info("视频服务已初始化并注册到全局状态管理器")
+
         # 3. 初始化任务服务并注册到app.state
         task_service = TaskService(task_manager=task_manager)
         app.state.task_service = task_service

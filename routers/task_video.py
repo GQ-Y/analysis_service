@@ -87,7 +87,7 @@ async def start_task_video_stream(
         
         # 根据请求开启或关闭编码
         if encoding_request.enable_encoding:
-            # 开启直播流编码，使用ZLM作为流媒体服务器
+            # 开启直播流编码，支持两种推流模式
             result = await video_service.start_live_stream(
                 task_id=encoding_request.task_id,
                 task_manager=task_manager,
@@ -95,7 +95,8 @@ async def start_task_video_stream(
                 quality=encoding_request.quality,
                 width=encoding_request.width,
                 height=encoding_request.height,
-                fps=encoding_request.fps
+                fps=encoding_request.fps,
+                stream_type=encoding_request.stream_type  # 传递推流类型参数
             )
             
             if not result["success"]:

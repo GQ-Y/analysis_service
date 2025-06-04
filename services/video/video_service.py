@@ -64,9 +64,9 @@ class VideoService:
     
     async def start_live_stream(self, task_id: str, task_manager, format: str = "rtmp",
                               quality: int = 80, width: Optional[int] = None,
-                              height: Optional[int] = None, fps: int = 15) -> Dict[str, Any]:
+                              height: Optional[int] = None, fps: int = 15, stream_type: str = "ffmpeg") -> Dict[str, Any]:
         """
-        开启直播流编码 - 将分析结果推送到ZLMediaKit直播流
+        开启直播流编码 - 支持两种推流模式
 
         Args:
             task_id: 任务ID
@@ -76,6 +76,7 @@ class VideoService:
             width: 视频宽度，为空则使用原始宽度
             height: 视频高度，为空则使用原始高度
             fps: 视频帧率
+            stream_type: 推流类型，"ffmpeg"=直接FFmpeg输出FLV流(默认), "zlm"=使用ZLMediaKit服务器
 
         Returns:
             Dict[str, Any]: 编码结果，包含流信息和播放地址
@@ -87,7 +88,8 @@ class VideoService:
             quality=quality,
             width=width,
             height=height,
-            fps=fps
+            fps=fps,
+            stream_type=stream_type
         )
     
     async def stop_live_stream(self, task_id: str) -> Dict[str, Any]:
@@ -131,4 +133,66 @@ class VideoService:
         # 更新到直播推流器
         self.live_streamer.update_analysis_result(task_id, analysis_result)
         
-        normal_logger.debug(f"VideoService: 已将分析结果传递给文件编码器和直播推流器: {task_id}") 
+        normal_logger.debug(f"VideoService: 已将分析结果传递给文件编码器和直播推流器: {task_id}")
+
+    def set_performance_mode(self, mode: str) -> Dict[str, Any]:
+        """
+        设置直播流性能模式
+        
+        Args:
+            mode: 性能模式 - "high_quality", "balanced", "high_performance"
+            
+        Returns:
+            Dict[str, Any]: 设置结果
+        """
+        try:
+            self.live_streamer.set_performance_mode(mode)
+            return {
+                "success": True,
+                "message": f"性能模式已设置为: {mode}",
+                "current_mode": mode
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"设置性能模式失败: {str(e)}",
+                "current_mode": None
+            }
+
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """
+        获取直播流性能统计信息
+        
+        Returns:
+            Dict[str, Any]: 性能统计信息
+        """
+        try:
+            return {
+                "success": True,
+                "stats": self.live_streamer.get_performance_stats()
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"获取性能统计失败: {str(e)}",
+                "stats": None
+            }
+
+    def reset_performance_stats(self) -> Dict[str, Any]:
+        """
+        重置直播流性能统计信息
+        
+        Returns:
+            Dict[str, Any]: 重置结果
+        """
+        try:
+            self.live_streamer.reset_performance_stats()
+            return {
+                "success": True,
+                "message": "性能统计已重置"
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"重置性能统计失败: {str(e)}"
+            } 

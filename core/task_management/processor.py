@@ -679,8 +679,14 @@ class TaskProcessor:
             if "detections" in results:
                 for det in results["detections"]:
                     try:
-                        # 获取边界框
-                        bbox = det.get("bbox", [0, 0, 0, 0])
+                        # 获取边界框 - 修复字段名匹配问题
+                        bbox = det.get("bbox", [])
+                        if not bbox:
+                            # 尝试其他可能的字段名，特别是YOLO检测器使用的bbox_pixels
+                            bbox = det.get("bbox_pixels", det.get("box", []))
+                            if not bbox:
+                                normal_logger.debug(f"检测结果中未找到有效的边界框字段: {list(det.keys())}")
+                                continue
 
                         # 处理不同格式的边界框
                         try:
@@ -721,9 +727,18 @@ class TaskProcessor:
                             # 绘制边界框
                             cv2.rectangle(preview_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-                            # 绘制标签
+                            # 绘制标签 - 使用支持中文的文本渲染
                             label = f"{class_name}: {confidence:.2f}"
-                            cv2.putText(preview_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            try:
+                                # 尝试使用FrameRenderer绘制支持中文的标签
+                                from services.video.utils.frame_renderer import FrameRenderer
+                                preview_frame = FrameRenderer._put_chinese_text(
+                                    preview_frame, label, (x1, y1 - 25), 16, (255, 255, 255), (0, 255, 0)
+                                )
+                            except Exception as text_error:
+                                # 如果中文渲染失败，回退到OpenCV的英文字体
+                                normal_logger.debug(f"中文文本渲染失败，使用OpenCV默认字体: {text_error}")
+                                cv2.putText(preview_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                         except (ValueError, TypeError) as e:
                             # 忽略无效的边界框
                             normal_logger.debug(f"忽略无效的检测边界框: {bbox}, 错误: {str(e)}")
@@ -737,8 +752,14 @@ class TaskProcessor:
             if "tracked_objects" in results:
                 for track in results["tracked_objects"]:
                     try:
-                        # 获取边界框
-                        bbox = track.get("bbox", [0, 0, 0, 0])
+                        # 获取边界框 - 修复字段名匹配问题
+                        bbox = track.get("bbox", [])
+                        if not bbox:
+                            # 尝试其他可能的字段名
+                            bbox = track.get("bbox_pixels", track.get("box", []))
+                            if not bbox:
+                                normal_logger.debug(f"跟踪结果中未找到有效的边界框字段: {list(track.keys())}")
+                                continue
 
                         # 处理不同格式的边界框
                         try:
@@ -778,8 +799,18 @@ class TaskProcessor:
                             # 绘制边界框
                             cv2.rectangle(preview_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-                            # 绘制跟踪ID
-                            cv2.putText(preview_frame, f"ID: {track_id}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                            # 绘制跟踪ID - 使用支持中文的文本渲染
+                            track_label = f"ID: {track_id}"
+                            try:
+                                # 尝试使用FrameRenderer绘制支持中文的标签
+                                from services.video.utils.frame_renderer import FrameRenderer
+                                preview_frame = FrameRenderer._put_chinese_text(
+                                    preview_frame, track_label, (x1, y2 + 20), 16, (255, 0, 0)
+                                )
+                            except Exception as text_error:
+                                # 如果中文渲染失败，回退到OpenCV的英文字体
+                                normal_logger.debug(f"中文文本渲染失败，使用OpenCV默认字体: {text_error}")
+                                cv2.putText(preview_frame, track_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
                         except (ValueError, TypeError) as e:
                             # 忽略无效的边界框
                             normal_logger.debug(f"忽略无效的跟踪边界框: {bbox}, 错误: {str(e)}")
@@ -1041,13 +1072,14 @@ class TaskProcessor:
                     # 通过全局应用状态管理器获取视频服务实例
                     video_service = app_state_manager.get_video_service()
                     
-                    if not video_service:
+                    if video_service:
+                        # 使用全局视频服务实例
+                        normal_logger.debug(f"任务 {task_id}: 使用全局video_service实例")
+                    else:
                         # 如果没有全局实例，创建一个临时实例
+                        normal_logger.warning(f"任务 {task_id}: 全局video_service实例不存在，创建临时实例 (这可能影响性能)")
                         from services.video.video_service import VideoService
                         video_service = VideoService()
-                        normal_logger.debug(f"创建临时video_service实例: {task_id}")
-                    else:
-                        normal_logger.debug(f"使用全局video_service实例: {task_id}")
                     
                     # 构建分析结果数据
                     analysis_result = {
@@ -1058,11 +1090,11 @@ class TaskProcessor:
                         "timestamp": raw_result.get("timestamp", time.time())
                     }
                     video_service.update_analysis_result(task_id, analysis_result)
-                    normal_logger.info(f"已通知视频编码服务更新分析结果: {task_id}, 检测数量: {len(analysis_result.get('detections', []))}")
+                    normal_logger.debug(f"已通知视频编码服务更新分析结果: {task_id}, 检测数量: {len(analysis_result.get('detections', []))}")
                 except Exception as e_video_encoder:
                     normal_logger.warning(f"通知视频编码服务时出错: {str(e_video_encoder)}")
                     import traceback
-                    normal_logger.warning(f"详细错误信息: {traceback.format_exc()}")
+                    normal_logger.debug(f"详细错误信息: {traceback.format_exc()}")
 
                 # --- 原有的HTTP回调逻辑 ---
                 if enable_callback_flag and callback_url_from_config:
