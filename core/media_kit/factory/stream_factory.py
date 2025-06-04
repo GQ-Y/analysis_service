@@ -1,171 +1,257 @@
 """
 流工厂模块
-根据不同的协议类型创建对应的流实例
+提供统一的流创建接口，支持多种协议和处理引擎
 """
 
-import importlib
-from typing import Dict, Any, Type, Optional
+from typing import Dict, Any, Optional, Type
+from enum import Enum
+import urllib.parse
 
-from ..base.stream_interface import IStream, IStreamFactory
+from shared.utils.logger import get_normal_logger, get_exception_logger
 
-class StreamFactory(IStreamFactory):
-    """流工厂类，负责创建不同协议的流实例"""
+# 初始化日志记录器
+normal_logger = get_normal_logger(__name__)
+exception_logger = get_exception_logger(__name__)
+
+from ..base.base_stream import BaseStream
+
+# 导入协议处理器
+from ..protocols.rtsp.handler import RtspStream
+from ..protocols.rtmp.handler import RtmpStream
+from ..protocols.http.handler import HttpStream
+from ..protocols.hls.handler import HlsStream
+from ..protocols.onvif.handler import OnvifStream
+
+# 导入GStreamer处理器（如果可用）
+try:
+    from ..protocols.gstreamer.handler import GStreamerStream
+    GSTREAMER_AVAILABLE = True
+except ImportError:
+    GSTREAMER_AVAILABLE = False
+    normal_logger.warning("GStreamer不可用，将使用OpenCV模式")
+
+class StreamEngine(Enum):
+    """流处理引擎枚举"""
+    OPENCV = "opencv"
+    GSTREAMER = "gstreamer"
+    AUTO = "auto"
+
+class StreamFactory:
+    """流工厂类，负责创建不同类型的流处理器"""
     
-    _instance = None
-    _lock = None
+    # 协议映射表（OpenCV模式）
+    OPENCV_PROTOCOL_MAP = {
+        "rtsp": RtspStream,
+        "rtmp": RtmpStream,
+        "http": HttpStream,
+        "https": HttpStream,
+        "hls": HlsStream,
+        "onvif": OnvifStream,
+    }
     
-    def __new__(cls):
-        """单例模式"""
-        if cls._lock is None:
-            import threading
-            cls._lock = threading.Lock()
-            
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super(StreamFactory, cls).__new__(cls)
-                cls._instance._initialized = False
-        return cls._instance
-    
-    def __init__(self):
-        """初始化流工厂"""
-        if getattr(self, '_initialized', False):
-            return
-            
-        # 协议处理器映射，格式: 协议名 -> 处理器类
-        self._protocol_handlers: Dict[str, Type[IStream]] = {}
-        
-        # 注册内置协议处理器
-        self._register_built_in_handlers()
-        
-        self._initialized = True
-    
-    def _register_built_in_handlers(self) -> None:
-        """注册内置协议处理器"""
-        # 这里不直接导入各协议处理器类，以避免循环导入
-        # 将在首次使用时动态导入
-        
-        # 注册协议名到模块路径的映射
-        self._protocol_modules = {
-            'rtsp': 'core.media_kit.protocols.rtsp.handler',
-            'rtmp': 'core.media_kit.protocols.rtmp.handler',
-            'hls': 'core.media_kit.protocols.hls.handler',
-            'http': 'core.media_kit.protocols.http.handler',
-            'webrtc': 'core.media_kit.protocols.webrtc.handler',
-            'gb28181': 'core.media_kit.protocols.gb28181.handler',
-            'onvif': 'core.media_kit.protocols.onvif.handler'
-        }
-        
-        self._protocol_classes = {
-            'rtsp': 'RtspStream',
-            'rtmp': 'RtmpStream',
-            'hls': 'HlsStream',
-            'http': 'HttpStream',
-            'webrtc': 'WebRTCStream',
-            'gb28181': 'Gb28181Stream',
-            'onvif': 'OnvifStream'
-        }
-    
-    def register_protocol_handler(self, protocol: str, handler_class: Type[IStream]) -> None:
-        """注册协议处理器
+    @staticmethod
+    def create_stream(config: Dict[str, Any], engine: StreamEngine = StreamEngine.AUTO) -> Optional[BaseStream]:
+        """创建流处理器
         
         Args:
-            protocol: 协议名，如'rtsp'、'rtmp'等
-            handler_class: 处理器类，必须实现IStream接口
-        """
-        self._protocol_handlers[protocol.lower()] = handler_class
-    
-    def create_stream(self, stream_config: Dict[str, Any]) -> IStream:
-        """创建流实例
-        
-        Args:
-            stream_config: 流配置，必须包含protocol和url字段
+            config: 流配置
+            engine: 流处理引擎
             
         Returns:
-            IStream: 流实例
-            
-        Raises:
-            ValueError: 如果协议不支持或配置无效
+            Optional[BaseStream]: 流处理器实例，失败返回None
         """
-        # 获取协议类型
-        protocol = stream_config.get("protocol", "").lower()
-        if not protocol:
-            # 尝试从URL推断协议类型
-            url = stream_config.get("url", "")
-            protocol = self._infer_protocol_from_url(url)
+        try:
+            url = config.get("url", "")
+            if not url:
+                normal_logger.error("创建流失败：URL为空")
+                return None
             
+            # 解析协议类型
+            protocol = StreamFactory._parse_protocol(url)
             if not protocol:
-                raise ValueError("无法确定协议类型，请在配置中指定protocol字段")
-        
-        # 检查协议处理器是否已注册
-        if protocol in self._protocol_handlers:
-            # 使用已注册的处理器创建流实例
-            handler_class = self._protocol_handlers[protocol]
-            return handler_class(stream_config)
-        
-        # 动态导入协议处理器
-        if protocol in self._protocol_modules:
-            try:
-                module_path = self._protocol_modules[protocol]
-                class_name = self._protocol_classes.get(protocol)
+                normal_logger.error(f"创建流失败：不支持的协议 {url}")
+                return None
+            
+            # 确定使用的引擎
+            selected_engine = StreamFactory._select_engine(engine, protocol, config)
+            
+            # 创建流实例
+            if selected_engine == StreamEngine.GSTREAMER:
+                return StreamFactory._create_gstreamer_stream(config)
+            else:
+                return StreamFactory._create_opencv_stream(config, protocol)
                 
-                # 导入模块
-                module = importlib.import_module(module_path)
-                
-                # 获取处理器类
-                if class_name and hasattr(module, class_name):
-                    handler_class = getattr(module, class_name)
-                    
-                    # 注册处理器类
-                    self.register_protocol_handler(protocol, handler_class)
-                    
-                    # 创建流实例
-                    return handler_class(stream_config)
-                else:
-                    raise ValueError(f"协议 {protocol} 的处理器类 {class_name} 不存在")
-            except (ImportError, AttributeError) as e:
-                raise ValueError(f"导入协议 {protocol} 的处理器失败: {str(e)}")
-        
-        # 不支持的协议
-        raise ValueError(f"不支持的协议类型: {protocol}")
+        except Exception as e:
+            exception_logger.exception(f"创建流异常: {str(e)}")
+            return None
     
-    def _infer_protocol_from_url(self, url: str) -> Optional[str]:
-        """从URL推断协议类型
+    @staticmethod
+    def _parse_protocol(url: str) -> Optional[str]:
+        """解析URL协议类型
         
         Args:
             url: 流URL
             
         Returns:
-            Optional[str]: 推断的协议类型，如果无法推断则返回None
+            Optional[str]: 协议类型，失败返回None
         """
-        if not url:
+        try:
+            parsed = urllib.parse.urlparse(url.lower())
+            scheme = parsed.scheme
+            
+            if scheme in ["rtsp", "rtsps"]:
+                return "rtsp"
+            elif scheme in ["rtmp", "rtmps"]:
+                return "rtmp"
+            elif scheme in ["http", "https"]:
+                # 检查是否为HLS流
+                if ".m3u8" in url.lower():
+                    return "hls"
+                else:
+                    return "http"
+            else:
+                # 检查是否为ONVIF URL（包含某些特征）
+                if "onvif" in url.lower() or "wsdl" in url.lower():
+                    return "onvif"
+                
+                return None
+                
+        except Exception as e:
+            normal_logger.error(f"解析URL协议失败: {str(e)}")
+            return None
+    
+    @staticmethod
+    def _select_engine(engine: StreamEngine, protocol: str, config: Dict[str, Any]) -> StreamEngine:
+        """选择流处理引擎
+        
+        Args:
+            engine: 用户指定的引擎
+            protocol: 协议类型
+            config: 流配置
+            
+        Returns:
+            StreamEngine: 选择的引擎
+        """
+        # 如果用户明确指定引擎
+        if engine != StreamEngine.AUTO:
+            if engine == StreamEngine.GSTREAMER and not GSTREAMER_AVAILABLE:
+                normal_logger.warning("GStreamer不可用，回退到OpenCV")
+                return StreamEngine.OPENCV
+            return engine
+        
+        # 自动选择模式
+        
+        # 优先级1：检查配置中的偏好
+        preferred_engine = config.get("preferred_engine", "").lower()
+        if preferred_engine == "gstreamer" and GSTREAMER_AVAILABLE:
+            normal_logger.info("根据配置偏好选择GStreamer引擎")
+            return StreamEngine.GSTREAMER
+        elif preferred_engine == "opencv":
+            normal_logger.info("根据配置偏好选择OpenCV引擎")
+            return StreamEngine.OPENCV
+        
+        # 优先级2：根据协议特性自动选择
+        if GSTREAMER_AVAILABLE:
+            # GStreamer适合的场景
+            gstreamer_preferred_protocols = ["rtsp", "rtmp", "hls"]
+            if protocol in gstreamer_preferred_protocols:
+                normal_logger.info(f"协议 {protocol} 推荐使用GStreamer引擎")
+                return StreamEngine.GSTREAMER
+        
+        # 优先级3：检查是否需要硬件加速
+        if GSTREAMER_AVAILABLE and config.get("enable_hardware_decode", False):
+            normal_logger.info("需要硬件加速，选择GStreamer引擎")
+            return StreamEngine.GSTREAMER
+        
+        # 优先级4：检查是否有特殊要求
+        if config.get("low_latency", False) and GSTREAMER_AVAILABLE:
+            normal_logger.info("需要低延迟，选择GStreamer引擎")
+            return StreamEngine.GSTREAMER
+        
+        # 默认使用OpenCV（兼容性最好）
+        normal_logger.info("使用默认OpenCV引擎")
+        return StreamEngine.OPENCV
+    
+    @staticmethod
+    def _create_gstreamer_stream(config: Dict[str, Any]) -> Optional[BaseStream]:
+        """创建GStreamer流
+        
+        Args:
+            config: 流配置
+            
+        Returns:
+            Optional[BaseStream]: GStreamer流实例
+        """
+        if not GSTREAMER_AVAILABLE:
+            normal_logger.error("GStreamer不可用")
             return None
         
-        url = url.lower()
+        try:
+            return GStreamerStream(config)
+        except Exception as e:
+            exception_logger.exception(f"创建GStreamer流失败: {str(e)}")
+            return None
+    
+    @staticmethod
+    def _create_opencv_stream(config: Dict[str, Any], protocol: str) -> Optional[BaseStream]:
+        """创建OpenCV流
         
-        # 检查URL前缀
-        if url.startswith('rtsp://'):
-            return 'rtsp'
-        elif url.startswith('rtmp://'):
-            return 'rtmp'
-        elif url.startswith(('http://', 'https://')) and url.endswith('.m3u8'):
-            return 'hls'
-        elif url.startswith(('http://', 'https://')) and url.endswith(('.flv', '.ts', '.mp4', '.jpg', '.jpeg', '.png', '.gif')):
-            return 'http'
-        elif url.startswith('webrtc://'):
-            return 'webrtc'
-        elif url.startswith(('http://', 'https://')) and '/whep' in url:
-            return 'webrtc'
-        elif url.startswith(('http://', 'https://')) and '/whip' in url:
-            return 'webrtc'
-        elif url.startswith('srt://'):
-            return 'srt'
-        elif url.startswith('gb28181://'):
-            return 'gb28181'
-        elif url.startswith('onvif://'):
-            return 'onvif'
+        Args:
+            config: 流配置
+            protocol: 协议类型
+            
+        Returns:
+            Optional[BaseStream]: OpenCV流实例
+        """
+        try:
+            stream_class = StreamFactory.OPENCV_PROTOCOL_MAP.get(protocol)
+            if not stream_class:
+                normal_logger.error(f"不支持的协议: {protocol}")
+                return None
+            
+            return stream_class(config)
+        except Exception as e:
+            exception_logger.exception(f"创建OpenCV流失败: {str(e)}")
+            return None
+    
+    @staticmethod
+    def get_supported_protocols() -> Dict[str, list]:
+        """获取支持的协议列表
         
-        # 无法确定
-        return None
-
-# 单例实例
-stream_factory = StreamFactory()
+        Returns:
+            Dict[str, list]: 支持的协议字典
+        """
+        opencv_protocols = list(StreamFactory.OPENCV_PROTOCOL_MAP.keys())
+        
+        result = {
+            "opencv": opencv_protocols,
+            "gstreamer": ["rtsp", "rtmp", "http", "https", "hls", "rtp"] if GSTREAMER_AVAILABLE else []
+        }
+        
+        return result
+    
+    @staticmethod
+    def is_gstreamer_available() -> bool:
+        """检查GStreamer是否可用
+        
+        Returns:
+            bool: GStreamer是否可用
+        """
+        return GSTREAMER_AVAILABLE
+    
+    @staticmethod
+    def get_recommended_engine(url: str, config: Dict[str, Any] = None) -> StreamEngine:
+        """获取推荐的引擎
+        
+        Args:
+            url: 流URL
+            config: 流配置（可选）
+            
+        Returns:
+            StreamEngine: 推荐的引擎
+        """
+        if config is None:
+            config = {}
+        
+        protocol = StreamFactory._parse_protocol(url)
+        return StreamFactory._select_engine(StreamEngine.AUTO, protocol, config)

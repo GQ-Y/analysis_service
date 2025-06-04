@@ -67,33 +67,11 @@ class StreamingSettings(BaseSettingsModel):
 # 协议配置设置
 class ProtocolSettings(BaseSettingsModel):
     """协议配置设置"""
+    
     # 通用协议配置
+    timeout: int = int(os.getenv("PROTOCOL_TIMEOUT", "10000"))  # 毫秒
     retry_count: int = int(os.getenv("PROTOCOL_RETRY_COUNT", "3"))
     retry_interval: int = int(os.getenv("PROTOCOL_RETRY_INTERVAL", "5000"))  # 毫秒
-    timeout: int = int(os.getenv("PROTOCOL_TIMEOUT", "10000"))  # 毫秒
-
-    # HTTP协议配置
-    http_user_agent: str = os.getenv("PROTOCOL_HTTP_USER_AGENT", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.114 Safari/537.36")
-    http_auth_enable: bool = os.getenv("PROTOCOL_HTTP_AUTH_ENABLE", "false").lower() == "true"
-    http_auth_user: str = os.getenv("PROTOCOL_HTTP_AUTH_USER", "")
-    http_auth_password: str = os.getenv("PROTOCOL_HTTP_AUTH_PASSWORD", "")
-    http_use_cache: bool = os.getenv("PROTOCOL_HTTP_USE_CACHE", "true").lower() == "true"
-    http_cache_timeout: int = int(os.getenv("PROTOCOL_HTTP_CACHE_TIMEOUT", "3600"))  # 秒
-
-    # HLS协议配置
-    hls_segment_duration: int = int(os.getenv("PROTOCOL_HLS_SEGMENT_DURATION", "5"))  # 秒
-    hls_playlist_size: int = int(os.getenv("PROTOCOL_HLS_PLAYLIST_SIZE", "5"))
-    hls_cache_segments: bool = os.getenv("PROTOCOL_HLS_CACHE_SEGMENTS", "true").lower() == "true"
-    hls_max_segments: int = int(os.getenv("PROTOCOL_HLS_MAX_SEGMENTS", "5"))
-    hls_user_agent: str = os.getenv("PROTOCOL_HLS_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-
-    # RTMP协议配置
-    rtmp_port: int = int(os.getenv("PROTOCOL_RTMP_PORT", "1935"))
-    rtmp_ssl_port: int = int(os.getenv("PROTOCOL_RTMP_SSL_PORT", "19350"))
-    rtmp_auth_enable: bool = os.getenv("PROTOCOL_RTMP_AUTH_ENABLE", "false").lower() == "true"
-    rtmp_auth_user: str = os.getenv("PROTOCOL_RTMP_AUTH_USER", "")
-    rtmp_auth_password: str = os.getenv("PROTOCOL_RTMP_AUTH_PASSWORD", "")
-    rtmp_max_buffer_ms: int = int(os.getenv("PROTOCOL_RTMP_MAX_BUFFER_MS", "2000"))  # 毫秒
 
     # RTSP协议配置
     rtsp_port: int = int(os.getenv("PROTOCOL_RTSP_PORT", "554"))
@@ -122,17 +100,21 @@ class ProtocolSettings(BaseSettingsModel):
     onvif_prefer_profile_type: str = os.getenv("PROTOCOL_ONVIF_PREFER_PROFILE_TYPE", "main")  # main, sub
     onvif_prefer_h264: bool = os.getenv("PROTOCOL_ONVIF_PREFER_H264", "true").lower() == "true"
     onvif_prefer_tcp: bool = os.getenv("PROTOCOL_ONVIF_PREFER_TCP", "true").lower() == "true"
-    onvif_buffer_size: int = int(os.getenv("PROTOCOL_ONVIF_BUFFER_SIZE", "8"))
+    onvif_buffer_size: int = int(os.getenv("PROTOCOL_ONVIF_BUFFER_SIZE", "1"))
 
-    # GB28181协议配置
-    gb28181_sip_port: int = int(os.getenv("PROTOCOL_GB28181_SIP_PORT", "5060"))
-    gb28181_device_id: str = os.getenv("PROTOCOL_GB28181_DEVICE_ID", "34020000002000000001")
-    gb28181_server_id: str = os.getenv("PROTOCOL_GB28181_SERVER_ID", "34020000002000000001")
-    gb28181_domain: str = os.getenv("PROTOCOL_GB28181_DOMAIN", "3402000000")
-    gb28181_password: str = os.getenv("PROTOCOL_GB28181_PASSWORD", "12345678")
-    gb28181_prefer_stream_type: str = os.getenv("PROTOCOL_GB28181_PREFER_STREAM_TYPE", "main")  # main, sub
-    gb28181_auto_switch_sub_stream: bool = os.getenv("PROTOCOL_GB28181_AUTO_SWITCH_SUB_STREAM", "true").lower() == "true"
-    gb28181_buffer_size: int = int(os.getenv("PROTOCOL_GB28181_BUFFER_SIZE", "8"))
+    # GStreamer配置
+    gstreamer_enable: bool = os.getenv("GSTREAMER_ENABLE", "true").lower() == "true"
+    gstreamer_preferred_engine: str = os.getenv("GSTREAMER_PREFERRED_ENGINE", "auto")  # auto, gstreamer, opencv
+    gstreamer_hardware_decode: bool = os.getenv("GSTREAMER_HARDWARE_DECODE", "true").lower() == "true"
+    gstreamer_hardware_decoder: str = os.getenv("GSTREAMER_HARDWARE_DECODER", "auto")  # auto, nvdec, vaapi, qsv, none
+    gstreamer_buffer_size: int = int(os.getenv("GSTREAMER_BUFFER_SIZE", "200"))
+    gstreamer_max_buffer_ms: int = int(os.getenv("GSTREAMER_MAX_BUFFER_MS", "1000"))  # 毫秒
+    gstreamer_min_buffer_ms: int = int(os.getenv("GSTREAMER_MIN_BUFFER_MS", "100"))  # 毫秒
+    gstreamer_rtsp_latency: int = int(os.getenv("GSTREAMER_RTSP_LATENCY", "200"))  # 毫秒
+    gstreamer_drop_on_latency: bool = os.getenv("GSTREAMER_DROP_ON_LATENCY", "true").lower() == "true"
+    gstreamer_network_timeout: int = int(os.getenv("GSTREAMER_NETWORK_TIMEOUT", "20"))  # 秒
+    gstreamer_debug_pipeline: bool = os.getenv("GSTREAMER_DEBUG_PIPELINE", "false").lower() == "true"
+    gstreamer_log_level: str = os.getenv("GSTREAMER_LOG_LEVEL", "WARNING")  # DEBUG, INFO, WARNING, ERROR
 
 # 存储配置
 class StorageSettings(BaseSettingsModel):
