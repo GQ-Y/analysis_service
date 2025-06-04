@@ -14,7 +14,7 @@ from .base_analyzer import (
 )
 
 # 导入分析器工厂、注册表和模型加载器
-from .analyzer_factory import AnalyzerFactory
+from .analyzer_factory import AnalyzerFactory, analyzer_factory
 from .registry import AnalyzerRegistry, register_analyzer
 from .model_loader import ModelLoader
 
@@ -36,10 +36,13 @@ def create_analyzer(analysis_type: str, **kwargs):
         BaseAnalyzer: 分析器实例
     """
     # 直接使用AnalyzerFactory创建分析器
-    return AnalyzerFactory.create_analyzer(
-        analysis_type=analysis_type,
-        model_code=kwargs.get("model_code"),
-        **kwargs
+    # 获取分析器名称，如果没有指定则使用默认名称
+    analyzer_name = kwargs.get("analyzer_name", "default")
+    
+    return analyzer_factory.create_analyzer(
+        analysis_type,  # 第一个参数：analyzer_type
+        analyzer_name,  # 第二个参数：name  
+        kwargs          # 第三个参数：config
     )
 
 __all__ = [

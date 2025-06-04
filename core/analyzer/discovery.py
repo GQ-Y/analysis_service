@@ -127,10 +127,12 @@ def _scan_module(module, base_class):
                 try:
                     instance = obj()
                     analysis_type = instance.get_analysis_type()
-                    # 只有基本类型或抽象类会返回这些值，我们不自动注册它们
-                    if analysis_type not in ['base', 'detection', 'tracking', 'segmentation']:
+                    # 跳过基础抽象类，只注册具体的分析器类型
+                    if analysis_type in ['detection', 'tracking', 'segmentation']:
                         normal_logger.info(f"自动注册分析器: {name} -> {analysis_type}")
                         AnalyzerRegistry.register(analysis_type, obj)
+                    else:
+                        normal_logger.debug(f"跳过基础类/抽象类: {name} (类型: {analysis_type})")
                 except Exception as e:
                     # 某些抽象类可能无法实例化，跳过
                     if "abstract" not in str(e).lower():

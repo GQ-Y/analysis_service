@@ -78,9 +78,9 @@ class ZLMBridge:
             from .zlm_manager import zlm_manager
             self._zlm_manager = zlm_manager
             
-            # 导入流管理器，延迟导入避免循环依赖
-            from core.task_management.stream import stream_manager
-            self._stream_manager = stream_manager
+            # 获取流管理器，延迟导入避免循环依赖
+            from shared.utils.app_state import app_state_manager
+            self._stream_manager = app_state_manager.get_stream_manager()
             
             # 注册事件回调
             self._register_callbacks()

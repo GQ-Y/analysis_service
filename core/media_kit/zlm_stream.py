@@ -554,18 +554,13 @@ class ZLMVideoStream(BaseVideoStream):
                     return True # 返回True，让后续的 _pull_task 尝试用原始URL
                 
                 if "已经存在" in error_msg or "already exists" in error_msg.lower():
-                    normal_logger.warning(f"流 {self.stream_id} 已经存在，尝试复用")
+                    normal_logger.warning(f"流 {self.stream_id} 已经存在，尝试验证流健康状态")
                     
-                    # 尝试获取已存在流的信息
-                    stream_info_params = {
-                        "vhost": self.vhost,
-                        "app": self.app,
-                        "stream": self.stream_name
-                    }
+                    # 验证现有流的健康状态
+                    is_healthy = await self._verify_existing_stream_health()
                     
-                    info_result = self.manager.call_api("getMediaInfo", stream_info_params)
-                    if info_result.get("code") == 0:
-                        normal_logger.info(f"成功获取已存在流信息: {self.stream_id}")
+                    if is_healthy:
+                        normal_logger.info(f"现有流 {self.stream_id} 健康状态良好，复用现有流")
                         
                         # 构建代理URL
                         self._proxy_url = self._get_zlm_proxy_url()
@@ -585,6 +580,44 @@ class ZLMVideoStream(BaseVideoStream):
                         normal_logger.info(f"{TEST_LOG_MARKER} STREAM_CONNECTED")
                         
                         return True
+                    else:
+                        normal_logger.warning(f"现有流 {self.stream_id} 健康状态异常，尝试删除后重新创建")
+                        
+                        # 删除不健康的流
+                        delete_success = await self._delete_existing_unhealthy_stream()
+                        
+                        if delete_success:
+                            # 重新尝试创建流
+                            normal_logger.info(f"成功删除不健康的流 {self.stream_id}，重新创建")
+                            retry_result = self.manager.call_api("addStreamProxy", api_params)
+                            
+                            if retry_result.get("code") == 0:
+                                normal_logger.info(f"重新创建流代理成功: {self.stream_id}")
+                                self._zlm_internal_api_key = retry_result.get("data", {}).get("key", "")
+                                self.config["stream_key"] = self._zlm_internal_api_key
+                                self._proxy_url = self._get_zlm_proxy_url()
+                                self._stats["proxy_url"] = self._proxy_url
+                                self._stats["stream_key"] = self._zlm_internal_api_key
+                                self._stats["using_proxy"] = True
+                                self._stats["connected_url"] = self.url
+                                from shared.utils.logger import TEST_LOG_MARKER
+                                normal_logger.info(f"{TEST_LOG_MARKER} STREAM_PULL_SUCCESS")
+                                normal_logger.info(f"{TEST_LOG_MARKER} ZLM_PROCESS_SUCCESS")
+                                normal_logger.info(f"{TEST_LOG_MARKER} RTSP_STREAM_CONNECTED")
+                                normal_logger.info(f"{TEST_LOG_MARKER} STREAM_CONNECTED")
+                                self._is_running = True
+                                self._status = StreamStatus.ONLINE
+                                self._health_status = StreamHealthStatus.HEALTHY
+                                return True
+                            else:
+                                error_msg = retry_result.get("msg", "未知错误")
+                                normal_logger.error(f"重新创建流代理失败: {error_msg}")
+                                self._last_error = f"重新创建流代理失败: {error_msg}"
+                                return False
+                        else:
+                            normal_logger.error(f"删除不健康的流 {self.stream_id} 失败")
+                            self._last_error = "删除不健康的流失败"
+                            return False
                 
                 return False
                 
@@ -1218,3 +1251,145 @@ class ZLMVideoStream(BaseVideoStream):
                 normal_logger.warning(f"close_streams API 关闭流失败: {result}, stream_id(key): {self.stream_id}")
         except Exception as e:
             normal_logger.error(f"通过 close_streams API 关闭流时出错: {str(e)}, stream_id(key): {self.stream_id}")
+
+    async def _verify_existing_stream_health(self) -> bool:
+        """验证现有流的健康状态
+        
+        Returns:
+            bool: 流是否健康
+        """
+        try:
+            # 1. 调用getMediaInfo检查流是否在线
+            stream_info_params = {
+                "vhost": self.vhost,
+                "app": self.app,
+                "stream": self.stream_name
+            }
+            
+            info_result = self.manager.call_api("getMediaInfo", stream_info_params)
+            if info_result.get("code") != 0:
+                normal_logger.warning(f"无法获取流 {self.stream_id} 的媒体信息: {info_result.get('msg', '未知错误')}")
+                return False
+            
+            # 检查online状态
+            is_online = info_result.get("online")
+            if not is_online:
+                normal_logger.warning(f"流 {self.stream_id} 在ZLM中标记为离线状态")
+                return False
+            
+            # 2. 检查流的originUrl是否与当前URL匹配
+            origin_url = info_result.get("originUrl", "")
+            if origin_url != self.url:
+                normal_logger.warning(f"流 {self.stream_id} 的originUrl({origin_url})与当前URL({self.url})不匹配")
+                return False
+            
+            # 3. 检查流是否有可用的tracks
+            tracks = info_result.get("tracks", [])
+            if not tracks:
+                normal_logger.warning(f"流 {self.stream_id} 没有可用的媒体轨道")
+                return False
+            
+            # 4. 额外检查：尝试构建代理URL并测试连通性
+            proxy_url = self._get_zlm_proxy_url()
+            connectivity_ok = await self._test_stream_connectivity(proxy_url)
+            if not connectivity_ok:
+                normal_logger.warning(f"流 {self.stream_id} 的代理URL({proxy_url})连通性测试失败")
+                return False
+            
+            normal_logger.info(f"流 {self.stream_id} 健康状态验证通过: online={is_online}, tracks={len(tracks)}, connectivity=OK")
+            return True
+            
+        except Exception as e:
+            normal_logger.error(f"验证流 {self.stream_id} 健康状态时出错: {str(e)}")
+            return False
+
+    async def _test_stream_connectivity(self, proxy_url: str) -> bool:
+        """测试流的连通性
+        
+        Args:
+            proxy_url: 代理URL
+            
+        Returns:
+            bool: 连通性是否正常
+        """
+        try:
+            import cv2
+            import asyncio
+            
+            # 在线程池中执行OpenCV测试，避免阻塞异步循环
+            loop = asyncio.get_event_loop()
+            
+            def test_opencv_connectivity():
+                try:
+                    cap = cv2.VideoCapture(proxy_url)
+                    if not cap.isOpened():
+                        return False
+                    
+                    # 尝试读取一帧
+                    ret, frame = cap.read()
+                    cap.release()
+                    
+                    return ret and frame is not None
+                except Exception:
+                    return False
+            
+            # 设置超时时间为5秒
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, test_opencv_connectivity),
+                timeout=5.0
+            )
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            normal_logger.warning(f"流连通性测试超时: {proxy_url}")
+            return False
+        except Exception as e:
+            normal_logger.warning(f"流连通性测试异常: {str(e)}")
+            return False
+
+    async def _delete_existing_unhealthy_stream(self) -> bool:
+        """删除不健康的现有流
+        
+        Returns:
+            bool: 是否成功删除
+        """
+        try:
+            # 1. 尝试使用close_streams API强制关闭流
+            close_params = {
+                "vhost": self.vhost,
+                "app": self.app,
+                "stream": self.stream_name,
+                "force": 1
+            }
+            
+            normal_logger.info(f"尝试强制关闭不健康的流: {self.stream_id}")
+            result = self.manager.call_api("close_streams", close_params)
+            
+            if result.get("code") == 0:
+                normal_logger.info(f"成功关闭不健康的流: {self.stream_id}")
+                
+                # 等待一小段时间确保流完全关闭
+                await asyncio.sleep(1.0)
+                
+                # 验证流确实被删除
+                info_result = self.manager.call_api("getMediaInfo", {
+                    "vhost": self.vhost,
+                    "app": self.app,
+                    "stream": self.stream_name
+                })
+                
+                if info_result.get("code") == -2:  # -2表示流不存在
+                    normal_logger.info(f"确认流 {self.stream_id} 已被成功删除")
+                    return True
+                else:
+                    normal_logger.warning(f"流 {self.stream_id} 可能未完全删除，getMediaInfo返回: {info_result}")
+                    return False
+            else:
+                error_msg = result.get("msg", "未知错误")
+                normal_logger.error(f"关闭不健康流失败: {error_msg}")
+                return False
+                
+        except Exception as e:
+            normal_logger.error(f"删除不健康流时出错: {str(e)}")
+            return False

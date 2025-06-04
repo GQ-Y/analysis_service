@@ -86,12 +86,37 @@ class AnalyzerFactory:
                 exception_logger.error(f"未知的分析器类型: {analyzer_type}")
                 return None
                 
+            # 如果找不到指定名称的分析器，尝试获取该类型的第一个可用分析器
             if name not in self._analyzers[analyzer_type]:
-                exception_logger.error(f"未知的分析器名称: {name}")
-                return None
-                
-            analyzer_class = self._analyzers[analyzer_type][name]
-            return analyzer_class(config)
+                if name == "default" and self._analyzers[analyzer_type]:
+                    # 对于 "default" 名称，使用第一个可用的分析器
+                    first_analyzer_name = next(iter(self._analyzers[analyzer_type].keys()))
+                    normal_logger.info(f"未找到名为 '{name}' 的分析器，使用默认分析器: {first_analyzer_name}")
+                    analyzer_class = self._analyzers[analyzer_type][first_analyzer_name]
+                else:
+                    exception_logger.error(f"未知的分析器名称: {name}")
+                    return None
+            else:
+                analyzer_class = self._analyzers[analyzer_type][name]
+            
+            # 正确提取参数并传递给分析器构造函数
+            model_code = config.get("model_code")
+            device = config.get("device", "auto")
+            
+            # 如果device是数字，转换为对应的字符串
+            if isinstance(device, int):
+                device_mapping = {0: "cpu", 1: "cuda", 2: "auto"}
+                device = device_mapping.get(device, "auto")
+            
+            normal_logger.info(f"创建分析器: {analyzer_class.__name__}, 模型代码: {model_code}, 设备: {device}")
+            
+            # 从config中移除已经显式传递的参数，避免重复传递
+            remaining_config = config.copy()
+            remaining_config.pop("model_code", None)
+            remaining_config.pop("device", None)
+            
+            # 使用正确的参数顺序创建分析器实例
+            return analyzer_class(model_code=model_code, device=device, **remaining_config)
         except Exception as e:
             exception_logger.exception(f"创建分析器失败: {str(e)}")
             return None

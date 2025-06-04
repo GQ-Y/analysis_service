@@ -547,6 +547,211 @@ class ZLMediaKitManager:
             exception_logger.exception(f"获取所有流信息时出错: {str(e)}")
             return []
 
+    async def check_stream_health(self, vhost: str, app: str, stream_name: str, 
+                                original_url: str = None) -> Dict[str, Any]:
+        """检查流的健康状态
+        
+        Args:
+            vhost: 虚拟主机
+            app: 应用名
+            stream_name: 流名
+            original_url: 原始URL，用于验证
+            
+        Returns:
+            Dict[str, Any]: 健康检查结果
+        """
+        health_result = {
+            "healthy": False,
+            "online": False,
+            "has_tracks": False,
+            "url_match": False,
+            "connectivity": False,
+            "details": {},
+            "errors": []
+        }
+        
+        try:
+            # 1. 检查流是否存在于ZLM中
+            stream_info_params = {
+                "vhost": vhost,
+                "app": app,
+                "stream": stream_name
+            }
+            
+            info_result = self.call_api("getMediaInfo", stream_info_params)
+            health_result["details"]["get_media_info"] = info_result
+            
+            if info_result.get("code") != 0:
+                error_msg = info_result.get("msg", "未知错误")
+                health_result["errors"].append(f"获取媒体信息失败: {error_msg}")
+                return health_result
+            
+            # 2. 检查online状态
+            is_online = info_result.get("online")
+            health_result["online"] = bool(is_online)
+            
+            if not is_online:
+                health_result["errors"].append("流在ZLM中标记为离线状态")
+            
+            # 3. 检查是否有媒体轨道
+            tracks = info_result.get("tracks", [])
+            health_result["has_tracks"] = len(tracks) > 0
+            health_result["details"]["track_count"] = len(tracks)
+            
+            if not tracks:
+                health_result["errors"].append("流没有可用的媒体轨道")
+            
+            # 4. 如果提供了原始URL，检查是否匹配
+            if original_url:
+                origin_url = info_result.get("originUrl", "")
+                health_result["url_match"] = origin_url == original_url
+                health_result["details"]["origin_url"] = origin_url
+                health_result["details"]["expected_url"] = original_url
+                
+                if not health_result["url_match"]:
+                    health_result["errors"].append(f"URL不匹配: 期望={original_url}, 实际={origin_url}")
+            else:
+                health_result["url_match"] = True  # 如果没有提供原始URL，跳过此检查
+            
+            # 5. 测试连通性（构建播放URL并尝试连接）
+            try:
+                connectivity_ok = await self._test_stream_connectivity(vhost, app, stream_name)
+                health_result["connectivity"] = connectivity_ok
+                
+                if not connectivity_ok:
+                    health_result["errors"].append("流连通性测试失败")
+            except Exception as e:
+                health_result["errors"].append(f"连通性测试异常: {str(e)}")
+                health_result["connectivity"] = False
+            
+            # 6. 综合判断健康状态
+            health_result["healthy"] = (
+                health_result["online"] and 
+                health_result["has_tracks"] and 
+                health_result["url_match"] and 
+                health_result["connectivity"]
+            )
+            
+            return health_result
+            
+        except Exception as e:
+            health_result["errors"].append(f"健康检查异常: {str(e)}")
+            exception_logger.exception(f"检查流健康状态时出错: {str(e)}")
+            return health_result
+
+    async def _test_stream_connectivity(self, vhost: str, app: str, stream_name: str) -> bool:
+        """测试流的连通性
+        
+        Args:
+            vhost: 虚拟主机
+            app: 应用名
+            stream_name: 流名
+            
+        Returns:
+            bool: 连通性是否正常
+        """
+        try:
+            import cv2
+            import asyncio
+            
+            # 构建RTSP播放URL
+            server_address = self._config.server_address
+            rtsp_port = self._config.rtsp_port
+            
+            # 如果是本地地址，尝试获取实际IP
+            if server_address in ['localhost', '127.0.0.1']:
+                try:
+                    import socket
+                    hostname = socket.gethostname()
+                    server_address = socket.gethostbyname(hostname)
+                except Exception:
+                    pass
+            
+            test_url = f"rtsp://{server_address}:{rtsp_port}/{app}/{stream_name}"
+            
+            # 在线程池中执行OpenCV测试
+            loop = asyncio.get_event_loop()
+            
+            def test_opencv_connectivity():
+                try:
+                    cap = cv2.VideoCapture(test_url)
+                    if not cap.isOpened():
+                        return False
+                    
+                    # 尝试读取一帧
+                    ret, frame = cap.read()
+                    cap.release()
+                    
+                    return ret and frame is not None
+                except Exception:
+                    return False
+            
+            # 设置超时时间为3秒
+            result = await asyncio.wait_for(
+                loop.run_in_executor(None, test_opencv_connectivity),
+                timeout=3.0
+            )
+            
+            return result
+            
+        except asyncio.TimeoutError:
+            normal_logger.warning(f"流连通性测试超时: {app}/{stream_name}")
+            return False
+        except Exception as e:
+            normal_logger.warning(f"流连通性测试异常: {str(e)}")
+            return False
+
+    async def force_delete_stream(self, vhost: str, app: str, stream_name: str) -> bool:
+        """强制删除流
+        
+        Args:
+            vhost: 虚拟主机
+            app: 应用名
+            stream_name: 流名
+            
+        Returns:
+            bool: 是否成功删除
+        """
+        try:
+            # 使用close_streams API强制关闭流
+            close_params = {
+                "vhost": vhost,
+                "app": app,
+                "stream": stream_name,
+                "force": 1
+            }
+            
+            normal_logger.info(f"强制删除流: {vhost}/{app}/{stream_name}")
+            result = self.call_api("close_streams", close_params)
+            
+            if result.get("code") == 0:
+                normal_logger.info(f"成功强制删除流: {vhost}/{app}/{stream_name}")
+                
+                # 等待一小段时间确保流完全关闭
+                await asyncio.sleep(1.0)
+                
+                # 验证流确实被删除
+                info_result = self.call_api("getMediaInfo", {
+                    "vhost": vhost,
+                    "app": app,
+                    "stream": stream_name
+                })
+                
+                if info_result.get("code") == -2:  # -2表示流不存在
+                    normal_logger.info(f"确认流已被成功删除: {vhost}/{app}/{stream_name}")
+                    return True
+                else:
+                    normal_logger.warning(f"流可能未完全删除: {vhost}/{app}/{stream_name}, getMediaInfo返回: {info_result}")
+                    return False
+            else:
+                error_msg = result.get("msg", "未知错误")
+                normal_logger.error(f"强制删除流失败: {error_msg}")
+                return False
+                
+        except Exception as e:
+            normal_logger.error(f"强制删除流时出错: {str(e)}")
+            return False
+
     def call_api(self, method: str, params: Dict[str, Any] = None) -> Dict[str, Any]:
         """调用ZLMediaKit HTTP API
 

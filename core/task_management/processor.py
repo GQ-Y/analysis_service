@@ -28,7 +28,7 @@ from core.task_management.stream.status import StreamStatus, StreamHealthStatus
 
 # 延迟导入stream_manager，避免循环导入
 from core.redis_manager import RedisManager
-from core.analyzer.analyzer_factory import AnalyzerFactory
+from core.analyzer.analyzer_factory import analyzer_factory
 from core.task_management.callback_service import callback_service
 # 新增: 导入 Socket 管理器
 from shared.utils.socket_manager import get_socket_manager
@@ -219,7 +219,8 @@ class TaskProcessor:
                 from core.task_management.stream import stream_task_bridge
                 stream_task_bridge.unregister_task_stream(task_id)
                 # 取消订阅流
-                from core.task_management.stream import stream_manager
+                from core.task_management.stream import StreamManager
+                stream_manager = app_state_manager.get_stream_manager()
                 await stream_manager.unsubscribe_stream(stream_id, task_id)
                 del self.stream_subscribers[task_id]
 
@@ -358,7 +359,7 @@ class TaskProcessor:
             normal_logger.info(f"工作进程 {task_id}: 使用流ID '{stream_id_to_use}' 和 URL '{stream_url}'")
 
             # 订阅视频流 (使用 stream_config_for_subscription)
-            from core.task_management.stream import stream_manager
+            stream_manager = app_state_manager.get_stream_manager()
             try:
                 normal_logger.info(f"开始订阅流 {stream_id_to_use}，URL: {stream_url}")
                 success, frame_queue = await stream_manager.subscribe_stream(stream_id_to_use, task_id, stream_config_for_subscription)
@@ -413,9 +414,14 @@ class TaskProcessor:
 
                 try:
                     normal_logger.info(f"任务 {task_id}: 准备创建分析器, 类型: {analyzer_type}, 收集到的参数: {analyzer_kwargs}")
-                    analyzer = AnalyzerFactory.create_analyzer(
+                    
+                    # 从analyzer_type中提取分析器名称，如果没有指定则使用默认名称
+                    analyzer_name = analyzer_kwargs.get("analyzer_name", "default")
+                    
+                    analyzer = analyzer_factory.create_analyzer(
                         analyzer_type,
-                        **analyzer_kwargs
+                        analyzer_name, 
+                        analyzer_kwargs
                     )
                     # DIAGNOSTIC LOG:
                     if analyzer:
@@ -583,7 +589,7 @@ class TaskProcessor:
 
             # 任务结束，取消订阅
             if stream_id_to_use:
-                from core.task_management.stream import stream_manager
+                from core.task_management.stream import StreamManager
                 await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
 
             normal_logger.info(f"工作进程 {task_id}: 已结束")
@@ -594,7 +600,7 @@ class TaskProcessor:
             # 确保取消订阅
             if 'stream_id_to_use' in locals() and stream_id_to_use:
                 try:
-                    from core.task_management.stream import stream_manager
+                    from core.task_management.stream import StreamManager
                     await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
                 except Exception:
                     pass  # 忽略取消订阅时的错误

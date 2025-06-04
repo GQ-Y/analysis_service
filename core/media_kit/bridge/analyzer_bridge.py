@@ -55,9 +55,9 @@ class AnalyzerBridge:
     
     async def initialize(self) -> None:
         """初始化桥接器"""
-        # 导入流管理器
-        from ..base.stream_manager import stream_manager
-        self._stream_manager = stream_manager
+        # 获取流管理器
+        from shared.utils.app_state import app_state_manager
+        self._stream_manager = app_state_manager.get_stream_manager()
         
         # 导入事件系统
         from ..base.event_system import event_system

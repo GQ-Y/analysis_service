@@ -145,6 +145,7 @@ async def lifespan(app: FastAPI):
         from core.task_management.manager import TaskManager
         from core.task_management.stream import StreamTaskBridge
         from core.task_management.callback_service import callback_service
+        from services.http.task_service import TaskService
 
         # 1. 初始化基础服务
         app_state_manager.initialize()
@@ -166,6 +167,11 @@ async def lifespan(app: FastAPI):
 
         callback_service.initialize()
         app_state_manager.register_service("callback_service", callback_service)
+
+        # 3. 初始化任务服务并注册到app.state
+        task_service = TaskService(task_manager=task_manager)
+        app.state.task_service = task_service
+        normal_logger.info("任务服务已初始化并注册")
 
         # 等待服务就绪
         await asyncio.sleep(2)

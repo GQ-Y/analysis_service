@@ -33,10 +33,12 @@ class BaseAnalyzer(ABC):
         
         # 基本属性
         self.model_code = model_code
-        self.device = device
+        self.device = self._auto_select_device(device)  # 自动选择设备
         self.half_precision = kwargs.get("half_precision", False)
         self.custom_weights_path = kwargs.get("custom_weights_path")
         self.loaded = False  # 模型是否已加载
+        
+        normal_logger.info(f"分析器设备自动选择结果: {self.device}")
         
         # 加载模型（如果提供了模型代码）
         if model_code:
@@ -126,6 +128,43 @@ class BaseAnalyzer(ABC):
         """
         return "base"
 
+    def _auto_select_device(self, device: str) -> str:
+        """
+        自动选择推理设备
+        
+        Args:
+            device: 用户指定的设备
+            
+        Returns:
+            str: 选择的设备 ("cpu" 或 "cuda")
+        """
+        if device == "auto":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    normal_logger.info("检测到CUDA可用，自动选择GPU设备")
+                    return "cuda"
+                else:
+                    normal_logger.info("CUDA不可用，自动选择CPU设备")
+                    return "cpu"
+            except Exception as e:
+                normal_logger.warning(f"设备检测失败，默认使用CPU: {e}")
+                return "cpu"
+        elif device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    normal_logger.info("用户指定CUDA设备，且CUDA可用")
+                    return "cuda"
+                else:
+                    normal_logger.warning("用户指定CUDA设备，但CUDA不可用，强制使用CPU")
+                    return "cpu"
+            except Exception as e:
+                normal_logger.warning(f"CUDA检测失败，强制使用CPU: {e}")
+                return "cpu"
+        else:
+            # 用户指定了cpu或其他设备，直接返回
+            return device
 
 class DetectionAnalyzer(BaseAnalyzer):
     """目标检测分析器基类"""

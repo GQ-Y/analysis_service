@@ -38,10 +38,12 @@ class YOLODetector:
         """
         self.model = None
         self.current_model_code = None
-        self.device = device
+        self.device = self._auto_select_device(device)  # 自动选择设备
         self.custom_weights_path = kwargs.get("custom_weights_path")
         self.half_precision = kwargs.get("half_precision", False)
         self.kwargs = kwargs
+        
+        normal_logger.info(f"YOLO检测器设备自动选择结果: {self.device}")
         
         # 加载模型（如果提供了模型代码）
         if model_code:
@@ -64,6 +66,44 @@ class YOLODetector:
             except Exception as e:
                 exception_logger.exception(f"在初始化过程中加载模型 {model_code} 失败: {e}")
 
+    def _auto_select_device(self, device: str) -> str:
+        """
+        自动选择推理设备
+        
+        Args:
+            device: 用户指定的设备
+            
+        Returns:
+            str: 选择的设备 ("cpu" 或 "cuda")
+        """
+        if device == "auto":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    normal_logger.info("检测到CUDA可用，自动选择GPU设备")
+                    return "cuda"
+                else:
+                    normal_logger.info("CUDA不可用，自动选择CPU设备")
+                    return "cpu"
+            except Exception as e:
+                normal_logger.warning(f"设备检测失败，默认使用CPU: {e}")
+                return "cpu"
+        elif device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    normal_logger.info("用户指定CUDA设备，且CUDA可用")
+                    return "cuda"
+                else:
+                    normal_logger.warning("用户指定CUDA设备，但CUDA不可用，强制使用CPU")
+                    return "cpu"
+            except Exception as e:
+                normal_logger.warning(f"CUDA检测失败，强制使用CPU: {e}")
+                return "cpu"
+        else:
+            # 用户指定了cpu或其他设备，直接返回
+            return device
+
     async def load_model(self, model_code: str) -> bool:
         """
         加载模型
@@ -83,8 +123,11 @@ class YOLODetector:
                 exception_logger.error(f"模型文件不存在: {model_path}")
                 return False
             
+            # 自动选择设备
+            actual_device = self._auto_select_device(self.device)
+            
             # 记录要加载的模型信息
-            normal_logger.info(f"开始加载YOLO模型: {model_path}, 设备={self.device}")
+            normal_logger.info(f"开始加载YOLO模型: {model_path}, 设备={actual_device}")
             
             # 加载Ultralytics YOLO模型
             from ultralytics import YOLO
@@ -92,19 +135,21 @@ class YOLODetector:
             # 加载模型
             self.model = YOLO(model_path)
             
-            # 设置设备
-            if self.device != "auto":
-                self.model.to(self.device)
-                
+            # 设置设备 - 使用自动选择的设备
+            self.model.to(actual_device)
+            
             # 设置半精度
-            if self.half_precision:
+            if self.half_precision and actual_device != "cpu":
                 normal_logger.info("使用半精度(FP16)推理")
                 self.model.half()
+            elif self.half_precision and actual_device == "cpu":
+                normal_logger.warning("CPU设备不支持半精度推理，跳过半精度设置")
                 
-            # 更新当前模型代码
+            # 更新当前模型代码和实际设备
             self.current_model_code = model_code
+            self.device = actual_device  # 更新为实际使用的设备
             
-            normal_logger.info(f"YOLO模型加载成功: {model_code}")
+            normal_logger.info(f"YOLO模型加载成功: {model_code}, 实际使用设备: {actual_device}")
             return True
             
         except Exception as e:

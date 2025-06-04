@@ -37,9 +37,7 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
                 - classes: 类别列表
                 - nested_detection: 是否启用嵌套检测
         """
-        super().__init__(model_code, device, **kwargs)
-        
-        # 初始化检测器
+        # 先初始化检测器，这样在父类调用load_model时detector已经存在
         self.detector = YOLODetector(model_code, device, **kwargs)
         
         # 检测参数
@@ -53,6 +51,12 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
         self._detection_count = 0
         self._total_detection_time = 0
         self._frame_count = 0
+        
+        # 初始化current_model_code属性
+        self.current_model_code = model_code
+        
+        # 调用父类初始化
+        super().__init__(model_code, device, **kwargs)
         
         normal_logger.info(f"YOLO检测分析器初始化: 置信度={self.confidence}, IoU阈值={self.iou_threshold}")
         if self.nested_detection:
