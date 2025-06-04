@@ -26,7 +26,6 @@ normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
 test_logger = get_test_logger()
 
-
 class StreamManager:
     """视频流管理器，负责管理所有视频流的创建、共享和生命周期"""
 
@@ -598,7 +597,4 @@ class StreamManager:
             else: # stream 存在但不是 ZLMVideoStream
                 normal_logger.warning(f"流 (key: {stream_key}, original_id: {original_stream_id}) 不是 ZLMVideoStream 类型，无法获取代理播放地址。类型: {type(stream)}")
                 return None
-
-# 单例实例化
-stream_manager = StreamManager()
 

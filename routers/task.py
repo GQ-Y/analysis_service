@@ -51,6 +51,9 @@ async def start_task(
     - task_name: 任务名称，可选
     - output_url: 输出地址，可选
     - save_result: 是否保存结果，默认为false
+    - stream_engine: 流处理引擎，可选值：auto(默认)、opencv、gstreamer
+    - enable_hardware_decode: 是否启用硬件解码（仅GStreamer支持），默认为false
+    - low_latency: 是否启用低延迟模式（推荐用于RTSP流），默认为false
     - config: 检测配置参数，可选，包括：
         - confidence: 置信度阈值，范围0-1
         - iou: IoU阈值，范围0-1

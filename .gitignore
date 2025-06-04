@@ -17,5 +17,7 @@ ZLMediaKit/*
 test_stream.log
 test_plan.md
 docs/*
-zlmos/*
+zlmos/*/log/*
+zlmos/*/www/*
+!zlmos/*/config.ini
 string/*

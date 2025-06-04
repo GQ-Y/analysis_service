@@ -208,7 +208,6 @@ class StreamTaskBridge:
             # 确保取消订阅
             if pubsub is not None:
                 try:
-                    normal_logger.info("取消Redis订阅")
                     await pubsub.punsubscribe("stream_status:*")
                     await pubsub.close()
                     normal_logger.info("Redis订阅已关闭")
@@ -330,15 +329,15 @@ class StreamTaskBridge:
             # 取消所有订阅任务
             for channel, task in list(self._subscriptions.items()):
                 if not task.done():
-                    normal_logger.info(f"取消订阅任务: {channel}")
+                    normal_logger.info(f"正在取消订阅任务: {channel}")
                     task.cancel()
                     try:
                         # 设置超时，避免无限等待
-                        await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                        await asyncio.wait_for(task, timeout=5.0)
                     except asyncio.TimeoutError:
                         normal_logger.warning(f"取消订阅任务超时: {channel}")
                     except asyncio.CancelledError:
-                        normal_logger.info(f"订阅任务已取消: {channel}")
+                        normal_logger.info(f"订阅任务已成功取消: {channel}")
                     except Exception as e:
                         exception_logger.exception(f"取消订阅任务异常: {str(e)}")
             

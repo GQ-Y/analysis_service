@@ -30,7 +30,6 @@ def discover_analyzers():
     # 获取当前模块所在目录
     analyzer_path = Path(__file__).parent
     
-    normal_logger.info(f"开始扫描分析器: 路径={analyzer_path}")
     
     # 递归导入所有模块
     for _, name, is_pkg in pkgutil.iter_modules([str(analyzer_path)]):

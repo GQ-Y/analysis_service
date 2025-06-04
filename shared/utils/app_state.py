@@ -81,6 +81,22 @@ class AppStateManager:
         """注册任务管理器实例"""
         self.register_service('task_manager', task_manager)
     
+    def get_stream_manager(self):
+        """获取流管理器实例"""
+        return self.get_service('stream_manager')
+    
+    def register_stream_manager(self, stream_manager):
+        """注册流管理器实例"""
+        self.register_service('stream_manager', stream_manager)
+    
+    def get_stream_task_bridge(self):
+        """获取流任务桥接器实例"""
+        return self.get_service('stream_task_bridge')
+    
+    def register_stream_task_bridge(self, stream_task_bridge):
+        """注册流任务桥接器实例"""
+        self.register_service('stream_task_bridge', stream_task_bridge)
+    
     def shutdown(self):
         """关闭应用状态管理器"""
         with self._lock:

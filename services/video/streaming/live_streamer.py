@@ -19,6 +19,7 @@ from services.video.utils.frame_dropper import SmartFrameDropper
 from services.video.utils.ffmpeg_params import FFmpegParamsGenerator
 from services.video.utils.frame_renderer import FrameRenderer
 from services.video.encoders.base_encoder import BaseEncoder
+from shared.utils.app_state import app_state_manager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -35,6 +36,11 @@ class LiveStreamer(BaseEncoder):
         self.streaming_tasks = {}  # 存储直播流任务信息
         self.ffmpeg_params = FFmpegParamsGenerator()
         self.frame_renderer = FrameRenderer()
+        self.normal_logger = get_normal_logger(__name__)
+        self.exception_logger = get_exception_logger(__name__)
+        self.frame_queue = None
+        self.is_running = False
+        self.stop_event = asyncio.Event()
         normal_logger.info("直播推流器初始化完成")
     
     async def start_live_stream(self, task_id: str, task_manager, format: str = "rtmp",
@@ -490,7 +496,11 @@ class LiveStreamer(BaseEncoder):
             normal_logger.info(f"任务 {task_id}: 准备订阅原始视频流 {original_stream_id}, URL: {stream_url}")
 
             # 直接订阅原始视频流以获取未处理的帧
-            from core.task_management.stream import stream_manager
+            stream_manager = app_state_manager.get_stream_manager()
+            if not stream_manager:
+                normal_logger.error("流管理器未初始化")
+                return
+
             frame_queue = None
             try:
                 # 构建流配置

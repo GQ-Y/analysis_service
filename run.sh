@@ -4,6 +4,7 @@
 LOG_FILE="./logs/service.log"
 ERROR_LOG="./logs/error.log"
 ANALYSIS_LOG="./logs/analysis.log"
+ZLM_LOG="./logs/zlm.log"
 
 # 确保日志目录存在
 mkdir -p ./logs
@@ -14,6 +15,13 @@ TEST_DURATION=60 # 默认测试时间（秒）
 CONFIDENCE=0.01 # 默认置信度阈值
 LOGS_ONLY=false # 默认不只分析日志
 KEEP_LOGS=false # 默认不保留旧日志
+
+# 定义 ZLMediaKit 相关变量
+ZLM_PID_FILE="./run/zlm.pid"
+ZLM_BINARY="./zlmos/darwin/zlm"
+
+# 确保 run 目录存在
+mkdir -p ./run
 
 # 解析命令行参数
 while [[ $# -gt 0 ]]; do
@@ -198,6 +206,93 @@ run_test() {
     fi
 }
 
+# 函数：启动 ZLMediaKit
+start_zlm() {
+    echo "正在启动 ZLMediaKit 服务..."
+    
+    # 检查 ZLMediaKit 是否已经在运行
+    if [ -f "$ZLM_PID_FILE" ]; then
+        local pid=$(cat "$ZLM_PID_FILE")
+        if ps -p "$pid" > /dev/null; then
+            echo "ZLMediaKit 已经在运行 (PID: $pid)"
+            return 0
+        else
+            rm -f "$ZLM_PID_FILE"
+        fi
+    fi
+    
+    # 检查 ZLMediaKit 二进制文件是否存在
+    if [ ! -f "$ZLM_BINARY" ]; then
+        echo "错误: ZLMediaKit 二进制文件不存在: $ZLM_BINARY" | tee -a $ERROR_LOG
+        return 1
+    fi
+    
+    # 启动 ZLMediaKit
+    cd zlmos/darwin
+    ./zlm >> "$ZLM_LOG" 2>&1 &
+    ZLM_PID=$!
+    cd ../../
+    
+    # 保存 PID
+    echo $ZLM_PID > "$ZLM_PID_FILE"
+    
+    # 等待服务启动
+    echo "等待 ZLMediaKit 服务启动..."
+    sleep 2
+    
+    # 检查服务是否成功启动
+    if ps -p $ZLM_PID > /dev/null; then
+        echo "ZLMediaKit 服务已启动 (PID: $ZLM_PID)"
+        return 0
+    else
+        echo "错误: ZLMediaKit 服务启动失败" | tee -a $ERROR_LOG
+        return 1
+    fi
+}
+
+# 函数：停止 ZLMediaKit
+stop_zlm() {
+    echo "正在停止 ZLMediaKit 服务..."
+    
+    if [ -f "$ZLM_PID_FILE" ]; then
+        local pid=$(cat "$ZLM_PID_FILE")
+        if ps -p "$pid" > /dev/null; then
+            kill "$pid"
+            sleep 1
+            if ps -p "$pid" > /dev/null; then
+                kill -9 "$pid"
+            fi
+            rm -f "$ZLM_PID_FILE"
+            echo "ZLMediaKit 服务已停止"
+        else
+            echo "ZLMediaKit 服务未运行"
+            rm -f "$ZLM_PID_FILE"
+        fi
+    else
+        echo "未找到 ZLMediaKit PID 文件"
+    fi
+}
+
+# 函数：检查 ZLMediaKit 状态
+check_zlm() {
+    if [ -f "$ZLM_PID_FILE" ]; then
+        local pid=$(cat "$ZLM_PID_FILE")
+        if ps -p "$pid" > /dev/null; then
+            echo "ZLMediaKit 服务正在运行 (PID: $pid)"
+            return 0
+        else
+            echo "ZLMediaKit 服务未运行，尝试重新启动..."
+            rm -f "$ZLM_PID_FILE"
+            start_zlm
+            return $?
+        fi
+    else
+        echo "ZLMediaKit 服务未运行，尝试启动..."
+        start_zlm
+        return $?
+    fi
+}
+
 # 函数：启动服务并在崩溃时自动重启
 start_service() {
     echo "启动服务..."
@@ -205,8 +300,12 @@ start_service() {
     # 清理旧日志
     clear_old_logs
 
-    # 确保ZLMediaKit环境正确
-    check_zlmediakit
+    # 启动 ZLMediaKit 服务
+    start_zlm
+    if [ $? -ne 0 ]; then
+        echo "错误: ZLMediaKit 服务启动失败，无法继续" | tee -a $ERROR_LOG
+        exit 1
+    fi
 
     echo "服务日志保存在: $LOG_FILE"
 
@@ -223,8 +322,19 @@ start_service() {
     while true; do
         echo "$(date) - 启动服务实例" >> $LOG_FILE
 
+        # 检查 ZLMediaKit 状态
+        check_zlm
+        if [ $? -ne 0 ]; then
+            echo "错误: ZLMediaKit 服务异常，尝试重新启动" | tee -a $ERROR_LOG
+            stop_zlm
+            start_zlm
+            if [ $? -ne 0 ]; then
+                echo "错误: ZLMediaKit 服务无法恢复，退出服务" | tee -a $ERROR_LOG
+                exit 1
+            fi
+        fi
+
         # 启动uvicorn，将输出重定向到日志文件，使用warning日志级别以关闭INFO日志
-        # 从环境变量获取端口，默认为8002
         PORT=${SERVICES_PORT:-8002}
         HOST=${SERVICES_HOST:-0.0.0.0}
         uvicorn app:app --host $HOST --port $PORT --workers 1 --log-level warning >> $LOG_FILE 2>&1
@@ -247,35 +357,18 @@ start_service() {
             free -h >> $ERROR_LOG 2>&1 || vm_stat >> $ERROR_LOG 2>&1
             echo "进程列表:" >> $ERROR_LOG
             ps aux | grep -E 'python|uvicorn|zlm' >> $ERROR_LOG
-
-            # 如果段错误次数超过3次，尝试在CPU模式下启动
-            if [ $SEGFAULT_COUNT -ge 3 ]; then
-                echo "段错误次数过多，尝试在CPU模式下启动..." | tee -a $ERROR_LOG
-                export FORCE_CPU_MODE=1
-                export CUDA_VISIBLE_DEVICES="-1"
-            fi
         fi
 
-        # 如果是正常退出(0)或收到中断信号(130)，则不重启
-        if [ $EXIT_CODE -eq 0 ] || [ $EXIT_CODE -eq 130 ]; then
-            echo "服务正常退出，不再重启" | tee -a $LOG_FILE
-            break
-        fi
-
-        # 增加崩溃计数
-        CRASH_COUNT=$((CRASH_COUNT + 1))
-
-        # 如果崩溃次数超过最大限制，则停止重启
-        if [ $CRASH_COUNT -ge $MAX_CRASHES ]; then
-            echo "服务已崩溃 $CRASH_COUNT 次，超过最大限制 $MAX_CRASHES，停止重启" | tee -a $ERROR_LOG
-            echo "请检查日志文件以获取更多信息: $LOG_FILE, $ERROR_LOG" | tee -a $ERROR_LOG
+        # 检查是否需要退出
+        if [ $SEGFAULT_COUNT -ge $MAX_CRASHES ]; then
+            echo "错误: 服务在短时间内发生过多段错误，退出" | tee -a $ERROR_LOG
+            stop_zlm
             exit 1
         fi
 
-        # 根据崩溃次数增加等待时间，避免频繁重启
-        WAIT_TIME=$((5 * CRASH_COUNT))
-        echo "服务异常退出 (状态码 $EXIT_CODE)，$WAIT_TIME 秒后重启... (第 $CRASH_COUNT 次尝试)" | tee -a $LOG_FILE
-        sleep $WAIT_TIME
+        # 等待一段时间后重启
+        echo "服务将在 5 秒后重启..." | tee -a $LOG_FILE
+        sleep 5
     done
 }
 
@@ -298,78 +391,15 @@ check_port() {
     return 0
 }
 
-# 清理过程
+# 清理函数
 cleanup() {
     echo "正在清理..."
-    # 清理临时文件
-    rm -rf ./temp/videos/*
-    echo "清理完成"
+    stop_zlm
+    exit 0
 }
 
-# 检查ZLMediaKit是否正常工作
-check_zlmediakit() {
-    echo "检查ZLMediaKit环境..."
-
-    # 确保ZLMediaKit库目录存在
-    if [ ! -d "lib/zlm" ]; then
-        echo "错误: 未找到ZLMediaKit库目录 lib/zlm" | tee -a $ERROR_LOG
-
-        # 尝试创建目录
-        mkdir -p lib/zlm
-
-        # 检查zlmos目录是否存在，如果存在则复制库文件
-        if [ "$(uname)" == "Darwin" ] && [ -d "zlmos/darwin" ]; then
-            if [ -f "zlmos/darwin/libmk_api.dylib" ]; then
-                echo "找到zlmos目录中的库文件，复制到lib/zlm目录..." | tee -a $LOG_FILE
-                cp zlmos/darwin/libmk_api.dylib lib/zlm/
-                chmod 755 lib/zlm/libmk_api.dylib
-                echo "库文件已复制到lib/zlm目录" | tee -a $LOG_FILE
-            else
-                echo "错误: zlmos/darwin目录中未找到libmk_api.dylib文件" | tee -a $ERROR_LOG
-                return 1
-            fi
-        else
-            echo "无法找到ZLMediaKit库文件源，请确保lib/zlm目录中包含必要的库文件" | tee -a $ERROR_LOG
-            return 1
-        fi
-    fi
-
-    # 检查库文件
-    if [ "$(uname)" == "Darwin" ]; then
-        # macOS
-        if [ ! -f "lib/zlm/libmk_api.dylib" ]; then
-            echo "错误: 未找到ZLMediaKit库文件 lib/zlm/libmk_api.dylib (macOS)" | tee -a $ERROR_LOG
-            return 1
-        fi
-    elif [ "$(uname)" == "Linux" ]; then
-        # Linux
-        if [ ! -f "lib/zlm/libmk_api.so" ]; then
-            echo "错误: 未找到ZLMediaKit库文件 lib/zlm/libmk_api.so (Linux)" | tee -a $ERROR_LOG
-            return 1
-        fi
-    else
-        echo "错误: 不支持的操作系统: $(uname)" | tee -a $ERROR_LOG
-        return 1
-    fi
-
-    # 设置ZLMediaKit库路径
-    export ZLM_LIBRARY_PATH="$(pwd)/lib/zlm"
-    echo "设置ZLMediaKit库路径: $ZLM_LIBRARY_PATH"
-
-    # 设置LD_LIBRARY_PATH/DYLD_LIBRARY_PATH以确保系统能找到ZLMediaKit库
-    if [ "$(uname)" == "Darwin" ]; then
-        # macOS使用DYLD_LIBRARY_PATH
-        export DYLD_LIBRARY_PATH="$ZLM_LIBRARY_PATH:$DYLD_LIBRARY_PATH"
-        echo "设置DYLD_LIBRARY_PATH: $ZLM_LIBRARY_PATH"
-    elif [ "$(uname)" == "Linux" ]; then
-        # Linux使用LD_LIBRARY_PATH
-        export LD_LIBRARY_PATH="$ZLM_LIBRARY_PATH:$LD_LIBRARY_PATH"
-        echo "设置LD_LIBRARY_PATH: $ZLM_LIBRARY_PATH"
-    fi
-
-    echo "ZLMediaKit环境检查通过"
-    return 0
-}
+# 注册清理函数
+trap cleanup EXIT
 
 # 主执行流程
 main() {
@@ -377,7 +407,7 @@ main() {
     cleanup
 
     # 检查ZLMediaKit环境
-    check_zlmediakit
+    check_zlm
     if [ $? -ne 0 ]; then
         echo "ZLMediaKit环境检查失败，尝试继续..." | tee -a $ERROR_LOG
     fi

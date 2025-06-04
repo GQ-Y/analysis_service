@@ -8,8 +8,10 @@ import json
 import threading
 import ctypes
 import traceback
+import subprocess
 from typing import Dict, Any, List, Optional, Callable
 import asyncio
+import platform
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.config import settings
@@ -51,6 +53,7 @@ class ZLMediaKitManager:
         self._secret = self._config.api_secret
         self._streams = {}  # 流ID到流对象的映射
         self._event_callbacks = {}  # 事件回调函数
+        self._zlm_process = None  # ZLM进程对象
 
         # 锁，用于保护流相关操作
         self._stream_lock = threading.Lock()
@@ -58,9 +61,15 @@ class ZLMediaKitManager:
         # 初始化标记
         self._is_running = False
         self._is_shutting_down = False
+        self._api_ready = False  # 新增：标记API是否就绪
         self._initialized = True
 
-        normal_logger.info(f"ZLMediaKit HTTP API管理器初始化完成，API地址: {self._api_url}")
+        normal_logger.info(f"ZLMediaKit管理器初始化完成，配置已加载: {self._api_url}")
+
+    @property
+    def is_api_ready(self) -> bool:
+        """获取API是否就绪"""
+        return self._api_ready
 
     @property
     def zlm_internal_host(self) -> str:
@@ -78,43 +87,115 @@ class ZLMediaKitManager:
         return self._config.rtsp_port
 
     async def initialize(self) -> None:
-        """初始化ZLMediaKit HTTP API连接
+        """初始化ZLMediaKit环境
 
         Returns:
             None
         """
         try:
-            normal_logger.info("正在初始化ZLMediaKit HTTP API连接...")
+            normal_logger.info("正在初始化ZLMediaKit环境...")
 
             # 如果已经运行则跳过
             if self._is_running:
                 normal_logger.info("ZLMediaKit已经在运行中")
                 return
 
-            # 测试API连接
+            # 获取系统类型
+            system = platform.system().lower()
+            if system == "darwin":
+                system_type = "darwin"  # macOS
+            elif system == "linux":
+                system_type = "linux"   # Linux x64
+            elif system == "windows":
+                system_type = "windows" # Windows x64
+            else:
+                raise RuntimeError(f"不支持的操作系统类型: {system}")
+
+            normal_logger.info(f"当前系统类型: {system_type}")
+
+            # 获取ZLMediaKit可执行文件路径
+            zlm_binary = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 
+                                    "zlmos", system_type, "MediaServer")
+            
+            # Windows系统需要添加.exe后缀
+            if system_type == "windows":
+                zlm_binary += ".exe"
+            
+            if not os.path.exists(zlm_binary):
+                raise FileNotFoundError(f"ZLMediaKit可执行文件不存在: {zlm_binary}")
+
+            # 使用config/zlm/config.ini作为主配置文件
+            config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                                     "config", "zlm", "config.ini")
+            
+            if not os.path.exists(config_file):
+                raise FileNotFoundError(f"ZLMediaKit配置文件不存在: {config_file}")
+
+            # 启动ZLM进程，使用指定的配置文件
             try:
-                # 测试HTTP API连接
-                test_result = self.call_api("getApiList")
-                if test_result.get("code") == 0:
-                    normal_logger.info("ZLMediaKit HTTP API连接成功")
-                else:
-                    error_msg = test_result.get("msg", "未知错误")
-                    normal_logger.warning(f"ZLMediaKit HTTP API连接失败: {error_msg}")
-                    normal_logger.warning("请检查ZLMediaKit服务是否正常运行，以及API密钥是否正确")
-                    # 尽管API连接失败，仍然继续运行
-            except Exception as api_err:
-                normal_logger.warning(f"测试HTTP API连接时发生异常: {str(api_err)}")
-                normal_logger.warning("ZLMediaKit HTTP API不可用，请检查服务是否正常运行")
-                # 尽管API连接失败，仍然继续运行
+                normal_logger.info(f"正在启动ZLMediaKit服务器: {zlm_binary}")
+                normal_logger.info(f"使用配置文件: {config_file}")
+                self._zlm_process = subprocess.Popen(
+                    [zlm_binary, "-c", config_file],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE
+                )
+                normal_logger.info("ZLMediaKit服务器启动成功")
+            except Exception as e:
+                exception_logger.exception(f"启动ZLMediaKit服务器失败: {str(e)}")
+                raise
 
-            # 标记为运行中 - 即使API连接失败，后续可能会恢复
+            # 设置运行状态
             self._is_running = True
+            normal_logger.info("ZLMediaKit环境初始化完成")
 
-            normal_logger.info("ZLMediaKit HTTP API初始化完成")
+            # 等待一段时间让服务器完全启动
+            await asyncio.sleep(2)
 
         except Exception as e:
-            exception_logger.exception(f"ZLMediaKit HTTP API初始化失败: {str(e)}")
-            normal_logger.error("无法初始化ZLMediaKit HTTP API连接，请检查服务是否正常运行")
+            exception_logger.exception(f"ZLMediaKit环境初始化失败: {str(e)}")
+            self._is_running = False
+            raise
+
+    async def test_api_connection(self) -> bool:
+        """测试ZLMediaKit HTTP API连接
+
+        Returns:
+            bool: API连接是否成功
+        """
+        if self._api_ready:
+            return True
+
+        try:
+            normal_logger.info("正在测试ZLMediaKit HTTP API连接...")
+            
+            # 等待ZLMediaKit服务启动
+            max_retries = 5
+            retry_interval = 2  # 秒
+            
+            for retry in range(max_retries):
+                try:
+                    # 测试HTTP API连接
+                    test_result = self.call_api("getApiList")
+                    if test_result.get("code") == 0:
+                        self._api_ready = True
+                        return True
+                    else:
+                        error_msg = test_result.get("msg", "未知错误")
+                        normal_logger.warning(f"ZLMediaKit HTTP API连接失败: {error_msg}")
+                except Exception as api_err:
+                    normal_logger.warning(f"尝试连接ZLMediaKit HTTP API (第{retry + 1}次): {str(api_err)}")
+                    if retry < max_retries - 1:
+                        normal_logger.info(f"等待 {retry_interval} 秒后重试...")
+                        await asyncio.sleep(retry_interval)
+                    continue
+
+            normal_logger.error("无法连接到ZLMediaKit HTTP API，请检查服务是否正常运行")
+            return False
+
+        except Exception as e:
+            exception_logger.exception(f"测试ZLMediaKit HTTP API连接时出错: {str(e)}")
+            return False
 
     async def shutdown(self) -> None:
         """关闭ZLMediaKit HTTP API连接并清理资源
@@ -154,16 +235,33 @@ class ZLMediaKitManager:
                 # 4. 清理内部状态
                 self._streams.clear()
                 
-                # 5. 强制等待更长时间确保所有清理完成
+                # 5. 停止ZLM进程
+                if self._zlm_process:
+                    try:
+                        normal_logger.info("正在停止ZLMediaKit服务器...")
+                        self._zlm_process.terminate()
+                        try:
+                            self._zlm_process.wait(timeout=5)  # 等待进程结束，最多5秒
+                        except subprocess.TimeoutExpired:
+                            normal_logger.warning("ZLMediaKit服务器未能在5秒内停止，强制结束进程")
+                            self._zlm_process.kill()  # 强制结束进程
+                        normal_logger.info("ZLMediaKit服务器已停止")
+                    except Exception as e:
+                        exception_logger.error(f"停止ZLMediaKit服务器时出错: {str(e)}")
+                    finally:
+                        self._zlm_process = None
+                
+                # 6. 强制等待更长时间确保所有清理完成
                 await asyncio.sleep(1.0)
                 
-                # 6. 尝试强制垃圾回收
+                # 7. 尝试强制垃圾回收
                 import gc
                 gc.collect()
                 
-                # 7. 设置状态
+                # 8. 设置状态
                 self._is_running = False
                 self._is_shutting_down = False
+                self._api_ready = False
 
                 normal_logger.info("ZLMediaKit HTTP API连接已关闭")
 
@@ -489,13 +587,10 @@ class ZLMediaKitManager:
                 
                 # 解析响应
                 result = response.json()
-                normal_logger.info(f"ZLM HTTP API响应: {result}")
                 return result
             except requests.exceptions.RequestException as e:
-                normal_logger.error(f"ZLM HTTP API请求失败: {str(e)}")
                 return {"code": -1, "msg": f"请求失败: {str(e)}"}
             except json.JSONDecodeError as e:
-                normal_logger.error(f"ZLM HTTP API响应解析失败: {str(e)}, 响应内容: {response.text if 'response' in locals() else '无响应'}")
                 return {"code": -1, "msg": f"响应解析失败: {str(e)}"}
             
         except Exception as e:

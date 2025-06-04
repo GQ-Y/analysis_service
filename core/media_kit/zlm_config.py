@@ -23,7 +23,7 @@ class ZLMConfig:
     rtsp_port: int = 554              # RTSP端口
     rtmp_port: int = 1935             # RTMP端口
     api_port: int = 8088              # API端口，默认与HTTP端口相同
-    api_secret: str = "035c73f7-bb6b-4889-a715-d9eb2d1925cc"  # API密钥，与ZLMediaKit配置的secret一致
+    api_secret: str = "Na3VmIbECZ4Nl7NHpz5XuPGWQelEFoSD"  # API密钥，与ZLMediaKit配置的secret一致
     media_server_id: str = "your_server_id"  # 媒体服务器ID，需与ZLMediaKit配置一致
     hook_enable: bool = False         # 是否启用hook
     hook_url: str = ""                # hook url
@@ -39,9 +39,6 @@ class ZLMConfig:
 
     # 系统相关配置
     thread_num: int = 0               # 线程数，0表示使用系统默认值
-
-    # ZLMediaKit库路径
-    zlm_lib_path: str = field(default_factory=lambda: os.environ.get("ZLM_LIB_PATH", "/usr/local/lib"))
 
     def __post_init__(self):
         """初始化后处理"""
@@ -102,8 +99,6 @@ class ZLMConfig:
                     self.log_path = streaming_settings.zlm_log_path
                 if hasattr(streaming_settings, "zlm_thread_num"):
                     self.thread_num = streaming_settings.zlm_thread_num
-                if hasattr(streaming_settings, "zlm_lib_path"):
-                    self.zlm_lib_path = streaming_settings.zlm_lib_path
         except ImportError:
             normal_logger.warning("无法导入core.config.settings，使用默认配置")
 

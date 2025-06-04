@@ -1,13 +1,19 @@
+"""
+回调服务模块
+负责处理任务回调
+"""
 import asyncio
 import time
 import json
-from typing import List, Dict, Any, Optional
+import threading
+from typing import List, Dict, Any, Optional, Callable
 from dataclasses import dataclass, field
-import httpx # httpx 库已存在
-import sys # <--- 新增导入
+import httpx 
+import sys 
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 
+# 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
 
@@ -24,67 +30,133 @@ class CallbackRequest:
     retry_count: int = 0
 
 class CallbackService:
+    """回调服务类"""
+    
     _instance = None
-
-    def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super(CallbackService, cls).__new__(cls)
-            cls._instance._initialized = False
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """单例模式"""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(CallbackService, cls).__new__(cls)
+                cls._instance._initialized = False
         return cls._instance
-
-    def __init__(self, max_queue_size: int = 1000):
+    
+    def __init__(self):
+        """初始化回调服务"""
         if self._initialized:
             return
-
-        self._queue = asyncio.Queue(maxsize=max_queue_size)
-        self._worker_task: Optional[asyncio.Task] = None
+            
+        self._callbacks: Dict[str, Callable] = {}
+        self._initialized = False
         self._active = False
-        self._last_task_callback_times: Dict[str, float] = {} # 用于任务级别的回调间隔
+        self._queue = asyncio.Queue()
+        self._worker_task = None
+        self._last_task_callback_times = {}
+        
+    def initialize(self) -> None:
+        """初始化回调服务"""
+        if self._initialized:
+            return
+            
+        self._callbacks.clear()
+        self._active = False
+        self._queue = asyncio.Queue()
+        self._worker_task = None
+        self._last_task_callback_times = {}
         self._initialized = True
-        normal_logger.info("CallbackService initialized.")
+        normal_logger.info("回调服务初始化完成")
+    
+    def register_callback(self, name: str, callback: Callable) -> None:
+        """注册回调函数
+        
+        Args:
+            name: 回调名称
+            callback: 回调函数
+        """
+        if not self._initialized:
+            self.initialize()
+            
+        self._callbacks[name] = callback
+        normal_logger.info(f"注册回调函数: {name}")
+    
+    def get_callback(self, name: str) -> Optional[Callable]:
+        """获取回调函数
+        
+        Args:
+            name: 回调名称
+            
+        Returns:
+            Optional[Callable]: 回调函数，如果不存在则返回None
+        """
+        if not self._initialized:
+            self.initialize()
+            
+        return self._callbacks.get(name)
+    
+    def execute_callback(self, name: str, *args, **kwargs) -> Any:
+        """执行回调函数
+        
+        Args:
+            name: 回调名称
+            *args: 位置参数
+            **kwargs: 关键字参数
+            
+        Returns:
+            Any: 回调函数的返回值
+            
+        Raises:
+            ValueError: 当回调函数不存在时
+        """
+        if not self._initialized:
+            self.initialize()
+            
+        callback = self.get_callback(name)
+        if callback is None:
+            raise ValueError(f"回调函数不存在: {name}")
+            
+        try:
+            return callback(*args, **kwargs)
+        except Exception as e:
+            exception_logger.exception(f"执行回调函数失败: {str(e)}")
+            raise
+
+    def _queue_size(self):
+        return self._queue.qsize()
 
     async def start(self):
         if self._active:
-            normal_logger.warning("CallbackService is already active.")
             return
         self._active = True
         self._worker_task = asyncio.create_task(self._worker())
-        normal_logger.info("CallbackService started.")
 
     async def stop(self):
         if not self._active:
-            normal_logger.warning("CallbackService is not active.")
             sys.stdout.flush(); sys.stderr.flush() # <---
             return
         
-        normal_logger.info("CallbackService stopping... Setting active=False and putting sentinel in queue.")
         sys.stdout.flush(); sys.stderr.flush() # <--- 
         self._active = False
         try:
             await self._queue.put(None) 
-            normal_logger.info("CallbackService: Sentinel put in queue.")
             sys.stdout.flush(); sys.stderr.flush() # <---
         except Exception as e:
             exception_logger.error(f"Error putting sentinel in callback queue: {e}")
             sys.stdout.flush(); sys.stderr.flush() # <--- 
 
         if self._worker_task:
-            normal_logger.info(f"CallbackService: Attempting to wait for worker task (ID: {self._worker_task.get_name()}) to finish...")
             sys.stdout.flush(); sys.stderr.flush() # <--- 
             try:
                 await asyncio.wait_for(self._worker_task, timeout=DEFAULT_CALLBACK_TIMEOUT + 5)
-                normal_logger.info(f"CallbackService: Worker task (ID: {self._worker_task.get_name()}) finished gracefully.")
                 sys.stdout.flush(); sys.stderr.flush() # <--- 
             except asyncio.TimeoutError:
-                exception_logger.warning(f"CallbackService: Worker task (ID: {self._worker_task.get_name()}) did not stop gracefully within timeout. Cancelling task.")
                 sys.stdout.flush(); sys.stderr.flush() # <--- 
                 self._worker_task.cancel()
                 try:
                     await self._worker_task
-                    normal_logger.info(f"CallbackService: Worker task (ID: {self._worker_task.get_name()}) cancellation awaited.")
                     sys.stdout.flush(); sys.stderr.flush() # <--- 
                 except asyncio.CancelledError:
-                    normal_logger.info(f"CallbackService: Worker task (ID: {self._worker_task.get_name()}) was cancelled as expected.")
                     sys.stdout.flush(); sys.stderr.flush() # <--- 
                 except Exception as e_cancel_await:
                     exception_logger.error(f"Error awaiting cancelled worker task (ID: {self._worker_task.get_name()}): {e_cancel_await}")
@@ -93,7 +165,6 @@ class CallbackService:
                 exception_logger.error(f"Error waiting for callback worker task (ID: {self._worker_task.get_name()}): {e}")
                 sys.stdout.flush(); sys.stderr.flush() # <--- 
         else:
-            normal_logger.warning("CallbackService: No worker task found to stop.")
             sys.stdout.flush(); sys.stderr.flush() # <--- 
         
         while not self._queue.empty():
@@ -104,12 +175,10 @@ class CallbackService:
                     sys.stdout.flush(); sys.stderr.flush() # <--- 
             except asyncio.QueueEmpty:
                 break
-        normal_logger.info("CallbackService stopped.")
         sys.stdout.flush(); sys.stderr.flush() # <--- 
 
     async def enqueue_callback(self, task_id: str, url: str, payload: Dict[str, Any], callback_interval_seconds: int = 0):
         if not self._active:
-            normal_logger.error("CallbackService is not active. Cannot enqueue callback.")
             return
 
         if not url:
@@ -131,13 +200,11 @@ class CallbackService:
             exception_logger.error(f"Task {task_id}: Failed to enqueue callback request for URL: {url}: {e}")
 
     async def _worker(self):
-        normal_logger.info("CallbackService worker started.")
         async with httpx.AsyncClient(timeout=DEFAULT_CALLBACK_TIMEOUT) as client:
             while self._active:
                 try:
                     request: Optional[CallbackRequest] = await self._queue.get()
                     if request is None:
-                        normal_logger.info("CallbackService worker received sentinel, shutting down.")
                         self._queue.task_done()
                         break
 
@@ -185,15 +252,13 @@ class CallbackService:
                     self._queue.task_done()
 
                 except asyncio.CancelledError:
-                    normal_logger.info("CallbackService worker task cancelled.")
                     sys.stdout.flush(); sys.stderr.flush() # <--- 
                     break
                 except Exception as e:
-                    exception_logger.exception(f"CallbackService worker encountered an unexpected error: {e}")
                     sys.stdout.flush(); sys.stderr.flush() # <--- 
                     await asyncio.sleep(1)
         
-        normal_logger.info("CallbackService worker stopped.")
         sys.stdout.flush(); sys.stderr.flush() # <--- 
 
+# 回调服务实例
 callback_service = CallbackService() 

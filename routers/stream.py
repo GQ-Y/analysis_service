@@ -7,8 +7,9 @@ from typing import List, Dict, Any, Optional
 import uuid
 
 from models.responses import BaseResponse
-from core.task_management.stream import stream_manager
 from shared.utils.logger import get_normal_logger, get_exception_logger
+from shared.utils.app_state import app_state_manager
+from core.task_management.stream import StreamManager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -35,6 +36,10 @@ async def get_streams() -> BaseResponse:
     
     try:
         # 获取所有流
+        stream_manager = app_state_manager.get_stream_manager()
+        if not stream_manager:
+            raise HTTPException(status_code=503, detail="流管理器未初始化")
+            
         streams = await stream_manager.get_all_streams()
         
         return BaseResponse(
@@ -76,17 +81,14 @@ async def get_stream(stream_id: str = Path(..., description="流ID")) -> BaseRes
     
     try:
         # 获取流信息
+        stream_manager = app_state_manager.get_stream_manager()
+        if not stream_manager:
+            raise HTTPException(status_code=503, detail="流管理器未初始化")
+            
         stream_info = await stream_manager.get_stream_info(stream_id)
         
         if not stream_info:
-            return BaseResponse(
-                requestId=request_id,
-                path=f"/api/v1/streams/{stream_id}",
-                success=False,
-                message=f"流不存在: {stream_id}",
-                code=404,
-                data=None
-            )
+            raise HTTPException(status_code=404, detail=f"未找到流: {stream_id}")
         
         return BaseResponse(
             requestId=request_id,
@@ -124,17 +126,14 @@ async def get_stream_proxy_url(stream_id: str = Path(..., description="流ID")) 
     
     try:
         # 获取流代理URL信息
+        stream_manager = app_state_manager.get_stream_manager()
+        if not stream_manager:
+            raise HTTPException(status_code=503, detail="流管理器未初始化")
+            
         proxy_info = await stream_manager.get_stream_proxy_url(stream_id)
         
         if not proxy_info:
-            return BaseResponse(
-                requestId=request_id,
-                path=f"/api/v1/streams/{stream_id}/proxy_url",
-                success=False,
-                message=f"流不存在: {stream_id}",
-                code=404,
-                data=None
-            )
+            raise HTTPException(status_code=404, detail=f"未找到流的代理地址: {stream_id}")
         
         # 检查是否有错误
         if "error" in proxy_info:
@@ -164,4 +163,18 @@ async def get_stream_proxy_url(stream_id: str = Path(..., description="流ID")) 
             message=f"获取流代理URL信息失败: {str(e)}",
             code=500,
             data=None
-        ) 
+        )
+
+@router.post("/reconnect/{stream_id}")
+async def reconnect_stream(stream_id: str) -> Dict[str, bool]:
+    """请求重新连接流"""
+    try:
+        stream_manager = app_state_manager.get_stream_manager()
+        if not stream_manager:
+            raise HTTPException(status_code=503, detail="流管理器未初始化")
+            
+        success = await stream_manager.reconnect_stream(stream_id)
+        return {"success": success}
+    except Exception as e:
+        exception_logger.exception(f"重新连接流时出错: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e)) 

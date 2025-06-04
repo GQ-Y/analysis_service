@@ -58,8 +58,7 @@ class StreamingSettings(BaseSettingsModel):
     zlm_rtsp_port: int = int(os.getenv("ZLM_RTSP_PORT", "554"))
     zlm_rtmp_port: int = int(os.getenv("ZLM_RTMP_PORT", "1935"))
     zlm_api_port: int = int(os.getenv("ZLM_API_PORT", "8088"))
-    zlm_api_secret: str = os.getenv("ZLM_API_SECRET", "OOEV3gbdHQh4VngpRdNcCeANzy4OFB4u")
-    zlm_lib_path: str = os.getenv("ZLM_LIB_PATH", "/usr/local/lib")
+    zlm_api_secret: str = os.getenv("ZLM_API_SECRET", "Na3VmIbECZ4Nl7NHpz5XuPGWQelEFoSD")
     zlm_thread_num: int = int(os.getenv("ZLM_THREAD_NUM", "0"))
     zlm_log_level: int = int(os.getenv("ZLM_LOG_LEVEL", "1"))
     zlm_log_path: str = os.getenv("ZLM_LOG_PATH", "logs/zlm")
@@ -152,8 +151,8 @@ class Settings(BaseSettings):
     )
 
     # 基础配置
-    PROJECT_NAME: str = "MeekYolo Analysis Service"
-    DESCRIPTION: str = "MeekYolo Analysis Service"
+    PROJECT_NAME: str = "Skyeye AI Analysis Service"
+    DESCRIPTION: str = "Skyeye AI Analysis Service"
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api/v1"
     DEBUG_ENABLED: bool = os.getenv("DEBUG_ENABLED", "false").lower() == "true"

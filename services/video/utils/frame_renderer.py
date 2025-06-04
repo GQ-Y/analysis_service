@@ -66,7 +66,6 @@ class FontManager:
                             font_key = f"{os.path.basename(font_path)}_{size}"
                             self.fonts[font_key] = ImageFont.truetype(font_path, size)
                         
-                        normal_logger.info(f"成功加载字体: {font_path}")
                         break  # 成功加载一个字体后就够了
                     except Exception as e:
                         normal_logger.debug(f"加载字体失败 {font_path}: {str(e)}")

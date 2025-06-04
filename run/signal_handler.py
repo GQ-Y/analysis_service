@@ -42,7 +42,6 @@ class SignalHandler:
     
     def _signal_handler(self, signum, frame):
         """信号处理函数"""
-        normal_logger.info(f"接收到信号 {signum}，开始优雅关闭...")
         
         # 设置关闭事件
         self.shutdown_event.set()

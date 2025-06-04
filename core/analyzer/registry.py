@@ -46,7 +46,7 @@ class AnalyzerRegistry:
         # 使用类名作为分析器名称
         analyzer_name = analyzer_class.__name__
         cls._registry[analysis_type][analyzer_name] = analyzer_class
-        normal_logger.info(f"已注册分析器: {analyzer_name} -> {analysis_type}")
+        # normal_logger.info(f"已注册分析器: {analyzer_name} -> {analysis_type}")
         
         return analyzer_class
     

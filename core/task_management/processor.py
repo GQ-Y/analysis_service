@@ -19,6 +19,7 @@ import io
 import contextlib
 import json
 import base64
+from collections import deque
 
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
@@ -31,6 +32,7 @@ from core.analyzer.analyzer_factory import AnalyzerFactory
 from core.task_management.callback_service import callback_service
 # 新增: 导入 Socket 管理器
 from shared.utils.socket_manager import get_socket_manager
+from shared.utils.app_state import app_state_manager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -1031,7 +1033,6 @@ class TaskProcessor:
                 # --- 通知视频编码服务更新分析结果（独立于Socket回调）---
                 try:
                     # 通过全局应用状态管理器获取视频服务实例
-                    from shared.utils.app_state import app_state_manager
                     video_service = app_state_manager.get_video_service()
                     
                     if not video_service:

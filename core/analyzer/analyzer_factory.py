@@ -1,116 +1,117 @@
 """
-分析器工厂模块 - 重构版
-负责创建不同类型的分析器实例，使用插件化的自动发现和注册机制
+分析器工厂模块
+负责创建和管理分析器实例
 """
-from typing import Dict, Any, Optional, Union, Type
-
-# 使用新的日志记录器
+import threading
+from typing import Dict, Any, Optional, Type
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from core.analyzer.base_analyzer import BaseAnalyzer
-from core.analyzer.registry import AnalyzerRegistry
-from core.analyzer.discovery import discover_analyzers
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
 
 class AnalyzerFactory:
-    """分析器工厂类 - 重构版，使用注册表"""
-
-    # 是否已初始化
-    _initialized = False
-
-    # 分析类型名称映射表
-    ANALYSIS_TYPE_MAP = {
-        "detection": "detection"
-    }
+    """分析器工厂类"""
     
-    @classmethod
-    def initialize(cls):
-        """初始化工厂，扫描并加载所有可用的分析器"""
-        if not cls._initialized:
-            discover_analyzers()
-            cls._initialized = True
+    _instance = None
+    _lock = threading.Lock()
+    
+    def __new__(cls):
+        """单例模式"""
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super(AnalyzerFactory, cls).__new__(cls)
+                cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        """初始化分析器工厂"""
+        if self._initialized:
+            return
             
-            # 输出可用的分析器列表
-            analyzers = AnalyzerRegistry.list_analyzers()
-            normal_logger.info(f"可用分析器: {analyzers}")
-
-    @classmethod
-    def create_analyzer(cls, analysis_type: Union[int, str], model_code: Optional[str] = None, **kwargs) -> BaseAnalyzer:
-        """
-        创建分析器实例
+        self._analyzers: Dict[str, Dict[str, Type]] = {}
+        self._initialized = False
+    
+    def initialize(self) -> None:
+        """初始化分析器工厂"""
+        if self._initialized:
+            return
+            
+        # 扫描并注册分析器
+        from .discovery import discover_analyzers
+        from .registry import AnalyzerRegistry
+        
+        # 先扫描和注册所有分析器
+        discover_analyzers()
+        
+        # 从注册表中获取分析器
+        registry_analyzers = AnalyzerRegistry.list_analyzers()
+        for analysis_type, analyzer_names in registry_analyzers.items():
+            if analysis_type not in self._analyzers:
+                self._analyzers[analysis_type] = {}
+            for analyzer_name in analyzer_names:
+                analyzer_class = AnalyzerRegistry.get_analyzer(analysis_type, analyzer_name)
+                self._analyzers[analysis_type][analyzer_name] = analyzer_class
+        
+        self._initialized = True
+    
+    def register_analyzer(self, name: str, analyzer_type: str, analyzer_class: Type) -> None:
+        """注册分析器类型
         
         Args:
-            analysis_type: 分析类型，只支持"detection"
-            model_code: 模型代码
-            **kwargs: 其他参数，将直接传递给分析器构造函数
-                可选参数包括：
-                - analyzer_name: 特定分析器名称，如果提供则使用指定的分析器实现
-                - device: 推理设备
-                - custom_weights_path: 自定义权重路径
-                - half_precision: 是否使用半精度
-                - 以及其他分析器特定参数
-        
-        Returns:
-            BaseAnalyzer: 分析器实例
-            
-        Raises:
-            ValueError: 当分析类型不支持或创建分析器失败时
+            name: 分析器名称
+            analyzer_type: 分析器类型
+            analyzer_class: 分析器类
         """
-        # 确保工厂已初始化
-        if not cls._initialized:
-            cls.initialize()
+        if analyzer_type not in self._analyzers:
+            self._analyzers[analyzer_type] = {}
+        self._analyzers[analyzer_type][name] = analyzer_class
+    
+    def create_analyzer(self, analyzer_type: str, name: str, config: Dict[str, Any]) -> Optional[Any]:
+        """创建分析器实例
+        
+        Args:
+            analyzer_type: 分析器类型
+            name: 分析器名称
+            config: 配置参数
             
-        # 如果分析类型是整数ID，转换为字符串(向后兼容)
-        if isinstance(analysis_type, int):
-            if analysis_type != 1:  # 只支持detection (ID=1)
-                raise ValueError(f"不支持的分析类型ID: {analysis_type}，只支持detection(ID=1)")
-            analysis_type = "detection"
-        
-        # 将分析类型转换为标准格式
-        analysis_type = cls.ANALYSIS_TYPE_MAP.get(analysis_type, analysis_type)
-        
-        # 检查分析类型是否为detection
-        if analysis_type != "detection":
-            raise ValueError(f"不支持的分析类型: {analysis_type}，只支持detection")
-        
-        # 获取特定分析器名称（如果提供）
-        analyzer_name = kwargs.pop("analyzer_name", None)
-        
+        Returns:
+            Optional[Any]: 分析器实例，如果创建失败则返回None
+        """
         try:
-            # 从注册表获取分析器类
-            analyzer_class = AnalyzerRegistry.get_analyzer(analysis_type, analyzer_name)
-            
-            # 创建分析器实例
-            normal_logger.info(f"创建分析器: 类型={analysis_type}, 实现={analyzer_class.__name__}, 模型={model_code}")
-            analyzer = analyzer_class(model_code=model_code, **kwargs)
-            return analyzer
-            
-        except ValueError as e:
-            exception_logger.error(f"创建分析器失败: {e}")
-            raise
-            
+            if not self._initialized:
+                self.initialize()
+                
+            if analyzer_type not in self._analyzers:
+                exception_logger.error(f"未知的分析器类型: {analyzer_type}")
+                return None
+                
+            if name not in self._analyzers[analyzer_type]:
+                exception_logger.error(f"未知的分析器名称: {name}")
+                return None
+                
+            analyzer_class = self._analyzers[analyzer_type][name]
+            return analyzer_class(config)
         except Exception as e:
-            exception_logger.exception(f"创建分析器出错: {e}")
-            raise ValueError(f"创建分析器出错: {e}")
-            
-    @classmethod
-    def list_available_analyzers(cls):
-        """
-        列出所有可用的分析器
+            exception_logger.exception(f"创建分析器失败: {str(e)}")
+            return None
+    
+    def get_analyzer_types(self) -> Dict[str, Dict[str, str]]:
+        """获取所有已注册的分析器类型
         
         Returns:
-            Dict[str, List[str]]: {分析类型: [分析器名称列表]}
+            Dict[str, Dict[str, str]]: 分析器类型信息
         """
-        # 确保工厂已初始化
-        if not cls._initialized:
-            cls.initialize()
+        if not self._initialized:
+            self.initialize()
             
-        return AnalyzerRegistry.list_analyzers()
+        return {
+            analyzer_type: {
+                name: analyzer_class.__name__ 
+                for name, analyzer_class in analyzers.items()
+            }
+            for analyzer_type, analyzers in self._analyzers.items()
+        }
 
-# 创建工厂实例
+# 工厂实例
 analyzer_factory = AnalyzerFactory()
-
-# 初始化工厂 - 在导入时自动运行
-AnalyzerFactory.initialize()

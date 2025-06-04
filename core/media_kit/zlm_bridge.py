@@ -14,6 +14,7 @@ from queue import Queue, Empty
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.task_management.stream.status import StreamStatus, StreamHealthStatus
+from shared.utils.app_state import app_state_manager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -412,6 +413,23 @@ class ZLMBridge:
                 ))
         except Exception as e:
             exception_logger.exception(f"处理ZLM流状态变化事件时出错: {str(e)}")
+
+    async def on_stream_changed(self, stream_id: str, regist: bool = True) -> None:
+        """处理流注册/注销事件"""
+        try:
+            stream_manager = app_state_manager.get_stream_manager()
+            if not stream_manager:
+                normal_logger.warning("流管理器未初始化，无法处理流变更事件")
+                return
+
+            # 处理流变更事件
+            if regist:
+                normal_logger.info(f"流注册事件: {stream_id}")
+            else:
+                normal_logger.info(f"流注销事件: {stream_id}")
+
+        except Exception as e:
+            exception_logger.exception(f"处理流变更事件时出错: {str(e)}")
 
 # 单例实例
 zlm_bridge = ZLMBridge() 
