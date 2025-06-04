@@ -25,3 +25,6 @@ test_stream.log
 test_plan.md
 docs/*
 string/*
+
+# Large binary files
+zlmos/windows/zlmediakit.lib
