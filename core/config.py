@@ -163,14 +163,14 @@ class Settings(BaseSettings):
     SERVICES_PORT: int = int(os.getenv("SERVICES_PORT", "8002"))
 
     # Redis配置
-    REDIS_HOST: str = "localhost"
-    REDIS_PORT: int = 6379
-    REDIS_DB: int = 0
-    REDIS_PASSWORD: str = ""
+    REDIS_HOST: str = os.getenv("REDIS_HOST", "localhost")
+    REDIS_PORT: int = int(os.getenv("REDIS_PORT", "6379"))
+    REDIS_DB: int = int(os.getenv("REDIS_DB", "0"))
+    REDIS_PASSWORD: str = os.getenv("REDIS_PASSWORD", "")
     REDIS_PREFIX: str = "analysis:"
-    REDIS_MAX_CONNECTIONS: int = 50
-    REDIS_SOCKET_TIMEOUT: int = 5
-    REDIS_RETRY_ON_TIMEOUT: bool = True
+    REDIS_MAX_CONNECTIONS: int = int(os.getenv("REDIS_MAX_CONNECTIONS", "50"))
+    REDIS_SOCKET_TIMEOUT: int = int(os.getenv("REDIS_SOCKET_TIMEOUT", "5"))
+    REDIS_RETRY_ON_TIMEOUT: bool = os.getenv("REDIS_RETRY_ON_TIMEOUT", "true").lower() == "true"
 
     # 任务队列配置
     TASK_QUEUE_MAX_SIZE: int = 1000

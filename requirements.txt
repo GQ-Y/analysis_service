@@ -18,9 +18,9 @@ scipy>=1.11.0
 GPUtil>=1.4.0
 httpx>=0.24.0
 python-dotenv>=1.0.0
-git+https://github.com/ultralytics/CLIP.git
-# ONVIF设备发现支持
+# git+https://github.com/ultralytics/CLIP.git
+# ONVIF device discovery support
 onvif-zeep>=0.2.12
-# GStreamer Python绑定支持
+# GStreamer Python bindings support (Windows 上较难安装，暂时保持平台限制)
 PyGObject>=3.30.0; sys_platform != "win32"
 pycairo>=1.20.0; sys_platform != "win32"
