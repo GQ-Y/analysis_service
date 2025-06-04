@@ -341,7 +341,9 @@ class TaskProcessor:
                 "reconnect_delay": task_config.get("reconnect_delay", settings.STREAMING.reconnect_delay),
                 "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size),
                 "task_id": task_id,
-                "video_id": stream_id_from_task_config
+                "video_id": stream_id_from_task_config,
+                # 添加流引擎配置
+                "stream_config": task_config.get("stream_config", {})
             }
 
             # 获取流配置 (这部分是旧的，上面的 stream_id_from_task_config 和 stream_url 已经获取了)

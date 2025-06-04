@@ -18,6 +18,9 @@ from .interface import IVideoStream
 # 导入ZLMediaKit流实现
 from core.media_kit.zlm_stream import ZLMVideoStream
 
+# 导入新的流工厂
+from core.media_kit.factory.stream_factory import StreamFactory, StreamEngine
+
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
@@ -47,7 +50,7 @@ class StreamManager:
         self._streams: Dict[str, IVideoStream] = {}  # stream_key (URL derived) -> IVideoStream
         self._stream_id_to_key_map: Dict[str, str] = {} # original_stream_id -> stream_key
         
-        normal_logger.info("流管理器初始化完成，使用ZLMediaKit作为流媒体引擎")
+        normal_logger.info("流管理器初始化完成，支持多种流媒体引擎(ZLMediaKit/GStreamer/OpenCV)")
 
     async def initialize(self):
         """初始化流管理器，包括ZLMediaKit管理器"""
@@ -75,7 +78,7 @@ class StreamManager:
 
     async def get_or_create_stream(self, original_stream_id: str, config: Dict[str, Any]) -> Optional[IVideoStream]:
         """获取或创建视频流.
-        现在基于config中的URL来共享流实例。
+        现在基于config中的URL来共享流实例，并支持多种流引擎。
         original_stream_id 主要用于日志和映射。
         """
         stream_url = config.get("url")
@@ -87,20 +90,6 @@ class StreamManager:
         if not stream_key: # Should not happen if URL is present
             normal_logger.error(f"从URL '{stream_url}' 生成 stream_key 失败。original_stream_id: {original_stream_id}")
             return None
-
-        # 确保 original_stream_id 有效，如果为空，则创建一个临时的
-        # 这个 original_stream_id 仅用于 _stream_id_to_key_map 的键，不影响共享逻辑
-        if not original_stream_id:
-            # 如果调用者没有提供original_stream_id (例如，之前subscribe_stream会基于subscriber_id生成)
-            # 我们需要一个占位符或者基于其他信息生成。
-            # 最好是调用者 (如subscribe_stream) 保证original_stream_id的提供。
-            # 这里暂时假设 original_stream_id 总会被subscribe_stream正确处理和传入。
-            # 但为了健壮性，如果为空，记录并可能需要一个策略。
-            # 实际上，subscribe_stream 应该确保它总是传递一个有意义的 original_stream_id。
-            # 为安全起见，如果 original_stream_id 传入为空，我们可能需要一个警告或默认值。
-            # 但此处修改的重点是stream_key的逻辑。
-            # 暂不修改original_stream_id的生成逻辑，假设调用者会提供。
-            pass
 
         # 创建当前事件循环的锁
         async with asyncio.Lock():
@@ -115,16 +104,27 @@ class StreamManager:
                 normal_logger.info(f"返回已存在的共享视频流 (key: {stream_key}) for original_id '{original_stream_id}' (URL: {stream_url})")
                 return self._streams[stream_key]
 
-            # 导入ZLMediaKit管理器
-            from core.media_kit.zlm_manager import zlm_manager
-
-            # 创建新的ZLMediaKit视频流
-            # ZLMVideoStream 的第一个参数现在应该是 stream_key，用于ZLM内部的流标识符生成
-            normal_logger.info(f"创建新的共享ZLMediaKit视频流 (key: {stream_key}) for original_id '{original_stream_id}' (URL: {stream_url})")
+            # 检查是否有流引擎配置
+            stream_config = config.get("stream_config", {})
+            engine_type = stream_config.get("engine", "auto")
             
-            # stream_id_for_zlm = stream_key # 或者 ZLMVideoStream 内部处理 stream_key
-            # ZLMVideoStream的构造函数第一个参数现在期望是代表共享流的唯一ID
-            stream = ZLMVideoStream(stream_key, config, zlm_manager)
+            # 创建新的视频流，根据配置选择引擎
+            normal_logger.info(f"创建新的共享视频流 (key: {stream_key}) for original_id '{original_stream_id}' (URL: {stream_url}), 引擎: {engine_type}")
+            
+            stream = None
+            
+            if engine_type in ["gstreamer", "opencv"] or (engine_type == "auto" and self._should_use_media_kit_factory(stream_url, stream_config)):
+                # 使用新的流工厂创建流
+                stream = await self._create_media_kit_stream(stream_key, stream_url, stream_config)
+            else:
+                # 使用ZLMediaKit创建流（保持向后兼容）
+                stream = await self._create_zlm_stream(stream_key, config)
+
+            if not stream:
+                # 清理映射
+                if original_stream_id and original_stream_id in self._stream_id_to_key_map:
+                    del self._stream_id_to_key_map[original_stream_id]
+                return None
 
             # 添加到管理器，使用 stream_key 作为键
             self._streams[stream_key] = stream
@@ -133,21 +133,7 @@ class StreamManager:
             try:
                 await stream.start()
                 # 添加测试标记
-                url = config.get("url", "") # url 变量已在此函数顶部获取为 stream_url
-                protocol = "UNKNOWN"
-                if stream_url: # 使用 stream_url
-                    if stream_url.startswith("rtsp://"):
-                        protocol = "RTSP"
-                    elif stream_url.startswith("rtmp://"):
-                        protocol = "RTMP"
-                    elif stream_url.startswith("http://") and stream_url.endswith(".m3u8"):
-                        protocol = "HLS"
-                    elif stream_url.startswith("http://") and stream_url.endswith(".flv"):
-                        protocol = "HTTP-FLV"
-                    elif "webrtc" in stream_url.lower():
-                        protocol = "WEBRTC"
-                    elif "gb28181" in stream_url.lower(): # 修正：是 gb28181 而非 gb28281
-                        protocol = "GB28181"
+                protocol = self._detect_protocol(stream_url)
                 
                 test_logger.info(f"TEST_LOG_MARKER: {protocol}_STREAM_CONNECTED (key: {stream_key})")
                 test_logger.info(f"TEST_LOG_MARKER: STREAM_CONNECTED (key: {stream_key})")
@@ -163,6 +149,111 @@ class StreamManager:
                 raise # 重新抛出异常，让上层处理
 
             return stream
+
+    def _should_use_media_kit_factory(self, stream_url: str, stream_config: Dict[str, Any]) -> bool:
+        """判断是否应该使用媒体工具包工厂而非ZLMediaKit"""
+        # 如果明确指定了GStreamer或OpenCV，使用工厂
+        engine = stream_config.get("engine", "auto")
+        if engine in ["gstreamer", "opencv"]:
+            return True
+        
+        # 如果启用了硬件解码或低延迟，推荐使用GStreamer
+        if stream_config.get("enable_hardware_decode") or stream_config.get("low_latency"):
+            return True
+        
+        # ONVIF协议使用专用处理器
+        if stream_url.lower().startswith("onvif://"):
+            return True
+        
+        # 其他情况使用ZLMediaKit（保持现有行为）
+        return False
+
+    async def _create_media_kit_stream(self, stream_key: str, stream_url: str, stream_config: Dict[str, Any]) -> Optional[IVideoStream]:
+        """使用媒体工具包工厂创建流"""
+        try:
+            # 准备流工厂配置
+            factory_config = {
+                "stream_id": stream_key,
+                "url": stream_url,
+                "preferred_engine": stream_config.get("engine", "auto"),
+                "enable_hardware_decode": stream_config.get("enable_hardware_decode", False),
+                "low_latency": stream_config.get("low_latency", False),
+                "gstreamer": {
+                    "hardware_decoder": "auto",
+                    "buffer_size": 100,
+                    "max_buffer_ms": 1000,
+                    "min_buffer_ms": 100,
+                    "rtsp_latency": 200,
+                    "drop_on_latency": True,
+                    "network_timeout": 20,
+                    "debug_pipeline": False,
+                    "log_level": "WARNING"
+                }
+            }
+            
+            # 选择引擎
+            engine_map = {
+                "auto": StreamEngine.AUTO,
+                "gstreamer": StreamEngine.GSTREAMER,
+                "opencv": StreamEngine.OPENCV
+            }
+            engine = engine_map.get(stream_config.get("engine", "auto"), StreamEngine.AUTO)
+            
+            # 创建流
+            base_stream = StreamFactory.create_stream(factory_config, engine)
+            if not base_stream:
+                normal_logger.error(f"流工厂创建流失败: {stream_url}")
+                return None
+            
+            # 包装为IVideoStream接口（需要适配器）
+            from .adapters import MediaKitStreamAdapter
+            stream = MediaKitStreamAdapter(base_stream)
+            
+            normal_logger.info(f"使用媒体工具包工厂创建流成功: {stream_url}, 引擎: {engine.value}")
+            return stream
+            
+        except Exception as e:
+            exception_logger.exception(f"使用媒体工具包工厂创建流失败: {str(e)}")
+            return None
+
+    async def _create_zlm_stream(self, stream_key: str, config: Dict[str, Any]) -> Optional[IVideoStream]:
+        """使用ZLMediaKit创建流（保持向后兼容）"""
+        try:
+            # 导入ZLMediaKit管理器
+            from core.media_kit.zlm_manager import zlm_manager
+
+            # 创建新的ZLMediaKit视频流
+            stream = ZLMVideoStream(stream_key, config, zlm_manager)
+            
+            normal_logger.info(f"使用ZLMediaKit创建流成功: {config.get('url', '')}")
+            return stream
+            
+        except Exception as e:
+            exception_logger.exception(f"使用ZLMediaKit创建流失败: {str(e)}")
+            return None
+
+    def _detect_protocol(self, stream_url: str) -> str:
+        """检测流协议类型"""
+        if not stream_url:
+            return "UNKNOWN"
+        
+        stream_url_lower = stream_url.lower()
+        if stream_url_lower.startswith("rtsp://"):
+            return "RTSP"
+        elif stream_url_lower.startswith("rtmp://"):
+            return "RTMP"
+        elif stream_url_lower.startswith("http://") and stream_url_lower.endswith(".m3u8"):
+            return "HLS"
+        elif stream_url_lower.startswith("http://") and stream_url_lower.endswith(".flv"):
+            return "HTTP-FLV"
+        elif "webrtc" in stream_url_lower:
+            return "WEBRTC"
+        elif "gb28181" in stream_url_lower:
+            return "GB28181"
+        elif stream_url_lower.startswith("onvif://"):
+            return "ONVIF"
+        else:
+            return "UNKNOWN"
 
     async def release_stream(self, original_stream_id: str) -> bool: # 参数名改为 original_stream_id
         """释放流资源. 当流不再被任何订阅者使用时，实际停止并移除.

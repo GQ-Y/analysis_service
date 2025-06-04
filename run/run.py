@@ -90,12 +90,13 @@ def create_app() -> FastAPI:
     setup_exception_handlers(app)
 
     # 注册路由
-    from routers import task_router, health_router, stream_router
+    from routers import task_router, health_router, stream_router, discovery_router
     from routers.task_video import router as video_router
     app.include_router(task_router)
     app.include_router(health_router)
     app.include_router(video_router)
     app.include_router(stream_router)
+    app.include_router(discovery_router)
 
     # 添加静态文件支持
     from fastapi.staticfiles import StaticFiles

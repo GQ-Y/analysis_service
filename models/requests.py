@@ -280,6 +280,19 @@ class StreamTask(BaseModel):
         le=60,
         example=5
     )
+    stream_engine: Optional[Literal["auto", "opencv", "gstreamer"]] = Field(
+        "auto",
+        description="流处理引擎：auto=自动选择, opencv=OpenCV, gstreamer=GStreamer",
+        example="auto"
+    )
+    enable_hardware_decode: bool = Field(
+        False,
+        description="是否启用硬件解码（仅GStreamer支持）"
+    )
+    low_latency: bool = Field(
+        False,
+        description="是否启用低延迟模式（推荐用于RTSP流）"
+    )
     config: Optional[DetectionConfig] = Field(
         None,
         description="检测配置参数"

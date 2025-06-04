@@ -16,13 +16,14 @@ from shared.utils.logger import get_normal_logger, get_exception_logger
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
 
+# 尝试导入onvif库，如果导入失败则记录警告
+ONVIF_AVAILABLE = False
 try:
-    # 尝试导入ONVIF相关模块
-    import onvif
     from onvif import ONVIFCamera
+    ONVIF_AVAILABLE = True
 except ImportError:
-    normal_logger.warning("onvif模块未安装，ONVIF功能将不可用")
-    onvif = None
+    # 使用普通的print而不是logger，因为在模块加载时logger可能还没有初始化
+    print("警告: onvif-zeep库未安装，ONVIF功能将不可用")
     ONVIFCamera = None
 
 from ...base.base_stream import BaseStream
@@ -332,7 +333,7 @@ class OnvifStream(BaseStream):
             config: 流配置
         """
         # 检查onvif模块是否可用
-        if onvif is None:
+        if not ONVIF_AVAILABLE:
             normal_logger.warning("onvif模块未安装，ONVIF功能将受限")
 
         # 调用基类初始化

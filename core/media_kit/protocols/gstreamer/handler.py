@@ -11,16 +11,23 @@ from typing import Dict, Any, Optional, Tuple, List, Union
 import numpy as np
 import cv2
 
-# GStreamer imports
+# 尝试导入GStreamer库，如果导入失败则记录警告
+GSTREAMER_AVAILABLE = False
 try:
     import gi
     gi.require_version('Gst', '1.0')
     gi.require_version('GstApp', '1.0')
     from gi.repository import Gst, GstApp, GLib
-    GST_AVAILABLE = True
-except ImportError:
-    GST_AVAILABLE = False
-    print("警告: GStreamer Python绑定未安装，将回退到OpenCV模式")
+    
+    # 初始化GStreamer
+    Gst.init(None)
+    GSTREAMER_AVAILABLE = True
+    
+except (ImportError, ValueError) as e:
+    # 使用普通的print而不是logger，因为在模块加载时logger可能还没有初始化
+    print(f"警告: GStreamer Python绑定未安装，将回退到OpenCV模式")
+    Gst = None
+    GLib = None
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 
@@ -42,7 +49,7 @@ class GStreamerStream(BaseStream):
             config: 流配置
         """
         # 检查GStreamer可用性
-        if not GST_AVAILABLE:
+        if not GSTREAMER_AVAILABLE:
             raise ImportError("GStreamer Python绑定未安装，请安装 python3-gi 和 gstreamer1.0-python3-plugin-loader")
         
         # 初始化GStreamer
@@ -603,7 +610,7 @@ class GStreamerStream(BaseStream):
         
         # 添加GStreamer特有信息
         info.update({
-            "gstreamer_version": Gst.version_string() if GST_AVAILABLE else "未安装",
+            "gstreamer_version": Gst.version_string() if GSTREAMER_AVAILABLE else "未安装",
             "hardware_decoder": self._gst_config.hardware_decoder,
             "pipeline_errors": self._pipeline_errors,
             "frame_count": self._frame_count,

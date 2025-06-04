@@ -152,7 +152,10 @@ async def start_task(
             alarm_recording_before=task.alarm_recording_before,
             alarm_recording_after=task.alarm_recording_after,
             analysis_interval=task.analysis_interval,  # 添加分析间隔参数
-            callback_interval=task.callback_interval  # 添加回调间隔参数
+            callback_interval=task.callback_interval,  # 添加回调间隔参数
+            stream_engine=task.stream_engine,  # 添加流引擎参数
+            enable_hardware_decode=task.enable_hardware_decode,  # 添加硬件解码参数
+            low_latency=task.low_latency  # 添加低延迟参数
         )
 
         if not result["success"]:
@@ -334,7 +337,10 @@ async def start_batch_tasks(
                 alarm_recording_before=task.alarm_recording_before,
                 alarm_recording_after=task.alarm_recording_after,
                 analysis_interval=analysis_interval,  # 添加分析间隔参数
-                callback_interval=callback_interval  # 添加回调间隔参数
+                callback_interval=callback_interval,  # 添加回调间隔参数
+                stream_engine=task.stream_engine,  # 添加流引擎参数
+                enable_hardware_decode=task.enable_hardware_decode,  # 添加硬件解码参数
+                low_latency=task.low_latency  # 添加低延迟参数
             )
 
             if result["success"]:

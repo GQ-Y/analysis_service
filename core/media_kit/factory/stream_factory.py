@@ -232,12 +232,12 @@ class StreamFactory:
     
     @staticmethod
     def is_gstreamer_available() -> bool:
-        """检查GStreamer是否可用
-        
-        Returns:
-            bool: GStreamer是否可用
-        """
-        return GSTREAMER_AVAILABLE
+        """检查GStreamer是否可用"""
+        try:
+            from core.media_kit.protocols.gstreamer.handler import GSTREAMER_AVAILABLE
+            return GSTREAMER_AVAILABLE
+        except ImportError:
+            return False
     
     @staticmethod
     def get_recommended_engine(url: str, config: Dict[str, Any] = None) -> StreamEngine:

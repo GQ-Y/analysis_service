@@ -100,7 +100,8 @@ class TaskService:
                      frame_rate: Optional[int] = None, device: Optional[int] = None,
                      enable_alarm_recording: bool = False, alarm_recording_before: Optional[int] = None,
                      alarm_recording_after: Optional[int] = None, analysis_interval: Optional[int] = None,
-                     callback_interval: Optional[int] = None, **kwargs) -> Dict[str, Any]:
+                     callback_interval: Optional[int] = None, stream_engine: Optional[str] = None,
+                     enable_hardware_decode: bool = False, low_latency: bool = False, **kwargs) -> Dict[str, Any]:
         """
         启动单个任务
 
@@ -121,6 +122,10 @@ class TaskService:
             alarm_recording_before: 报警前录像时长
             alarm_recording_after: 报警后录像时长
             analysis_interval: 分析间隔(帧)，每隔多少帧分析一次
+            callback_interval: 回调间隔(秒)
+            stream_engine: 流处理引擎
+            enable_hardware_decode: 是否启用硬件解码
+            low_latency: 是否启用低延迟模式
             **kwargs: 其他参数
 
         Returns:
@@ -171,7 +176,10 @@ class TaskService:
                 alarm_recording_before=alarm_recording_before,
                 alarm_recording_after=alarm_recording_after,
                 analysis_interval=analysis_interval,
-                callback_interval=callback_interval
+                callback_interval=callback_interval,
+                stream_engine=stream_engine or "auto",
+                enable_hardware_decode=enable_hardware_decode,
+                low_latency=low_latency
             )
 
             # 设置配置
@@ -565,7 +573,13 @@ class TaskService:
             "analysis_interval": final_interval,
             "callback_interval": callback_interval,
             "device": task.device if hasattr(task, "device") else "auto",
-            "save_images": task.save_images
+            "save_images": task.save_images,
+            # 添加流引擎配置
+            "stream_config": {
+                "engine": task.stream_engine if hasattr(task, "stream_engine") else "auto",
+                "enable_hardware_decode": task.enable_hardware_decode if hasattr(task, "enable_hardware_decode") else False,
+                "low_latency": task.low_latency if hasattr(task, "low_latency") else False
+            }
         }
 
         # 添加任务ID（如果有）
