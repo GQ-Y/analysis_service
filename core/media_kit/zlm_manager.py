@@ -140,14 +140,12 @@ class ZLMediaKitManager:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE
                 )
-                normal_logger.info("ZLMediaKit服务器启动成功")
             except Exception as e:
                 exception_logger.exception(f"启动ZLMediaKit服务器失败: {str(e)}")
                 raise
 
             # 设置运行状态
             self._is_running = True
-            normal_logger.info("ZLMediaKit环境初始化完成")
 
             # 等待一段时间让服务器完全启动
             await asyncio.sleep(2)

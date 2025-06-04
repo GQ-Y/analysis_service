@@ -32,7 +32,6 @@ class SignalHandler:
             if hasattr(signal, 'SIGQUIT'):
                 self._original_handlers[signal.SIGQUIT] = signal.signal(signal.SIGQUIT, self._signal_handler)
                 
-            normal_logger.info("信号处理器已设置")
         except Exception as e:
             normal_logger.error(f"设置信号处理器失败: {str(e)}")
     

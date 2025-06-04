@@ -8,8 +8,8 @@ import os
 import logging
 from dotenv import load_dotenv
 
-# 加载.env文件（如果存在）
-load_dotenv()
+# 加载.env文件（如果存在）并强制覆盖已存在的环境变量
+load_dotenv(override=True)
 
 # 简单可序列化的数据模型
 class BaseSettingsModel(BaseModel):

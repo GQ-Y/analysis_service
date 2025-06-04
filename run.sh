@@ -164,7 +164,9 @@ fi
 
 # 设置环境变量
 export PYTHONDONTWRITEBYTECODE=1
-export DEBUG_ENABLED=1
+export DEBUG_ENABLED=false
+export ENVIRONMENT=production
+export LOG_LEVEL=WARNING
 
 # 函数：启动AI测试
 run_test() {

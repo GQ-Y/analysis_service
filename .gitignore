@@ -4,8 +4,8 @@ requirements.lock
 .DS_Store
 data/*
 logs/*
+*.env/*
 venv/*
-.env
 .idea/*
 temp/*
 install_webrtc_deps.sh

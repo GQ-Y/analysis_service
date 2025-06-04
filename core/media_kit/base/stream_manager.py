@@ -61,7 +61,6 @@ class StreamManager(IStreamManager):
         self._stats: Dict[str, Dict[str, Any]] = {}
         
         self._initialized = True
-        normal_logger.info("流管理器初始化完成")
     
     async def initialize(self) -> None:
         """初始化流管理器，启动健康检查等任务"""
