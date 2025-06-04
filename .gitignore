@@ -19,9 +19,9 @@ zlmos/*/test_*
 zlmos/*/api_tester_*
 zlmos/*/tab
 zlmos/*/bom
+zlmos/*/ffmpeg/*.log*
 ZLMediaKit/*
 test_stream.log
 test_plan.md
 docs/*
 string/*
-zlmos/darwin/ffmpeg/ffmpeg.log.6598
