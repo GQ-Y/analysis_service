@@ -51,7 +51,7 @@ class WebRTCConfig:
             return f"http://{settings.STREAMING.zlm_server_address}:{settings.STREAMING.zlm_api_port}"
         except ImportError:
             # 如果无法导入配置，使用默认值
-            return "http://127.0.0.1:8088"
+            return "http://127.0.0.1:8089"
 
     @classmethod
     def from_dict(cls, config: Dict[str, Any]) -> 'WebRTCConfig':

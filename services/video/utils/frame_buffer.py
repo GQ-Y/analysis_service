@@ -18,23 +18,33 @@ normal_logger = get_normal_logger(__name__)
 class FrameBuffer:
     """智能帧缓冲器 - 处理视频流卡顿和丢帧"""
     
-    def __init__(self, buffer_size: int = 30, target_fps: int = 15):
+    def __init__(self, buffer_size: int = None, target_fps: int = None):
         """
         初始化帧缓冲器
-        
+
         Args:
             buffer_size: 缓冲区大小（帧数）
             target_fps: 目标帧率
         """
-        self.buffer_size = buffer_size
-        self.target_fps = target_fps
+        # 延迟导入优化配置以避免循环导入
+        try:
+            from core.config_modules.optimization import optimization_config
+            self.buffer_size = buffer_size or optimization_config.frame_processing.buffer_size
+            self.target_fps = target_fps or optimization_config.frame_processing.target_fps
+        except ImportError:
+            self.buffer_size = buffer_size or 30  # 默认值
+            self.target_fps = target_fps or 15  # 默认值
         self.frame_interval = 1.0 / target_fps
         
         # 帧缓冲区 - 存储 (frame, timestamp, analysis_result) 元组
         self.frame_buffer = deque(maxlen=buffer_size)
         
         # 卡顿检测参数
-        self.stall_threshold = 1.0  # 超过3秒没有新帧则认为卡顿
+        try:
+            from core.config_modules.optimization import optimization_config
+            self.stall_threshold = optimization_config.frame_processing.stall_threshold
+        except ImportError:
+            self.stall_threshold = 3.0  # 默认值
         self.last_frame_time = time.time()
         
         # 统计信息

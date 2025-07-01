@@ -57,7 +57,7 @@ class Gb28181Stream(BaseStream):
             # 如果无法导入配置，使用默认值
             self._gb28181_config = Gb28181Config()
             self._zlm_host = "127.0.0.1"
-            self._zlm_http_port = 8088
+            self._zlm_http_port = 8089
             self._zlm_secret = ""
             self._zlm_rtp_port = 0
 

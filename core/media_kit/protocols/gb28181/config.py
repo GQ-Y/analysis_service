@@ -31,7 +31,7 @@ class Gb28181Config:
     
     # ZLMediaKit相关配置
     zlm_host: str = "127.0.0.1"            # ZLMediaKit服务器地址
-    zlm_http_port: int = 8088              # ZLMediaKit HTTP API端口
+    zlm_http_port: int = 8089              # ZLMediaKit HTTP API端口
     zlm_rtsp_port: int = 554               # ZLMediaKit RTSP端口
     zlm_rtmp_port: int = 1935              # ZLMediaKit RTMP端口
     zlm_secret: str = ""                   # ZLMediaKit API密钥

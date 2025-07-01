@@ -148,7 +148,12 @@ class ZLMediaKitManager:
             self._is_running = True
 
             # 等待一段时间让服务器完全启动
-            await asyncio.sleep(2)
+            try:
+                from core.config_modules.optimization import optimization_config
+                startup_wait = optimization_config.zlm.startup_wait
+            except ImportError:
+                startup_wait = 3  # 默认值
+            await asyncio.sleep(startup_wait)
 
         except Exception as e:
             exception_logger.exception(f"ZLMediaKit环境初始化失败: {str(e)}")
@@ -168,8 +173,13 @@ class ZLMediaKitManager:
             normal_logger.info("正在测试ZLMediaKit HTTP API连接...")
             
             # 等待ZLMediaKit服务启动
-            max_retries = 5
-            retry_interval = 2  # 秒
+            try:
+                from core.config_modules.optimization import optimization_config
+                max_retries = optimization_config.zlm.max_retries
+                retry_interval = optimization_config.zlm.retry_interval
+            except ImportError:
+                max_retries = 5  # 默认值
+                retry_interval = 2  # 默认值
             
             for retry in range(max_retries):
                 try:
@@ -786,7 +796,12 @@ class ZLMediaKitManager:
             try:
                 # 为所有请求添加超时，防止阻塞
                 headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-                response = requests.post(url, data=params, headers=headers, timeout=5)
+                try:
+                    from core.config_modules.optimization import optimization_config
+                    timeout = optimization_config.zlm.api_timeout
+                except ImportError:
+                    timeout = 10  # 默认值
+                response = requests.post(url, data=params, headers=headers, timeout=timeout)
                 
                 # 解析响应
                 result = response.json()

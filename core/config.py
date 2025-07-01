@@ -54,10 +54,10 @@ class StreamingSettings(BaseSettingsModel):
     # ZLMediaKit配置
     use_zlmediakit: bool = os.getenv("STREAMING_USE_ZLMEDIAKIT", "true").lower() == "true"
     zlm_server_address: str = os.getenv("ZLM_SERVER_ADDRESS", "127.0.0.1")
-    zlm_http_port: int = int(os.getenv("ZLM_HTTP_PORT", "8088"))
+    zlm_http_port: int = int(os.getenv("ZLM_HTTP_PORT", "8089"))
     zlm_rtsp_port: int = int(os.getenv("ZLM_RTSP_PORT", "554"))
     zlm_rtmp_port: int = int(os.getenv("ZLM_RTMP_PORT", "1935"))
-    zlm_api_port: int = int(os.getenv("ZLM_API_PORT", "8088"))
+    zlm_api_port: int = int(os.getenv("ZLM_API_PORT", "8089"))
     zlm_api_secret: str = os.getenv("ZLM_API_SECRET", "Na3VmIbECZ4Nl7NHpz5XuPGWQelEFoSD")
     zlm_thread_num: int = int(os.getenv("ZLM_THREAD_NUM", "0"))
     zlm_log_level: int = int(os.getenv("ZLM_LOG_LEVEL", "1"))

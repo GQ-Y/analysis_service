@@ -381,15 +381,15 @@ class ZLMChecker:
                 config = configparser.ConfigParser(interpolation=None)
                 config.read(config_file_path)
                 
-                # 检查HTTP端口是否设置为8088
+                # 检查HTTP端口是否设置为8089
                 if 'http' in config and 'port' in config['http']:
                     port = config['http']['port']
-                    if port != '8088':
-                        normal_logger.warning(f"配置文件中HTTP端口不是8088，当前值: {port}，将修改为8088")
-                        config['http']['port'] = '8088'
+                    if port != '8089':
+                        normal_logger.warning(f"配置文件中HTTP端口不是8089，当前值: {port}，将修改为8089")
+                        config['http']['port'] = '8089'
                         with open(config_file_path, 'w') as f:
                             config.write(f)
-                        normal_logger.info("已修改配置文件中的HTTP端口为8088")
+                        normal_logger.info("已修改配置文件中的HTTP端口为8089")
             except Exception as e:
                 exception_logger.warning(f"检查/修改配置文件中的HTTP端口设置时出错: {str(e)}")
             
