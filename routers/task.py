@@ -2,13 +2,10 @@
 任务管理路由
 提供任务的创建、查询、停止等API
 """
-from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body, Request, Response
-from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Request
+from typing import Dict, Any, Optional
 import uuid
-import os
 import asyncio
-from datetime import datetime
-from fastapi.responses import StreamingResponse
 
 from models.requests import StreamTask, BatchStreamTask
 from models.responses import BaseResponse

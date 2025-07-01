@@ -10,11 +10,10 @@ numpy>=1.26.2
 Pillow>=8.0.0
 ultralytics>=8.0.0,<8.4.0
 redis[hiredis]>=5.0.1
-psutil==5.9.6
-gputil==1.4.0
+psutil>=5.9.6
+gputil>=1.4.0
 loguru>=0.7.0
 scipy>=1.11.0
-GPUtil>=1.4.0
 httpx>=0.24.0
 python-dotenv>=1.0.0
 # git+https://github.com/ultralytics/CLIP.git

@@ -6,11 +6,10 @@ import os
 import sys
 import uvicorn
 import asyncio
-import traceback
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse
 from pathlib import Path
 
 # 添加项目根目录到Python路径
@@ -21,8 +20,6 @@ from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from run.middlewares import setup_exception_handlers, RequestLoggingMiddleware
 from run.signal_handler import signal_handler
-from run.zlm_exit_handler import zlm_exit_handler
-from shared.utils.socket_manager import startup_socket_manager, shutdown_socket_manager
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
