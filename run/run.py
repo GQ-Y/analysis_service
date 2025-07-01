@@ -18,7 +18,8 @@ sys.path.append(str(ROOT_DIR))
 
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from run.middlewares import setup_exception_handlers, RequestLoggingMiddleware
+from run.middlewares.exception_handler import setup_exception_handlers, UnifiedExceptionMiddleware
+from run.middlewares.request_logging import RequestLoggingMiddleware
 from run.signal_handler import signal_handler
 
 # 初始化日志记录器
@@ -67,6 +68,9 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
+    # 添加统一异常处理中间件
+    app.add_middleware(UnifiedExceptionMiddleware)
+    
     # 添加Gzip压缩
     from fastapi.middleware.gzip import GZipMiddleware
     app.add_middleware(GZipMiddleware, minimum_size=1000)

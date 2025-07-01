@@ -82,7 +82,8 @@ class BaseAnalyzerService(ABC):
 
         在子类中实现具体逻辑
         """
-        raise NotImplementedError("子类必须实现此方法")
+        from core.exceptions import FeatureNotImplementedException
+        raise FeatureNotImplementedException("子类必须实现analyze_image方法")
 
     def start_video_analysis(self, *args, **kwargs) -> Dict[str, Any]:
         """
