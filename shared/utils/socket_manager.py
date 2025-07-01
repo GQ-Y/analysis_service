@@ -8,7 +8,7 @@ from typing import Dict, Any, Optional
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from shared.utils.callback_socket_client import CallbackSocketClient
-from shared.config.settings import settings # 使用全局settings实例
+from core.config import settings # 使用全局settings实例
 
 class SocketCallbackManager:
     _instance: Optional['SocketCallbackManager'] = None
@@ -39,15 +39,15 @@ class SocketCallbackManager:
         """Initializes the socket client if not already initialized."""
         # This method is kept for potential explicit initialization scenarios,
         # but establish_connection will also handle client creation.
-        if not self._client and settings.SOCKET_CALLBACK_ENABLED:
+        if not self._client and settings.callback.socket_enabled:
             async with self._manager_lock: # Protect client creation
                 if not self._client: # Double check
-                    self.logger.info(f"初始化Socket客户端，目标: {settings.SOCKET_CALLBACK_HOST}:{settings.SOCKET_CALLBACK_PORT}")
+                    self.logger.info(f"初始化Socket客户端，目标: {settings.callback.socket_host}:{settings.callback.socket_port}")
                     self._client = CallbackSocketClient(
-                        host=settings.SOCKET_CALLBACK_HOST,
-                        port=settings.SOCKET_CALLBACK_PORT
+                        host=settings.callback.socket_host,
+                        port=settings.callback.socket_port
                     )
-        elif not settings.SOCKET_CALLBACK_ENABLED:
+        elif not settings.callback.socket_enabled:
             self.logger.info("Socket回调功能已禁用，不初始化客户端。")
             if self._client:
                  await self._client.disconnect()
@@ -59,7 +59,7 @@ class SocketCallbackManager:
             self.logger.info("管理器正在关闭，跳过建立连接。")
             return False
         
-        if not settings.SOCKET_CALLBACK_ENABLED:
+        if not settings.callback.socket_enabled:
             self.logger.info("Socket回调未启用，不尝试连接。")
             if self._client and self._client.connected:
                 await self._client.disconnect()
@@ -104,7 +104,7 @@ class SocketCallbackManager:
         """后台任务，定期检查并尝试重新连接Socket。"""
         self.logger.info("Socket后台连接监控任务已启动。")
         # Use a longer initial delay if just failed, then regular interval
-        await asyncio.sleep(settings.SOCKET_CONNECT_RETRY_DELAY * 2) 
+        await asyncio.sleep(settings.callback.socket_connect_retry_delay * 2) 
 
         while not self._shutting_down:
             if not self._client or not self._client.connected:
@@ -117,13 +117,13 @@ class SocketCallbackManager:
             
             # Wait before next check
             # Consider a different, possibly longer, interval for monitoring vs initial retries
-            # For now, using SOCKET_CONNECT_RETRY_DELAY for simplicity
-            await asyncio.sleep(settings.SOCKET_CONNECT_RETRY_DELAY * 3) # e.g., check every 15s if delay is 5s
+            # For now, using socket_connect_retry_delay for simplicity
+            await asyncio.sleep(settings.callback.socket_connect_retry_delay * 3) # e.g., check every 15s if delay is 5s
         self.logger.info("Socket后台连接监控任务已停止。")
 
     async def send_socket_callback(self, data: Dict[str, Any]) -> bool:
         """尝试通过Socket发送回调数据"""
-        if not settings.SOCKET_CALLBACK_ENABLED:
+        if not settings.callback.socket_enabled:
             return False
 
         if not self._client:
@@ -199,7 +199,7 @@ async def startup_socket_manager():
     manager = await get_socket_manager()
     manager._shutting_down = False # Ensure manager is not in shutting down state if re-starting
     await manager.initialize_client() # Ensure client object exists if enabled
-    if settings.SOCKET_CALLBACK_ENABLED and manager._client:
+    if settings.callback.socket_enabled and manager._client:
         await manager.establish_connection(from_startup=True)
     else:
         manager.logger.info("Socket回调未启用或客户端未初始化，跳过启动时连接。")

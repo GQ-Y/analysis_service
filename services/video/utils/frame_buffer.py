@@ -26,11 +26,11 @@ class FrameBuffer:
             buffer_size: 缓冲区大小（帧数）
             target_fps: 目标帧率
         """
-        # 延迟导入优化配置以避免循环导入
+        # 使用统一配置
         try:
-            from core.config_modules.optimization import optimization_config
-            self.buffer_size = buffer_size or optimization_config.frame_processing.buffer_size
-            self.target_fps = target_fps or optimization_config.frame_processing.target_fps
+            from core.config import settings
+            self.buffer_size = buffer_size or settings.frame_processing.buffer_size
+            self.target_fps = target_fps or settings.frame_processing.target_fps
         except ImportError:
             self.buffer_size = buffer_size or 30  # 默认值
             self.target_fps = target_fps or 15  # 默认值
@@ -41,8 +41,8 @@ class FrameBuffer:
         
         # 卡顿检测参数
         try:
-            from core.config_modules.optimization import optimization_config
-            self.stall_threshold = optimization_config.frame_processing.stall_threshold
+            from core.config import settings
+            self.stall_threshold = settings.frame_processing.stall_threshold
         except ImportError:
             self.stall_threshold = 3.0  # 默认值
         self.last_frame_time = time.time()

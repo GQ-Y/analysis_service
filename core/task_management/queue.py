@@ -27,14 +27,14 @@ class TaskQueue:
             max_size: 队列最大容量，如果为None则使用配置文件中的值
         """
         if max_size is None:
-            max_size = settings.TASK_QUEUE_MAX_SIZE
+            max_size = settings.task.max_queue_size
 
         self.queue = queue.PriorityQueue(maxsize=max_size)
         self.processing = {}
         self.lock = threading.Lock()
-        self.max_concurrent = settings.TASK_QUEUE_MAX_CONCURRENT
-        self.max_retries = settings.TASK_QUEUE_MAX_RETRIES
-        self.retry_delay = settings.TASK_QUEUE_RETRY_DELAY
+        self.max_concurrent = settings.task.max_concurrent
+        self.max_retries = settings.task.max_retries
+        self.retry_delay = settings.task.retry_delay
 
     async def initialize(self):
         """初始化任务队列"""

@@ -149,8 +149,8 @@ class ZLMediaKitManager:
 
             # 等待一段时间让服务器完全启动
             try:
-                from core.config_modules.optimization import optimization_config
-                startup_wait = optimization_config.zlm.startup_wait
+                from core.config import settings
+                startup_wait = settings.zlm.startup_wait
             except ImportError:
                 startup_wait = 3  # 默认值
             await asyncio.sleep(startup_wait)
@@ -174,9 +174,9 @@ class ZLMediaKitManager:
             
             # 等待ZLMediaKit服务启动
             try:
-                from core.config_modules.optimization import optimization_config
-                max_retries = optimization_config.zlm.max_retries
-                retry_interval = optimization_config.zlm.retry_interval
+                from core.config import settings
+                max_retries = settings.zlm.max_retries
+                retry_interval = settings.zlm.retry_interval
             except ImportError:
                 max_retries = 5  # 默认值
                 retry_interval = 2  # 默认值
@@ -797,8 +797,8 @@ class ZLMediaKitManager:
                 # 为所有请求添加超时，防止阻塞
                 headers = {'Content-Type': 'application/x-www-form-urlencoded'}
                 try:
-                    from core.config_modules.optimization import optimization_config
-                    timeout = optimization_config.zlm.api_timeout
+                    from core.config import settings
+                    timeout = settings.zlm.api_timeout
                 except ImportError:
                     timeout = 10  # 默认值
                 response = requests.post(url, data=params, headers=headers, timeout=timeout)

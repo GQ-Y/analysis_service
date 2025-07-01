@@ -3,7 +3,7 @@
 负责视频流的管理和分发
 """
 
-from .status import StreamStatus, StreamHealthStatus
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus, IVideoStream
 from .health_monitor import StreamHealthMonitor
 from .manager import StreamManager
 from .node_monitor import NodeHealthMonitor
@@ -15,6 +15,7 @@ __all__ = [
     "ZLMVideoStream",
     "StreamStatus",
     "StreamHealthStatus",
+    "IVideoStream",
     "StreamHealthMonitor",
     "NodeHealthMonitor",
     "StreamTaskBridge"

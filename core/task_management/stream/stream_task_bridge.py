@@ -13,7 +13,7 @@ import time
 from core.redis_manager import RedisManager
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from core.task_management.utils.status import TaskStatus
-from .status import StreamStatus
+from core.interfaces.stream_interface import StreamStatus
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)

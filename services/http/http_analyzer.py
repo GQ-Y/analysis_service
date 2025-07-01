@@ -14,9 +14,8 @@ from typing import Dict, Any, List, Optional, Union
 from datetime import datetime
 
 from core.config import settings
-from core.task_manager import TaskManager
-from core.task_processor import TaskProcessor
-from core.task_queue import TaskQueue
+from core.task_management.manager import TaskManager
+from core.task_management.processor import TaskProcessor
 from core.analyzer.detection.yolo_detector import YOLODetector
 from core.analyzer.segmentation.yolo_segmentor import YOLOSegmentor
 from core.task_management import TaskStatus
@@ -390,8 +389,8 @@ class HTTPAnalyzerService(BaseAnalyzerService):
                 "status": "running" if self.is_running else "stopped",
                 "uptime": uptime,
                 "start_time": self.start_time.isoformat() if self.start_time else None,
-                "version": settings.VERSION,
-                "environment": settings.ENVIRONMENT,
+                            "version": settings.service.version,
+            "environment": settings.service.environment,
                 "task_stats": task_stats
             }
 

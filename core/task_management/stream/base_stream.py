@@ -13,8 +13,7 @@ import numpy as np
 
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from .status import StreamStatus, StreamHealthStatus
-from .interface import IVideoStream
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus, IVideoStream
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -50,10 +49,10 @@ class BaseVideoStream(IVideoStream):
         self._stop_event = asyncio.Event()
         
         # 重连配置
-        self._reconnect_attempts = config.get("reconnect_attempts", settings.STREAMING.reconnect_attempts)
-        self._reconnect_base_delay = config.get("reconnect_delay", settings.STREAMING.reconnect_delay)
+        self._reconnect_attempts = config.get("reconnect_attempts", settings.streaming.reconnect_attempts)
+        self._reconnect_base_delay = config.get("reconnect_delay", settings.streaming.reconnect_delay)
         self._reconnect_max_delay = config.get("max_reconnect_delay", 60.0)
-        self._max_consecutive_errors = config.get("max_consecutive_errors", settings.STREAMING.max_consecutive_errors)
+        self._max_consecutive_errors = config.get("max_consecutive_errors", settings.streaming.max_consecutive_errors)
         
         normal_logger.info(f"基础视频流 {stream_id} 初始化完成: {self._url}")
     

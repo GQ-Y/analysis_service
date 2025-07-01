@@ -22,8 +22,6 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from core.config import settings
-from core.analyzer.detection.yolo_detector import YOLODetector
-from core.analyzer.model_loader import ModelLoader
 from core.analyzer.analyzer_factory import analyzer_factory
 from core.task_management.utils.status import TaskStatus
 from shared.utils.logger import get_normal_logger, get_exception_logger
@@ -42,68 +40,41 @@ class BaseAnalyzerService(ABC):
         """初始化基础分析器服务"""
         normal_logger.info("初始化基础分析服务")
 
-        # 加载的检测器
-        self.detectors = {}
-
         # 确保输出目录存在
-        os.makedirs(settings.OUTPUT.save_dir, exist_ok=True)
+        os.makedirs(settings.storage.result_dir, exist_ok=True)
 
         # 初始化任务处理器
         self.task_handlers = {}
 
         self.task_manager = None
-        self.model_loader = ModelLoader()
         self.task_results = {}  # 存储任务结果
 
         normal_logger.info("基础分析服务初始化完成")
 
-    def get_detector(self, model_code: str) -> YOLODetector:
+    def get_analyzer(self, analyzer_type: str = "detection", **params) -> Any:
         """
-        获取检测器实例，如果不存在则创建
+        获取分析器实例（统一接口）
 
         Args:
-            model_code: 模型代码
+            analyzer_type: 分析器类型，默认为检测分析器
+            **params: 分析器参数
 
         Returns:
-            YOLODetector: 检测器实例
+            Any: 分析器实例
         """
-        if model_code not in self.detectors:
-            try:
-                normal_logger.info(f"创建检测器实例: {model_code}")
-                self.detectors[model_code] = YOLODetector(model_code)
-                normal_logger.info(f"检测器实例创建成功: {model_code}")
-            except Exception as e:
-                exception_logger.error(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
-                raise ValueError(f"创建检测器实例失败: {model_code}, 错误: {str(e)}")
+        try:
+            analyzer = self._create_analyzer(analyzer_type, params)
+            if analyzer:
+                normal_logger.info(f"获取分析器实例成功: {analyzer_type}")
+                return analyzer
+            else:
+                exception_logger.error(f"获取分析器实例失败: {analyzer_type}")
+                raise ValueError(f"获取分析器实例失败: {analyzer_type}")
+        except Exception as e:
+            exception_logger.error(f"获取分析器实例异常: {analyzer_type}, 错误: {str(e)}")
+            raise ValueError(f"获取分析器实例异常: {analyzer_type}, 错误: {str(e)}")
 
-        return self.detectors[model_code]
 
-    def _get_available_models(self) -> List[str]:
-        """
-        获取可用的模型列表
-
-        Returns:
-            List[str]: 可用模型代码列表
-        """
-        # 检查模型目录中的模型文件
-        model_dir = settings.STORAGE.model_dir
-        if not os.path.exists(model_dir):
-            normal_logger.warning(f"模型目录不存在: {model_dir}")
-            return ["yolov8n"]  # 返回默认模型
-
-        # 获取模型目录中的所有.pt或.onnx文件
-        model_files = []
-        for file in os.listdir(model_dir):
-            if file.endswith(".pt") or file.endswith(".onnx"):
-                model_name = os.path.splitext(file)[0]
-                model_files.append(model_name)
-
-        if not model_files:
-            normal_logger.warning(f"模型目录中未找到模型文件: {model_dir}")
-            return ["yolov8n"]  # 返回默认模型
-
-        normal_logger.debug(f"找到可用模型: {model_files}")
-        return model_files
 
     def analyze_image(self, *args, **kwargs) -> Dict[str, Any]:
         """
@@ -237,70 +208,7 @@ class BaseAnalyzerService(ABC):
         normal_logger.info("停止基础分析服务")
         normal_logger.info("基础分析服务已停止")
 
-    # 添加一个辅助方法来同步处理检测器的模型加载
-    def sync_load_model(self, detector, model_code: str):
-        """
-        同步方式加载模型的辅助方法，解决在非异步环境中调用异步方法的问题
 
-        Args:
-            detector: 检测器实例
-            model_code: 模型代码
-
-        Returns:
-            bool: 加载是否成功
-        """
-        import asyncio
-
-        try:
-            # 创建新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            # 同步执行异步方法
-            result = loop.run_until_complete(detector.load_model(model_code))
-
-            # 关闭事件循环
-            loop.close()
-
-            return True
-        except Exception as e:
-            exception_logger.error(f"同步加载模型失败: {str(e)}")
-            import traceback
-            exception_logger.error(traceback.format_exc())
-            return False
-
-    # 同步处理检测
-    def sync_detect(self, detector, image, config: Optional[Dict] = None):
-        """
-        同步方式执行检测的辅助方法
-
-        Args:
-            detector: 检测器实例
-            image: 输入图像
-            config: 检测配置
-
-        Returns:
-            List[Dict]: 检测结果
-        """
-        import asyncio
-
-        try:
-            # 创建新的事件循环
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-            # 同步执行异步方法
-            detections = loop.run_until_complete(detector.detect(image, config=config))
-
-            # 关闭事件循环
-            loop.close()
-
-            return detections
-        except Exception as e:
-            exception_logger.error(f"同步执行检测失败: {str(e)}")
-            import traceback
-            exception_logger.error(traceback.format_exc())
-            return []
 
     def register_task_handler(self, task_type: str, handler: callable):
         """
@@ -369,8 +277,8 @@ class BaseAnalyzerService(ABC):
         """
         return {
             "name": "base_analyzer",
-            "version": settings.VERSION,
-            "environment": settings.ENVIRONMENT
+            "version": settings.service.version,
+            "environment": settings.service.environment
         }
 
     @abstractmethod
@@ -439,9 +347,7 @@ class BaseAnalyzerService(ABC):
         try:
             normal_logger.info("初始化分析服务")
             
-            # 加载模型
-            await self.model_loader.load_models()
-            
+            # 初始化完成 - 模型加载由具体的分析器负责
             normal_logger.info("分析服务初始化成功")
             return True
         except Exception as e:

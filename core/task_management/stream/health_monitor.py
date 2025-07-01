@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, Set
 
 from core.redis_manager import RedisManager
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from .status import StreamStatus, StreamHealthStatus
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)

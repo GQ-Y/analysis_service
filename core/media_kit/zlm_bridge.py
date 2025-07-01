@@ -13,7 +13,7 @@ import numpy as np
 from queue import Queue, Empty
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from core.task_management.stream.status import StreamStatus, StreamHealthStatus
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus
 from shared.utils.app_state import app_state_manager
 
 # 初始化日志记录器

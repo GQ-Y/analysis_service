@@ -31,10 +31,10 @@ class RedisManager:
         from core.config import settings
 
         # 使用配置文件中的Redis配置
-        self.redis_host = settings.REDIS_HOST
-        self.redis_port = settings.REDIS_PORT
-        self.redis_db = settings.REDIS_DB
-        self.redis_password = settings.REDIS_PASSWORD if settings.REDIS_PASSWORD else None
+        self.redis_host = settings.redis.host
+        self.redis_port = settings.redis.port
+        self.redis_db = settings.redis.db
+        self.redis_password = settings.redis.password if settings.redis.password else None
         self.redis_pool = None
         self.redis_client = None
 
@@ -45,9 +45,9 @@ class RedisManager:
                 port=self.redis_port,
                 db=self.redis_db,
                 password=self.redis_password,
-                max_connections=settings.REDIS_MAX_CONNECTIONS,
-                socket_timeout=settings.REDIS_SOCKET_TIMEOUT,
-                retry_on_timeout=settings.REDIS_RETRY_ON_TIMEOUT,
+                            max_connections=settings.redis.max_connections,
+            socket_timeout=settings.redis.socket_timeout,
+            retry_on_timeout=settings.redis.retry_on_timeout,
                 decode_responses=True
             )
             self.redis_client = redis.Redis(connection_pool=self.redis_pool)

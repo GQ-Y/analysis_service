@@ -24,15 +24,22 @@ from collections import deque
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 from core.task_management.utils.status import TaskStatus
-from core.task_management.stream.status import StreamStatus, StreamHealthStatus
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus
 
-# 延迟导入stream_manager，避免循环导入
+# 导入必要的模块
 from core.redis_manager import RedisManager
 from core.analyzer.analyzer_factory import analyzer_factory
 from core.task_management.callback_service import callback_service
 # 新增: 导入 Socket 管理器
 from shared.utils.socket_manager import get_socket_manager
 from shared.utils.app_state import app_state_manager
+
+# 导入stream相关模块 - 通过统一接口避免循环依赖
+from core.task_management.stream.stream_task_bridge import StreamTaskBridge
+from core.task_management.stream.manager import StreamManager
+
+# 初始化桥接器实例
+stream_task_bridge = StreamTaskBridge()
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -139,7 +146,6 @@ class TaskProcessor:
             if stream_id:
                 self.stream_subscribers[task_id] = stream_id
                 # 使用桥接器注册任务与流的关系
-                from core.task_management.stream import stream_task_bridge
                 stream_task_bridge.register_task_stream(task_id, stream_id)
 
             # 创建并启动任务线程 - 使用 asyncio.to_thread 运行异步函数
@@ -216,10 +222,8 @@ class TaskProcessor:
             if task_id in self.stream_subscribers:
                 stream_id = self.stream_subscribers[task_id]
                 # 使用桥接器取消注册任务与流的关系
-                from core.task_management.stream import stream_task_bridge
                 stream_task_bridge.unregister_task_stream(task_id)
                 # 取消订阅流
-                from core.task_management.stream import StreamManager
                 stream_manager = app_state_manager.get_stream_manager()
                 await stream_manager.unsubscribe_stream(stream_id, task_id)
                 del self.stream_subscribers[task_id]
@@ -340,9 +344,9 @@ class TaskProcessor:
             stream_config_for_subscription = {
                 "url": stream_url,
                 "rtsp_transport": task_config.get("rtsp_transport", "tcp"),
-                "reconnect_attempts": task_config.get("reconnect_attempts", settings.STREAMING.reconnect_attempts),
-                "reconnect_delay": task_config.get("reconnect_delay", settings.STREAMING.reconnect_delay),
-                "frame_buffer_size": task_config.get("frame_buffer_size", settings.STREAMING.frame_buffer_size),
+                            "reconnect_attempts": task_config.get("reconnect_attempts", settings.streaming.reconnect_attempts),
+            "reconnect_delay": task_config.get("reconnect_delay", settings.streaming.reconnect_delay),
+            "frame_buffer_size": task_config.get("frame_buffer_size", settings.streaming.frame_buffer_size),
                 "task_id": task_id,
                 "video_id": stream_id_from_task_config,
                 # 添加流引擎配置
@@ -621,7 +625,7 @@ class TaskProcessor:
 
             # 任务结束，取消订阅
             if stream_id_to_use:
-                from core.task_management.stream import StreamManager
+                stream_manager = app_state_manager.get_stream_manager()
                 await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
 
             normal_logger.info(f"工作进程 {task_id}: 已结束")
@@ -632,7 +636,7 @@ class TaskProcessor:
             # 确保取消订阅
             if 'stream_id_to_use' in locals() and stream_id_to_use:
                 try:
-                    from core.task_management.stream import StreamManager
+                    stream_manager = app_state_manager.get_stream_manager()
                     await stream_manager.unsubscribe_stream(stream_id_to_use, task_id)
                 except Exception:
                     pass  # 忽略取消订阅时的错误

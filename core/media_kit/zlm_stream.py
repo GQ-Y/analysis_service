@@ -13,8 +13,7 @@ import numpy as np
 from asyncio import Lock
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from core.task_management.stream.status import StreamStatus, StreamHealthStatus
-from core.task_management.stream.interface import IVideoStream
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus, IVideoStream
 from core.task_management.stream.base_stream import BaseVideoStream
 
 # 初始化日志记录器

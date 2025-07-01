@@ -50,8 +50,8 @@ class BaseEncoder:
         self.analysis_results_lock = threading.Lock()  # 线程安全锁
 
         # 服务基础URL
-        host = "localhost" if settings.SERVICES_HOST == "0.0.0.0" else settings.SERVICES_HOST
-        self.base_url = f"http://{host}:{settings.SERVICES_PORT}"
+        host = "localhost" if settings.service.host == "0.0.0.0" else settings.service.host
+        self.base_url = f"http://{host}:{settings.service.port}"
 
         # 检查FFmpeg是否可用
         self.ffmpeg_available = self._check_ffmpeg()

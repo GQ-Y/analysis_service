@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional
 
 from shared.utils.logger import get_normal_logger, get_exception_logger
 # Import settings to access retry configurations
-from shared.config.settings import settings
+from core.config import settings
 
 class CallbackSocketClient:
     """回调Socket客户端类"""
@@ -55,9 +55,9 @@ class CallbackSocketClient:
             self._connecting = True
             
             attempts = 0
-            max_attempts = settings.SOCKET_MAX_CONNECT_ATTEMPTS
-            retry_delay = settings.SOCKET_CONNECT_RETRY_DELAY
-            connect_timeout = settings.SOCKET_CONNECT_TIMEOUT
+            max_attempts = settings.callback.socket_max_connect_attempts
+            retry_delay = settings.callback.socket_connect_retry_delay
+            connect_timeout = settings.callback.socket_connect_timeout
 
             while attempts < max_attempts:
                 attempts += 1
@@ -136,7 +136,7 @@ class CallbackSocketClient:
             # Use socket.sendall for ensuring all data is sent, run in executor
             loop = asyncio.get_running_loop()
             # Set a timeout for sending data
-            self.socket.settimeout(settings.SOCKET_SEND_TIMEOUT)
+            self.socket.settimeout(settings.callback.socket_send_timeout)
             await loop.run_in_executor(None, self.socket.sendall, message_bytes)
             self.socket.settimeout(None) # Reset timeout
 

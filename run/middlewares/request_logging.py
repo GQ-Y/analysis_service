@@ -40,13 +40,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
         try:
             # 只在调试模式下记录请求开始信息
-            if settings.DEBUG_ENABLED:
+            if settings.service.debug_enabled:
                 normal_logger.info(f"请求开始: ID={request_id}, 方法={request.method}, 路径={request.url.path}, 客户端={request.client.host}:{request.client.port}")
 
             response = await call_next(request)
 
             # 只在调试模式下记录响应信息
-            if settings.DEBUG_ENABLED:
+            if settings.service.debug_enabled:
                 process_time = (time.time() - start_time) * 1000
                 normal_logger.info(
                     f"请求完成: ID={request_id}, 方法={request.method}, 路径={request.url.path}, "

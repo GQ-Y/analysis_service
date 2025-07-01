@@ -91,8 +91,8 @@ async def health_check(request: Request) -> StandardResponse:
             data={
                 "status": "healthy",
                 "name": "analysis_service",
-                "version": settings.VERSION,
-                "environment": settings.ENVIRONMENT,
+                        "version": settings.service.version,
+        "environment": settings.service.environment,
                 "cpu": f"{cpu_percent:.1f}%",
                 "memory": f"{memory_percent:.1f}%",
                 "gpu": gpu_usage,

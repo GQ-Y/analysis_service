@@ -73,7 +73,7 @@ def setup_exception_handlers(app: FastAPI):
                 "requestId": getattr(request.state, "request_id", str(uuid.uuid4())),
                 "path": request.url.path,
                 "success": False,
-                "message": "服务器内部错误，请联系管理员。" if not settings.DEBUG_ENABLED else error_msg, # 生产环境隐藏详细错误
+                "message": "服务器内部错误，请联系管理员。" if not settings.service.debug_enabled else error_msg, # 生产环境隐藏详细错误
                 "code": 500,
                 "data": None,
                 "timestamp": getattr(request.state, "start_time", int(time.time() * 1000))

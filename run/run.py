@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     """
     # 创建应用
     app = FastAPI(
-        title=settings.PROJECT_NAME,
+        title=settings.service.project_name,
         description="""
         分析服务模块
 
@@ -58,12 +58,12 @@ def create_app() -> FastAPI:
         - 跨摄像头目标跟踪
         - 分析结果存储和查询
         """,
-        version=settings.VERSION,
+        version=settings.service.version,
         # 在生产环境下禁用API文档
-        docs_url="/api/v1/docs" if settings.DEBUG_ENABLED else None,
-        redoc_url="/api/v1/redoc" if settings.DEBUG_ENABLED else None,
-        openapi_url="/api/v1/openapi.json" if settings.DEBUG_ENABLED else None,
-        debug=settings.DEBUG_ENABLED,
+        docs_url="/api/v1/docs" if settings.service.debug_enabled else None,
+        redoc_url="/api/v1/redoc" if settings.service.debug_enabled else None,
+        openapi_url="/api/v1/openapi.json" if settings.service.debug_enabled else None,
+        debug=settings.service.debug_enabled,
         lifespan=lifespan
     )
 
@@ -72,7 +72,7 @@ def create_app() -> FastAPI:
     app.add_middleware(GZipMiddleware, minimum_size=1000)
 
     # 只在调试模式下添加请求日志中间件
-    if settings.DEBUG_ENABLED:
+    if settings.service.debug_enabled:
         app.add_middleware(RequestLoggingMiddleware)
 
     # 添加CORS中间件
@@ -112,7 +112,7 @@ def create_app() -> FastAPI:
     # 添加根路径重定向
     @app.get("/")
     async def root():
-        if settings.DEBUG_ENABLED:
+        if settings.service.debug_enabled:
             return {"message": "欢迎使用Skyeye AI分析服务", "docs_url": "/api/v1/docs"}
         else:
             return FileResponse(str(static_dir / "404.html"), status_code=404)
@@ -131,8 +131,8 @@ async def lifespan(app: FastAPI):
         signal_handler.setup_signal_handlers()
         app.state.start_time = time.time()
 
-        if settings.DEBUG_ENABLED:
-            normal_logger.info(f"调试模式: {settings.DEBUG_ENABLED}")
+        if settings.service.debug_enabled:
+            normal_logger.info(f"调试模式: {settings.service.debug_enabled}")
 
         # 初始化核心服务
         from shared.utils.app_state import app_state_manager
@@ -212,8 +212,8 @@ def start_app():
     """
     启动FastAPI应用
     """
-    host = settings.SERVICES_HOST
-    port = settings.SERVICES_PORT
+    host = settings.service.host
+    port = settings.service.port
     
     # 创建应用实例
     app = create_app()

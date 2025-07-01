@@ -79,7 +79,7 @@ class ZLMConfig:
             from core.config import settings
             # 从STREAMING配置中加载ZLMediaKit相关配置
             if hasattr(settings, "STREAMING"):
-                streaming_settings = settings.STREAMING
+                streaming_settings = settings.streaming
                 # 映射配置字段
                 if hasattr(streaming_settings, "zlm_server_address"):
                     self.server_address = streaming_settings.zlm_server_address

@@ -8,7 +8,7 @@ import random
 from functools import wraps
 from typing import Callable, Any, Optional, Union, Type, Tuple
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from core.config_modules.optimization import optimization_config
+from core.config import settings
 
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
@@ -256,8 +256,8 @@ class RetryableHTTPClient:
     """可重试的HTTP客户端"""
     
     def __init__(self, timeout: int = None, max_retries: int = None):
-        self.timeout = timeout or optimization_config.network.http_timeout
-        self.max_retries = max_retries or optimization_config.network.http_max_retries
+        self.timeout = timeout or settings.performance.http_timeout
+        self.max_retries = max_retries or settings.performance.http_max_retries
     
     @exponential_backoff(
         exceptions=(Exception,),

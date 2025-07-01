@@ -30,24 +30,24 @@ class TaskManager:
         Args:
             max_tasks: 最大任务数，默认从配置中读取
         """
-        # 延迟导入优化配置以避免循环导入
+        # 使用统一配置
         try:
-            from core.config_modules.optimization import optimization_config
+            from core.config import settings
             # 设置最大任务数
-            self.max_tasks = max_tasks or optimization_config.task_management.max_concurrent_tasks
-            self.task_timeout = optimization_config.task_management.task_timeout
-            self.cleanup_interval = optimization_config.task_management.cleanup_interval
+            self.max_tasks = max_tasks or settings.task.max_concurrent
+            self.task_timeout = settings.task.result_ttl
+            self.cleanup_interval = settings.task.cleanup_interval
         except ImportError:
-            # 如果优化配置不可用，使用默认值
-            self.max_tasks = max_tasks or settings.TASK_QUEUE_MAX_CONCURRENT
-            self.task_timeout = settings.TASK_QUEUE_RESULT_TTL
-            self.cleanup_interval = settings.TASK_QUEUE_CLEANUP_INTERVAL
+            # 如果配置不可用，使用默认值
+            self.max_tasks = max_tasks or 50
+            self.task_timeout = 7200  # 2小时
+            self.cleanup_interval = 180  # 3分钟
 
         # 初始化任务字典
         self.tasks: Dict[str, Dict[str, Any]] = {}
 
         # 设置输出目录
-        self.output_dir = settings.OUTPUT.save_dir
+        self.output_dir = settings.storage.result_dir
         os.makedirs(self.output_dir, exist_ok=True)
         self.last_cleanup = time.time()
 

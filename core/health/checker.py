@@ -9,7 +9,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from shared.utils.logger import get_normal_logger, get_exception_logger
 from shared.utils.retry import exponential_backoff
-from core.config_modules.optimization import optimization_config
+from core.config import settings
 
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)

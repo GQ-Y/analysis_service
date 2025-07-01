@@ -9,11 +9,8 @@ import hashlib
 # 导入共享工具
 from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
 
-# 导入状态定义
-from .status import StreamStatus, StreamHealthStatus
-
-# 导入流接口
-from .interface import IVideoStream
+# 导入状态定义和流接口 - 统一从interfaces模块导入
+from core.interfaces.stream_interface import StreamStatus, StreamHealthStatus, IVideoStream
 
 # 导入ZLMediaKit流实现
 from core.media_kit.zlm_stream import ZLMVideoStream
