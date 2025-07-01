@@ -19,10 +19,10 @@ class ZLMConfig:
 
     # ZLMediaKit服务器相关配置
     server_address: str = "127.0.0.1"  # ZLMediaKit服务器地址，请确保能访问
-    http_port: int = 8088              # HTTP端口，与ZLMediaKit默认配置一致
+    http_port: int = 8089              # HTTP端口，与ZLMediaKit默认配置一致
     rtsp_port: int = 554              # RTSP端口
     rtmp_port: int = 1935             # RTMP端口
-    api_port: int = 8088              # API端口，默认与HTTP端口相同
+    api_port: int = 8089              # API端口，默认与HTTP端口相同
     api_secret: str = "Na3VmIbECZ4Nl7NHpz5XuPGWQelEFoSD"  # API密钥，与ZLMediaKit配置的secret一致
     media_server_id: str = "your_server_id"  # 媒体服务器ID，需与ZLMediaKit配置一致
     hook_enable: bool = False         # 是否启用hook

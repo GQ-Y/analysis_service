@@ -343,9 +343,7 @@ class YOLODetector:
         
         # 记录模型类别名称和最终传递给 predict 的过滤器
         if self.model and hasattr(self.model, 'names'):
-            normal_logger.info(f"模型类别名称 (self.model.names): {self.model.names}")
-        normal_logger.info(f"传递给 model.predict 的 class_indices_to_filter: {class_indices_to_filter} (如果为None则不过滤)")
-        normal_logger.info(f"传递给 model.predict 的 confidence: {confidence}, iou: {iou_threshold}, max_det: {max_detections}, imgsz: {imgsz_arg}")
+            normal_logger.info(f"传递给 model.predict 的 confidence: {confidence}, iou: {iou_threshold}, max_det: {max_detections}, imgsz: {imgsz_arg}")
         
         detections_output = []
         annotated_image_b64 = None

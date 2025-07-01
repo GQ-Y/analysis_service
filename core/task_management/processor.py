@@ -549,6 +549,38 @@ class TaskProcessor:
                                 frame_index=analyzed_frame_counter, # 使用实际分析的帧计数
                                 **analyzer_kwargs
                             )
+                            
+                            # 关键修复：处理预览帧
+                            if analysis_data and analysis_data.get("success", False):
+                                # 如果有base64编码的标注图像，解码并存储为预览帧
+                                annotated_image_b64 = analysis_data.get("annotated_image_base64")
+                                if annotated_image_b64:
+                                    try:
+                                        import base64
+                                        import cv2
+                                        import numpy as np
+                                        
+                                        # 解码base64图像
+                                        img_data = base64.b64decode(annotated_image_b64)
+                                        nparr = np.frombuffer(img_data, np.uint8)
+                                        preview_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                                        
+                                        if preview_frame is not None:
+                                            # 存储预览帧
+                                            self.preview_frames[task_id] = preview_frame
+                                            if analyzed_frame_counter <= 10 or analyzed_frame_counter % 100 == 0:
+                                                normal_logger.info(f"任务 {task_id}: 已更新预览帧 #{analyzed_frame_counter}, 形状: {preview_frame.shape}")
+                                        else:
+                                            normal_logger.warning(f"任务 {task_id}: 解码base64预览帧失败")
+                                    except Exception as preview_error:
+                                        normal_logger.warning(f"任务 {task_id}: 处理预览帧时出错: {str(preview_error)}")
+                                else:
+                                    # 如果没有base64图像，使用原始帧作为预览帧
+                                    if frame is not None:
+                                        self.preview_frames[task_id] = frame.copy()
+                                        if analyzed_frame_counter <= 5:
+                                            normal_logger.info(f"任务 {task_id}: 使用原始帧作为预览帧 #{analyzed_frame_counter}")
+                            
                         except Exception as analysis_exc:
                             normal_logger.error(f"任务 {task_id}: 帧 {analyzed_frame_counter} (流帧 {stream_frame_counter}) 分析时发生错误: {analysis_exc}")
                             normal_logger.error(traceback.format_exc())

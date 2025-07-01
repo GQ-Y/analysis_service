@@ -633,3 +633,319 @@ async def get_video_performance_modes() -> BaseResponse:
             code=500,
             data=None
         )
+
+# 增强版视频编码路由
+@router.post("/video/enhanced/encoding/{task_id}")
+async def start_enhanced_video_encoding(
+    task_id: str = Path(..., description="任务ID"),
+    format: str = Query("mp4", description="视频格式 (mp4, flv)"),
+    quality: int = Query(80, description="视频质量 (1-100)"),
+    width: Optional[int] = Query(None, description="视频宽度"),
+    height: Optional[int] = Query(None, description="视频高度"),
+    fps: int = Query(15, description="帧率"),
+    task_service: TaskService = Depends(get_task_service)
+):
+    """启动增强版视频编码 - 集成帧稳定器"""
+    try:
+        # 导入增强编码器
+        from services.video.encoders.enhanced_file_encoder import enhanced_file_encoder
+        
+        # 获取任务管理器
+        task_manager = task_service.task_manager
+        
+        result = await enhanced_file_encoder.start_encoding(
+            task_id=task_id,
+            task_manager=task_manager,
+            format=format,
+            quality=quality,
+            width=width,
+            height=height,
+            fps=fps
+        )
+        
+        if result.get("success", False):
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/encoding/{task_id}",
+                success=True,
+                message=result.get("message", "增强视频编码启动成功"),
+                code=200,
+                data={
+                    "task_id": task_id,
+                    "video_url": result.get("video_url"),
+                    "format": format,
+                    "quality": quality,
+                    "fps": fps,
+                    "encoder_type": "enhanced"
+                }
+            )
+        else:
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/encoding/{task_id}",
+                success=False,
+                message=result.get("message", "启动增强视频编码失败"),
+                code=400,
+                data=None
+            )
+            
+    except Exception as e:
+        exception_logger.exception(f"启动增强视频编码异常: {str(e)}")
+        return BaseResponse(
+            requestId=str(uuid.uuid4()),
+            path=f"/api/v1/tasks/video/enhanced/encoding/{task_id}",
+            success=False,
+            message=f"启动增强视频编码异常: {str(e)}",
+            code=500,
+            data=None
+        )
+
+@router.delete("/video/enhanced/encoding/{task_id}")
+async def stop_enhanced_video_encoding(
+    task_id: str = Path(..., description="任务ID"),
+    task_service: TaskService = Depends(get_task_service)
+):
+    """停止增强版视频编码"""
+    try:
+        from services.video.encoders.enhanced_file_encoder import enhanced_file_encoder
+        
+        result = await enhanced_file_encoder.stop_encoding(task_id)
+        
+        if result.get("success", False):
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/encoding/{task_id}",
+                success=True,
+                message=result.get("message", "增强视频编码停止成功"),
+                code=200,
+                data={"task_id": task_id}
+            )
+        else:
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/encoding/{task_id}",
+                success=False,
+                message=result.get("message", "停止增强视频编码失败"),
+                code=400,
+                data=None
+            )
+            
+    except Exception as e:
+        exception_logger.exception(f"停止增强视频编码异常: {str(e)}")
+        return BaseResponse(
+            requestId=str(uuid.uuid4()),
+            path=f"/api/v1/tasks/video/enhanced/encoding/{task_id}",
+            success=False,
+            message=f"停止增强视频编码异常: {str(e)}",
+            code=500,
+            data=None
+        )
+
+# 增强版直播流路由
+@router.post("/video/enhanced/live/{task_id}")
+async def start_enhanced_live_stream(
+    task_id: str = Path(..., description="任务ID"),
+    format: str = Query("rtmp", description="直播格式"),
+    quality: int = Query(80, description="视频质量 (1-100)"),
+    width: Optional[int] = Query(None, description="视频宽度"),
+    height: Optional[int] = Query(None, description="视频高度"),
+    fps: int = Query(15, description="帧率"),
+    stream_type: str = Query("ffmpeg", description="推流类型 (ffmpeg, zlm)"),
+    task_service: TaskService = Depends(get_task_service)
+):
+    """启动增强版直播流 - 集成帧稳定器"""
+    try:
+        from services.video.streaming.enhanced_live_streamer import enhanced_live_streamer
+        
+        # 获取任务管理器
+        task_manager = task_service.task_manager
+        
+        result = await enhanced_live_streamer.start_live_stream(
+            task_id=task_id,
+            task_manager=task_manager,
+            format=format,
+            quality=quality,
+            width=width,
+            height=height,
+            fps=fps,
+            stream_type=stream_type
+        )
+        
+        if result.get("success", False):
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/live/{task_id}",
+                success=True,
+                message=result.get("message", "增强直播流启动成功"),
+                code=200,
+                data={
+                    "task_id": task_id,
+                    "stream_info": result.get("stream_info"),
+                    "play_urls": result.get("play_urls"),
+                    "format": format,
+                    "quality": quality,
+                    "fps": fps,
+                    "stream_type": stream_type,
+                    "encoder_type": "enhanced"
+                }
+            )
+        else:
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/live/{task_id}",
+                success=False,
+                message=result.get("message", "启动增强直播流失败"),
+                code=400,
+                data=None
+            )
+            
+    except Exception as e:
+        exception_logger.exception(f"启动增强直播流异常: {str(e)}")
+        return BaseResponse(
+            requestId=str(uuid.uuid4()),
+            path=f"/api/v1/tasks/video/enhanced/live/{task_id}",
+            success=False,
+            message=f"启动增强直播流异常: {str(e)}",
+            code=500,
+            data=None
+        )
+
+@router.delete("/video/enhanced/live/{task_id}")
+async def stop_enhanced_live_stream(
+    task_id: str = Path(..., description="任务ID"),
+    task_service: TaskService = Depends(get_task_service)
+):
+    """停止增强版直播流"""
+    try:
+        from services.video.streaming.enhanced_live_streamer import enhanced_live_streamer
+        
+        result = await enhanced_live_streamer.stop_live_stream(task_id)
+        
+        if result.get("success", False):
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/live/{task_id}",
+                success=True,
+                message=result.get("message", "增强直播流停止成功"),
+                code=200,
+                data={"task_id": task_id}
+            )
+        else:
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/live/{task_id}",
+                success=False,
+                message=result.get("message", "停止增强直播流失败"),
+                code=400,
+                data=None
+            )
+            
+    except Exception as e:
+        exception_logger.exception(f"停止增强直播流异常: {str(e)}")
+        return BaseResponse(
+            requestId=str(uuid.uuid4()),
+            path=f"/api/v1/tasks/video/enhanced/live/{task_id}",
+            success=False,
+            message=f"停止增强直播流异常: {str(e)}",
+            code=500,
+            data=None
+        )
+
+# 获取帧稳定器统计信息
+@router.get("/video/enhanced/stats/{task_id}")
+async def get_enhanced_video_stats(
+    task_id: str = Path(..., description="任务ID"),
+    stat_type: str = Query("all", description="统计类型 (encoding, streaming, all)"),
+    task_service: TaskService = Depends(get_task_service)
+):
+    """获取增强版视频编码/推流的统计信息"""
+    try:
+        stats_data = {}
+        
+        # 获取编码统计
+        if stat_type in ["encoding", "all"]:
+            try:
+                from services.video.encoders.enhanced_file_encoder import enhanced_file_encoder
+                encoding_stats = enhanced_file_encoder.get_encoding_stats(task_id)
+                if encoding_stats:
+                    stats_data["encoding"] = encoding_stats
+            except Exception as e:
+                normal_logger.debug(f"获取编码统计失败: {str(e)}")
+        
+        # 获取推流统计
+        if stat_type in ["streaming", "all"]:
+            try:
+                from services.video.streaming.enhanced_live_streamer import enhanced_live_streamer
+                streaming_stats = enhanced_live_streamer.get_streaming_stats(task_id)
+                if streaming_stats:
+                    stats_data["streaming"] = streaming_stats
+            except Exception as e:
+                normal_logger.debug(f"获取推流统计失败: {str(e)}")
+        
+        if stats_data:
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/stats/{task_id}",
+                success=True,
+                message="获取增强视频统计成功",
+                code=200,
+                data={
+                    "task_id": task_id,
+                    "stats": stats_data,
+                    "stat_type": stat_type
+                }
+            )
+        else:
+            return BaseResponse(
+                requestId=str(uuid.uuid4()),
+                path=f"/api/v1/tasks/video/enhanced/stats/{task_id}",
+                success=False,
+                message=f"未找到任务的统计信息: {task_id}",
+                code=404,
+                data=None
+            )
+            
+    except Exception as e:
+        exception_logger.exception(f"获取增强视频统计异常: {str(e)}")
+        return BaseResponse(
+            requestId=str(uuid.uuid4()),
+            path=f"/api/v1/tasks/video/enhanced/stats/{task_id}",
+            success=False,
+            message=f"获取增强视频统计异常: {str(e)}",
+            code=500,
+            data=None
+        )
+
+# 增强流文件访问路由
+@router.get("/video/enhanced/stream/{stream_id}/{filename}")
+async def get_enhanced_stream_file(
+    stream_id: str = Path(..., description="流ID"),
+    filename: str = Path(..., description="文件名")
+):
+    """访问增强流文件"""
+    try:
+        # 构建文件路径
+        file_path = os.path.join("temp", "enhanced_streams", stream_id, filename)
+        
+        # 检查文件是否存在
+        if not os.path.exists(file_path):
+            raise HTTPException(status_code=404, detail=f"流文件不存在: {filename}")
+        
+        # 返回文件
+        media_type = "video/x-flv" if filename.endswith('.flv') else "application/octet-stream"
+        
+        return FileResponse(
+            path=file_path,
+            media_type=media_type,
+            filename=filename,
+            headers={
+                "Cache-Control": "no-cache",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET",
+                "Access-Control-Allow-Headers": "Content-Type"
+            }
+        )
+        
+    except Exception as e:
+        exception_logger.exception(f"访问增强流文件异常: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"访问流文件失败: {str(e)}")

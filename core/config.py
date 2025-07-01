@@ -214,7 +214,7 @@ class Settings(BaseSettings):
     # Socket回调配置 (新增)
     SOCKET_CALLBACK_ENABLED: bool = os.getenv("SOCKET_CALLBACK_ENABLED", "true").lower() == "true"
     SOCKET_CALLBACK_HOST: str = os.getenv("SOCKET_CALLBACK_HOST", "localhost")
-    SOCKET_CALLBACK_PORT: int = int(os.getenv("SOCKET_CALLBACK_PORT", "8089"))
+    SOCKET_CALLBACK_PORT: int = int(os.getenv("SOCKET_CALLBACK_PORT", "8090"))
     SOCKET_CONNECT_TIMEOUT: int = int(os.getenv("SOCKET_CONNECT_TIMEOUT", "5"))
     SOCKET_SEND_TIMEOUT: int = int(os.getenv("SOCKET_SEND_TIMEOUT", "10"))
     SOCKET_MAX_CONNECT_ATTEMPTS: int = int(os.getenv("SOCKET_MAX_CONNECT_ATTEMPTS", "3"))
