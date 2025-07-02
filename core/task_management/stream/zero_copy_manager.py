@@ -9,7 +9,7 @@ from typing import Dict, Optional, Tuple, Any, List
 import traceback
 
 from ...interfaces.zero_copy_stream_interface import (
-    IZeroCopyVideoStream, 
+    IZeroCopyVideoStream,
     ZeroCopyStreamConfig,
     AsyncFrameReferenceQueue
 )
@@ -17,6 +17,7 @@ from ...interfaces.stream_interface import StreamStatus, StreamHealthStatus
 from ...frame.frame_reference import FrameReference, FrameReferenceManager
 from ...memory.memory_pool import MemoryPool
 from .manager import StreamManager
+from .zero_copy_rtsp_stream import ZeroCopyRTSPStream
 
 # 使用项目现有的日志系统
 try:
@@ -61,6 +62,9 @@ class ZeroCopyStreamManager(StreamManager):
         # 零拷贝流缓冲区
         self._zero_copy_buffers: Dict[str, AsyncFrameReferenceQueue] = {}
         self._zero_copy_configs: Dict[str, ZeroCopyStreamConfig] = {}
+
+        # 零拷贝流实例管理
+        self.zero_copy_streams: Dict[str, ZeroCopyRTSPStream] = {}
         
         # 内存监控
         self._memory_stats = {
@@ -123,17 +127,33 @@ class ZeroCopyStreamManager(StreamManager):
             if zero_copy_config is None:
                 zero_copy_config = ZeroCopyStreamConfig()
 
-            # 首先尝试获取或创建流
-            stream = await self.get_or_create_stream(stream_id, config)
-            if not stream:
-                normal_logger.error(f"无法获取或创建流: {stream_id}")
+            # 直接创建零拷贝RTSP流
+            stream_url = config.get("url") or config.get("stream_url")
+            if not stream_url:
+                normal_logger.error(f"配置中缺少流地址: {stream_id}")
                 return False, None
-            
-            # 检查流是否支持零拷贝
-            if not isinstance(stream, IZeroCopyVideoStream):
-                normal_logger.warning(f"流 {stream_id} 不支持零拷贝，回退到传统模式")
-                # 回退到传统订阅模式
-                return await self.subscribe_stream(stream_id, subscriber_id, config)
+
+            # 检查是否已存在零拷贝流
+            if stream_id in self.zero_copy_streams:
+                stream = self.zero_copy_streams[stream_id]
+                normal_logger.info(f"使用已存在的零拷贝流: {stream_id}")
+            else:
+                # 创建新的零拷贝RTSP流
+                stream = ZeroCopyRTSPStream(stream_id, stream_url, config)
+
+                # 设置内存池
+                if not stream.set_memory_pool(self.memory_pool):
+                    normal_logger.error(f"无法为零拷贝流 {stream_id} 设置内存池")
+                    return False, None
+
+                # 启动流
+                if not await stream.start():
+                    normal_logger.error(f"无法启动零拷贝流: {stream_id}")
+                    return False, None
+
+                # 保存流引用
+                self.zero_copy_streams[stream_id] = stream
+                normal_logger.info(f"创建并启动零拷贝RTSP流: {stream_id}, URL: {stream_url}")
             
             # 设置内存池
             if not stream.set_memory_pool(self.memory_pool):
@@ -276,7 +296,7 @@ class ZeroCopyStreamManager(StreamManager):
             "manager_stats": self._memory_stats.copy(),
             "performance_stats": self._performance_stats.copy(),
             "active_buffers": len(self._zero_copy_buffers),
-            "frame_ref_manager": self.frame_ref_manager.get_stats(),
+            "frame_ref_manager": self.frame_ref_manager.get_manager_stats(),
         }
     
     def get_zero_copy_buffer_stats(self) -> Dict[str, Any]:

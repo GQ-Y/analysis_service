@@ -73,9 +73,9 @@ def create_task_service():
     service_mode = get_service_mode()
     
     if service_mode == "http":
-        normal_logger.info("创建HTTP模式任务服务")
-        from services.http.task_service import TaskService
-        return TaskService()
+        normal_logger.info("创建HTTP模式零拷贝任务服务")
+        from services.http.zero_copy_task_service import ZeroCopyTaskService
+        return ZeroCopyTaskService()
     elif service_mode == "mqtt":
         normal_logger.info("创建MQTT模式任务服务")
         # 未来支持MQTT模式
@@ -84,8 +84,8 @@ def create_task_service():
         raise NotImplementedError("MQTT模式尚未实现")
     else:
         normal_logger.warning(f"未知的服务模式: {service_mode}，使用默认HTTP模式")
-        from services.http.task_service import TaskService
-        return TaskService()
+        from services.http.zero_copy_task_service import ZeroCopyTaskService
+        return ZeroCopyTaskService()
 
 def create_analysis_service():
     """

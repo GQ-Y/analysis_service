@@ -3,8 +3,8 @@ HTTP服务模块
 提供基于HTTP的API服务功能
 """
 
-from .task_service import TaskService
+from .zero_copy_task_service import ZeroCopyTaskService
 
 __all__ = [
-    "TaskService"
+    "ZeroCopyTaskService"
 ]

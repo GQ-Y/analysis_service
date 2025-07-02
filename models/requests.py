@@ -318,6 +318,14 @@ class StreamTask(BaseModel):
         True,
         description="是否返回base64编码的图像"
     )
+    zero_copy_enabled: Optional[bool] = Field(
+        False,
+        description="是否启用零拷贝模式（内部使用）"
+    )
+    memory_pool_enabled: Optional[bool] = Field(
+        False,
+        description="是否启用内存池（内部使用）"
+    )
 
     model_config = {"protected_namespaces": ()}
     

@@ -13,7 +13,7 @@ import threading
 from enum import Enum
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger
-from .processor import TaskProcessor
+# 移除普通TaskProcessor的导入，现在使用ZeroCopyTaskProcessor
 
 from .utils.status import TaskStatus
 
@@ -54,8 +54,11 @@ class TaskManager:
         # 初始化任务锁
         self.task_lock = threading.Lock()
 
-        # 创建并持有 TaskProcessor 实例
-        self.processor = TaskProcessor(task_manager=self)
+        # 任务处理器将通过外部注入的方式设置，而不是在构造函数中创建
+        self.processor = None
+
+        # 内存池将通过外部注入的方式设置
+        self.memory_pool = None
 
         # 清理线程
         self.cleanup_thread = None
@@ -66,7 +69,11 @@ class TaskManager:
     async def initialize(self):
         """初始化任务管理器"""
         try:
-            # 初始化处理器
+            # 检查全局内存池是否已初始化
+            if not self.memory_pool or not self.memory_pool.initialized:
+                raise RuntimeError("全局内存池未初始化，请先初始化零拷贝架构")
+
+            # 初始化零拷贝任务处理器
             await self.processor.initialize()
 
             # 启动清理线程
@@ -74,7 +81,7 @@ class TaskManager:
             self.cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
             self.cleanup_thread.start()
 
-            normal_logger.info("任务管理器初始化成功")
+            normal_logger.info("任务管理器初始化成功（使用零拷贝处理器）")
             return True
         except Exception as e:
             exception_logger.exception(f"任务管理器初始化失败: {str(e)}")
@@ -568,7 +575,7 @@ class TaskManager:
             # 获取任务配置
             task_config = self.tasks[task_id]["data"]["params"]
 
-            # 尝试启动流任务
+            # 尝试启动零拷贝流任务
             result = await self.processor.start_stream_analysis(task_id, task_config)
 
             if result:
@@ -599,7 +606,7 @@ class TaskManager:
                 normal_logger.warning(f"任务不存在: {task_id}")
                 return False
 
-            # 尝试启动流任务
+            # 尝试启动零拷贝流任务
             result = await self.processor.start_stream_analysis(task_id, task_config)
 
             if result:

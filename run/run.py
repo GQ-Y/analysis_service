@@ -102,13 +102,11 @@ def create_app() -> FastAPI:
     # 注册路由
     from routers import task_router, health_router, stream_router, discovery_router
     from routers.task_video import router as video_router
-    from routers.zero_copy_task import router as zero_copy_router
     app.include_router(task_router)
     app.include_router(health_router)
     app.include_router(video_router)
     app.include_router(stream_router)
     app.include_router(discovery_router)
-    app.include_router(zero_copy_router)
 
     # 添加静态文件支持
     from fastapi.staticfiles import StaticFiles
@@ -177,7 +175,8 @@ async def lifespan(app: FastAPI):
         # 创建零拷贝任务管理器（使用零拷贝处理器）
         from core.task_management.manager import TaskManager
         task_manager = TaskManager()
-        task_manager.task_processor = zero_copy_task_processor
+        task_manager.processor = zero_copy_task_processor  # 修正属性名
+        task_manager.memory_pool = memory_pool  # 设置内存池引用
         zero_copy_task_processor.task_manager = task_manager
         await task_manager.initialize()
         app_state_manager.register_service("task_manager", task_manager)
@@ -252,16 +251,17 @@ async def lifespan(app: FastAPI):
 
         normal_logger.info("服务已关闭")
 
-def start_app():
+def start_app(app=None):
     """
     启动FastAPI应用
     """
     host = settings.service.host
     port = settings.service.port
-    
-    # 创建应用实例
-    app = create_app()
-    
+
+    # 如果没有传入应用实例，则创建一个新的
+    if app is None:
+        app = create_app()
+
     # 使用uvicorn启动
     config = uvicorn.Config(
         app,

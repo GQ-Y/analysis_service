@@ -183,14 +183,17 @@ class ZeroCopyTaskService:
         """
         try:
             normal_logger.info(f"启动零拷贝任务: model={model_code}, stream={stream_url}")
-            
+            normal_logger.info(f"传入的stream_engine参数: {stream_engine}")
+
             # 生成任务ID
             task_id = str(uuid.uuid4())
-            
-            # 强制使用零拷贝引擎
-            stream_engine = "zero_copy"
+
+            # 使用自动选择引擎（零拷贝架构会在底层处理）
+            stream_engine = stream_engine or "auto"
+            normal_logger.info(f"处理后的stream_engine参数: {stream_engine}")
             
             # 创建StreamTask对象
+            normal_logger.info(f"创建StreamTask前的stream_engine值: {stream_engine}")
             task = StreamTask(
                 model_code=model_code,
                 stream_url=stream_url,
@@ -255,11 +258,13 @@ class ZeroCopyTaskService:
         # 基础配置
         config = {
             "task_id": task_id,
+            "stream_id": task_id,  # 使用task_id作为stream_id
             "model_code": task.model_code,
             "stream_url": task.stream_url,
+            "url": task.stream_url,  # 添加url字段，供StreamManager使用
             "task_name": task.task_name,
             "analysis_type": task.analysis_type,
-            "stream_engine": "zero_copy",  # 强制使用零拷贝引擎
+            "stream_engine": task.stream_engine or "auto",  # 使用任务指定的引擎或自动选择
 
             # 零拷贝特定配置
             "zero_copy_enabled": True,
@@ -292,7 +297,7 @@ class ZeroCopyTaskService:
 
         # 添加分析器配置
         if hasattr(task, 'config') and task.config:
-            config["analyzer_config"] = asdict(task.config)
+            config["analyzer_config"] = task.config.model_dump()
 
         return config
 
@@ -309,8 +314,13 @@ class ZeroCopyTaskService:
         """
         try:
             # 获取分析器配置
-            analyzer_config = task_config.get("analyzer_config", {})
+            analyzer_config = task_config.get("analyzer_config", {}).copy()  # 复制以避免修改原始配置
             device = task_config.get("device", "auto")
+            analysis_type = task_config.get("analysis_type", "detection")
+
+            # 确保设备配置正确（覆盖任何现有的device配置）
+            analyzer_config["model_code"] = model_code
+            analyzer_config["device"] = device
 
             # 添加零拷贝特定配置
             analyzer_config.update({
@@ -320,11 +330,13 @@ class ZeroCopyTaskService:
                 "max_batch_size": task_config.get("max_batch_size", 8),
             })
 
-            # 创建零拷贝分析器
-            analyzer = await analyzer_factory.create_analyzer(
-                model_code=model_code,
-                device=device,
-                **analyzer_config
+            normal_logger.info(f"准备创建分析器: type={analysis_type}, model={model_code}, device={device}")
+
+            # 创建零拷贝分析器 - 使用正确的位置参数
+            analyzer = analyzer_factory.create_analyzer(
+                analysis_type,      # 第一个参数：分析器类型
+                "default",          # 第二个参数：分析器名称
+                analyzer_config     # 第三个参数：配置字典
             )
 
             if not analyzer:
@@ -358,12 +370,13 @@ class ZeroCopyTaskService:
             if not self.zero_copy_processor:
                 raise RuntimeError("零拷贝处理器未设置")
 
+            # 将分析器添加到任务配置中
+            task_config["analyzer"] = analyzer
+
             # 启动零拷贝流处理
-            success = await self.zero_copy_processor.start_zero_copy_stream_analysis(
+            success = await self.zero_copy_processor.start_stream_analysis(
                 task_id=task_id,
-                stream_url=task_config["stream_url"],
-                analyzer=analyzer,
-                config=task_config
+                task_config=task_config
             )
 
             if success:
@@ -488,6 +501,48 @@ class ZeroCopyTaskService:
                 "success": False,
                 "message": f"获取零拷贝任务状态失败: {str(e)}",
                 "task_id": task_id
+            }
+
+    async def get_memory_status(self) -> Dict[str, Any]:
+        """
+        获取内存池状态信息
+
+        Returns:
+            Dict[str, Any]: 内存池状态信息
+        """
+        try:
+            if not self.memory_pool:
+                return {
+                    "success": False,
+                    "message": "内存池未设置",
+                    "data": None
+                }
+
+            # 获取内存池详细统计
+            memory_stats = self.memory_pool.get_stats()
+
+            # 获取零拷贝组件状态
+            zero_copy_status = {}
+            if self.zero_copy_stream_manager:
+                zero_copy_status = self.zero_copy_stream_manager.get_memory_stats()
+
+            return {
+                "success": True,
+                "message": "获取内存池状态成功",
+                "data": {
+                    "memory_pool": memory_stats,
+                    "zero_copy_status": zero_copy_status,
+                    "active_tasks": len(self.active_tasks),
+                    "service_stats": self.performance_stats.copy()
+                }
+            }
+
+        except Exception as e:
+            exception_logger.exception(f"获取内存池状态失败: {str(e)}")
+            return {
+                "success": False,
+                "message": f"获取内存池状态失败: {str(e)}",
+                "data": None
             }
 
     def get_performance_stats(self) -> Dict[str, Any]:

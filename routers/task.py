@@ -1,6 +1,7 @@
 """
 任务管理路由
-提供任务的创建、查询、停止等API
+提供基于零拷贝架构的任务创建、查询、停止等API
+所有任务都使用零拷贝架构进行高性能视频流处理
 """
 from fastapi import APIRouter, Depends, HTTPException, Query, Path, Request
 from typing import Dict, Any, Optional
@@ -21,7 +22,7 @@ exception_logger = get_exception_logger(__name__)
 # 创建路由
 router = APIRouter(
     prefix="/api/v1/tasks",
-    tags=["任务管理"],
+    tags=["零拷贝任务管理"],
     responses={404: {"description": "Not found"}},
 )
 
@@ -587,6 +588,129 @@ async def list_tasks(
             success=False,
             message=f"获取任务列表失败: {str(e)}",
             code=500,
+            data=None
+        )
+
+
+@router.get("/performance", response_model=BaseResponse, summary="获取零拷贝性能统计")
+async def get_performance_stats(
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
+) -> BaseResponse:
+    """
+    获取零拷贝架构性能统计信息
+
+    返回包括：
+    - 总处理帧数
+    - 批处理操作次数
+    - 零拷贝操作次数
+    - 内存分配时间
+    - 帧处理时间
+    - 活跃任务数量
+    - 内存池统计
+    """
+    request_id = str(uuid.uuid4())
+
+    try:
+        # 获取性能统计
+        result = await task_service.get_performance_stats()
+
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/performance",
+            success=True,
+            message="获取性能统计成功",
+            data=result
+        )
+
+    except Exception as e:
+        exception_logger.exception(f"获取性能统计失败: {str(e)}")
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/performance",
+            success=False,
+            code=500,
+            message=f"获取性能统计失败: {str(e)}",
+            data=None
+        )
+
+
+@router.get("/memory/status", response_model=BaseResponse, summary="获取内存池状态")
+async def get_memory_status(
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
+) -> BaseResponse:
+    """
+    获取内存池状态信息
+
+    返回包括：
+    - 内存池总容量
+    - 已使用内存
+    - 可用内存
+    - 内存块分配统计
+    - 内存碎片信息
+    """
+    request_id = str(uuid.uuid4())
+
+    try:
+        # 获取内存池状态
+        result = await task_service.get_memory_status()
+
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/memory/status",
+            success=True,
+            message="获取内存池状态成功",
+            data=result
+        )
+
+    except Exception as e:
+        exception_logger.exception(f"获取内存池状态失败: {str(e)}")
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/memory/status",
+            success=False,
+            code=500,
+            message=f"获取内存池状态失败: {str(e)}",
+            data=None
+        )
+
+
+@router.post("/memory/cleanup", response_model=BaseResponse, summary="手动触发内存清理")
+async def trigger_memory_cleanup(
+    task_service: ZeroCopyTaskService = Depends(get_task_service),
+    force: bool = Query(False, description="是否强制清理")
+) -> BaseResponse:
+    """
+    手动触发内存池清理
+
+    Args:
+        task_service: 零拷贝任务服务
+        force: 是否强制清理
+
+    Returns:
+        BaseResponse: 清理结果
+    """
+    request_id = str(uuid.uuid4())
+
+    try:
+        # 触发内存清理
+        result = await task_service.cleanup_memory(force=force)
+
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/memory/cleanup",
+            success=True,
+            message="内存清理完成",
+            data=result
+        )
+
+    except Exception as e:
+        exception_logger.exception(f"内存清理失败: {str(e)}")
+        return BaseResponse(
+            requestId=request_id,
+            path="/api/v1/tasks/memory/cleanup",
+            success=False,
+            code=500,
+            message=f"内存清理失败: {str(e)}",
             data=None
         )
 

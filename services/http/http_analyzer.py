@@ -15,7 +15,7 @@ from datetime import datetime
 
 from core.config import settings
 from core.task_management.manager import TaskManager
-from core.task_management.processor import TaskProcessor
+from core.task_management.zero_copy_processor import ZeroCopyTaskProcessor
 from core.analyzer.detection.yolo_detector import YOLODetector
 from core.analyzer.segmentation.yolo_segmentor import YOLOSegmentor
 from core.task_management import TaskStatus
@@ -64,8 +64,13 @@ class HTTPAnalyzerService(BaseAnalyzerService):
             # 初始化任务管理器
             self.task_manager = TaskManager()
 
-            # 初始化任务处理器
-            self.task_processor = TaskProcessor(self.task_manager)
+            # 初始化零拷贝任务处理器
+            from core.memory.memory_pool import MemoryPool
+            from core.config.memory_config import MemoryConfig
+            memory_config = MemoryConfig()
+            memory_pool = MemoryPool(memory_config)
+            await memory_pool.initialize()
+            self.task_processor = ZeroCopyTaskProcessor(self.task_manager, memory_pool)
 
             # 初始化检测器
             self.detector = YOLODetector()

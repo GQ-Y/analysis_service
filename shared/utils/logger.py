@@ -19,8 +19,8 @@ logger.remove()
 NORMAL_LOG_FILE = os.path.join(LOGS_DIR, "normal.log")
 logger.add(
     NORMAL_LOG_FILE,
-    level="INFO", 
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {extra[name]}:{function}:{line} - {message}",
+    level="INFO",
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}",
     rotation="1 day",
     retention="7 days",
     enqueue=True,
@@ -30,7 +30,7 @@ logger.add(
 logger.add(
     sys.stderr,
     level="INFO",
-    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <cyan>常规日志</cyan> | <cyan>{extra[name]}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
+    format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <cyan>常规日志</cyan> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     filter=lambda record: record["extra"].get("log_type") == "normal"
 )
 normal_logger = logger.bind(log_type="normal")
@@ -39,12 +39,12 @@ normal_logger = logger.bind(log_type="normal")
 EXCEPTION_LOG_FILE = os.path.join(LOGS_DIR, "exception.log")
 logger.add(
     EXCEPTION_LOG_FILE,
-    level="ERROR", 
-    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {extra[name]}:{function}:{line} - {message}\\n{exception}",
+    level="ERROR",
+    format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}\\n{exception}",
     rotation="1 day",
     retention="7 days",
     enqueue=True,
-    backtrace=True, 
+    backtrace=True,
     diagnose=True,
     filter=lambda record: record["extra"].get("log_type") == "exception"
 )
@@ -52,7 +52,7 @@ logger.add(
 logger.add(
     sys.stderr,
     level="ERROR",
-    format="<red>{time:YYYY-MM-DD HH:mm:ss.SSS}</red> | <red>异常日志</red> | <cyan>{extra[name]}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>\\n{exception}",
+    format="<red>{time:YYYY-MM-DD HH:mm:ss.SSS}</red> | <red>异常日志</red> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>\\n{exception}",
     backtrace=True,
     diagnose=True,
     filter=lambda record: record["extra"].get("log_type") == "exception"
