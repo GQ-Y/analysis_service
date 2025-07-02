@@ -518,11 +518,48 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             # 获取内存块
             memory_block = self.memory_pool.allocate_frame_block(self.width, self.height)
             if not memory_block:
-                normal_logger.warning(f"流 {self._stream_id} 无法获取内存块")
+                # 获取内存池状态进行详细诊断
+                pool_stats = self.memory_pool.get_stats()
+                resolution_key = f"{self.width}x{self.height}"
+
+                normal_logger.error(f"流 {self._stream_id} 无法获取内存块 {resolution_key}")
+                normal_logger.error(f"内存池状态: {pool_stats}")
+
+                # 检查是否是特定分辨率的问题
+                if 'resolution_stats' in pool_stats and resolution_key in pool_stats['resolution_stats']:
+                    res_stats = pool_stats['resolution_stats'][resolution_key]
+                    normal_logger.error(f"分辨率 {resolution_key} 统计: {res_stats}")
+                else:
+                    normal_logger.error(f"不支持的分辨率: {resolution_key}")
+
+                # 增加错误计数
+                self.error_count += 1
                 return
 
-            # 复制帧数据到内存块（零拷贝）
-            memory_block.copy_from_numpy(frame)
+            # 获取内存块的numpy视图并复制帧数据
+            memory_view = memory_block.get_numpy_view()
+            if memory_view is None:
+                normal_logger.error(f"流 {self._stream_id} 无法获取内存块numpy视图")
+                # 释放内存块
+                memory_block.release()
+                return
+
+            # 确保帧数据形状匹配
+            if frame.shape != memory_view.shape:
+                normal_logger.error(f"流 {self._stream_id} 帧形状不匹配: {frame.shape} vs {memory_view.shape}")
+                # 释放内存块
+                memory_block.release()
+                return
+
+            # 复制帧数据到内存块（零拷贝视图）
+            try:
+                memory_view[:] = frame
+                normal_logger.debug(f"流 {self._stream_id} 帧数据复制成功")
+            except Exception as e:
+                normal_logger.error(f"流 {self._stream_id} 帧数据复制失败: {str(e)}")
+                # 释放内存块
+                memory_block.release()
+                return
 
             # 创建帧元数据
             metadata = FrameMetadata(

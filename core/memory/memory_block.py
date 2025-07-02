@@ -360,29 +360,37 @@ class MemoryBlockManager:
     def get_block_by_resolution(self, width: int, height: int) -> Optional[MemoryBlock]:
         """
         根据分辨率获取可用的内存块
-        
+
         Args:
             width: 图像宽度
             height: 图像高度
-        
+
         Returns:
             Optional[MemoryBlock]: 可用的内存块，无可用块返回None
         """
         resolution_key = f"{width}x{height}"
-        
+
         with self.lock:
             free_list = self.free_blocks.get(resolution_key, [])
-            
-            if free_list:
+
+            # 尝试获取可用的内存块，最多尝试列表中的所有块
+            attempts = 0
+            max_attempts = len(free_list)
+
+            while free_list and attempts < max_attempts:
                 # 获取第一个空闲块
                 block = free_list.pop(0)
-                if block.acquire():
+
+                # 检查块状态是否真的是空闲的
+                if block.is_available() and block.acquire():
+                    logger.debug(f"成功分配内存块 {block.block_id} ({resolution_key})")
                     return block
                 else:
-                    # 获取失败，重新放回空闲列表
-                    free_list.insert(0, block)
-            
-            logger.warning(f"没有可用的内存块: {resolution_key}")
+                    # 获取失败，说明这个块有问题，不要放回列表
+                    logger.warning(f"内存块 {block.block_id} 状态异常: {block.status}, 引用计数: {block.get_ref_count()}")
+                    attempts += 1
+
+            logger.warning(f"没有可用的内存块: {resolution_key}, 空闲列表大小: {len(free_list)}")
             return None
     
     def return_block(self, block: MemoryBlock) -> bool:
