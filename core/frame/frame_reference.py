@@ -271,22 +271,24 @@ class FrameReferenceManager:
     管理帧引用的创建、跟踪和清理
     """
     
-    def __init__(self, max_references: int = 10000):
+    def __init__(self, max_references: int = 10000, memory_pool=None):
         """
         初始化帧引用管理器
-        
+
         Args:
             max_references: 最大引用数量
+            memory_pool: 内存池实例，用于释放内存块
         """
         self.max_references = max_references
-        
+        self.memory_pool = memory_pool
+
         # 活跃引用跟踪
         self.active_references: Dict[int, FrameReference] = {}  # frame_id -> FrameReference
         self.reference_stats: Dict[int, Dict[str, Any]] = {}    # frame_id -> stats
-        
+
         # 线程安全
         self.lock = threading.RLock()
-        
+
         # 统计信息
         self.stats = {
             "created_count": 0,
@@ -294,7 +296,7 @@ class FrameReferenceManager:
             "cleanup_count": 0,
             "max_concurrent": 0,
         }
-        
+
         logger.info(f"帧引用管理器初始化完成: 最大引用数={max_references}")
     
     def create_reference(self, memory_block: MemoryBlock, metadata: FrameMetadata) -> Optional[FrameReference]:
@@ -366,18 +368,26 @@ class FrameReferenceManager:
         """引用清理回调"""
         with self.lock:
             frame_id = frame_ref.metadata.frame_id
-            
+
+            # 如果有内存池，调用内存池的释放方法
+            if self.memory_pool and frame_ref.memory_block:
+                try:
+                    self.memory_pool.deallocate_frame_block(frame_ref.memory_block)
+                    logger.debug(f"通过内存池释放内存块: {frame_ref.memory_block.block_id}")
+                except Exception as e:
+                    logger.error(f"内存池释放内存块失败: {str(e)}")
+
             # 从活跃引用中移除
             if frame_id in self.active_references:
                 del self.active_references[frame_id]
-            
+
             # 移除统计信息
             if frame_id in self.reference_stats:
                 del self.reference_stats[frame_id]
-            
+
             # 更新统计
             self.stats["released_count"] += 1
-            
+
             logger.debug(f"帧引用清理回调: frame_id={frame_id}")
     
     def cleanup_expired_references(self, max_age: float = 300.0) -> int:

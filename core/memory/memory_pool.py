@@ -388,6 +388,108 @@ class MemoryPool:
         self.initialized = False
         logger.info("内存池清理完成")
     
+    def get_stats(self) -> Dict[str, Any]:
+        """
+        获取内存池统计信息
+
+        Returns:
+            Dict[str, Any]: 内存池统计信息
+        """
+        if not self.initialized:
+            return {
+                "initialized": False,
+                "error": "内存池未初始化"
+            }
+
+        with self.lock:
+            # 基础统计
+            total_blocks = len(self.block_manager.blocks)
+            used_blocks = sum(1 for block in self.block_manager.blocks.values()
+                            if block.status in [MemoryBlockStatus.ALLOCATED, MemoryBlockStatus.IN_USE])
+            available_blocks = total_blocks - used_blocks
+
+            # 按分辨率统计
+            resolution_stats = {}
+            for resolution_key, resolution_blocks in self.block_manager.blocks_by_resolution.items():
+                resolution_used = sum(1 for block in resolution_blocks
+                                    if block.status in [MemoryBlockStatus.ALLOCATED, MemoryBlockStatus.IN_USE])
+                resolution_available = len(resolution_blocks) - resolution_used
+
+                resolution_stats[resolution_key] = {
+                    "total": len(resolution_blocks),
+                    "used": resolution_used,
+                    "available": resolution_available,
+                    "usage_ratio": resolution_used / len(resolution_blocks) if resolution_blocks else 0.0
+                }
+
+            # 内存使用统计
+            total_memory_bytes = sum(block.size for block in self.block_manager.blocks.values())
+            used_memory_bytes = sum(block.size for block in self.block_manager.blocks.values()
+                                  if block.status in [MemoryBlockStatus.ALLOCATED, MemoryBlockStatus.IN_USE])
+
+            # 计算使用率
+            usage_ratio = used_blocks / total_blocks if total_blocks > 0 else 0.0
+            memory_usage_ratio = used_memory_bytes / total_memory_bytes if total_memory_bytes > 0 else 0.0
+
+            return {
+                "initialized": True,
+                "total_blocks": total_blocks,
+                "used_blocks": used_blocks,
+                "available_blocks": available_blocks,
+                "usage_ratio": usage_ratio,
+                "total_memory_mb": total_memory_bytes / (1024 * 1024),
+                "used_memory_mb": used_memory_bytes / (1024 * 1024),
+                "available_memory_mb": (total_memory_bytes - used_memory_bytes) / (1024 * 1024),
+                "memory_usage_ratio": memory_usage_ratio,
+                "resolution_stats": resolution_stats,
+                "cleanup_interval": self.config.auto_cleanup_interval,
+                "last_cleanup": getattr(self, '_last_cleanup_time', None),
+                # 操作统计
+                "total_allocations": self.stats.get("total_allocations", 0),
+                "total_deallocations": self.stats.get("total_deallocations", 0),
+                "allocation_failures": self.stats.get("allocation_failures", 0),
+            }
+
+    def get_detailed_stats(self) -> Dict[str, Any]:
+        """
+        获取详细的内存池统计信息
+
+        Returns:
+            Dict[str, Any]: 详细统计信息
+        """
+        basic_stats = self.get_stats()
+        if not basic_stats.get("initialized", False):
+            return basic_stats
+
+        with self.lock:
+            # 内存块详细信息
+            block_details = []
+            for block_id, block in self.block_manager.blocks.items():
+                block_details.append({
+                    "block_id": block_id,
+                    "resolution": f"{block.width}x{block.height}",
+                    "size_mb": block.size / (1024 * 1024),
+                    "status": block.status.value,
+                    "ref_count": block.ref_count,
+                    "created_time": block.created_time,
+                    "last_accessed": block.last_accessed,
+                })
+
+            # 性能统计
+            performance_stats = {
+                "total_allocations": self.stats.get("total_allocations", 0),
+                "total_deallocations": self.stats.get("total_deallocations", 0),
+                "allocation_failures": self.stats.get("allocation_failures", 0),
+                "cleanup_cycles": getattr(self, '_cleanup_cycles', 0),
+            }
+
+            basic_stats.update({
+                "block_details": block_details,
+                "performance_stats": performance_stats,
+            })
+
+            return basic_stats
+
     def __del__(self):
         """析构函数"""
         if self.initialized:

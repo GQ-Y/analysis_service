@@ -401,13 +401,19 @@ class MemoryBlockManager:
             if block.status == MemoryBlockStatus.PENDING_FREE:
                 # 强制释放并标记为空闲
                 block.force_free()
-                
+
                 # 添加到空闲列表
                 if resolution_key in self.free_blocks:
                     self.free_blocks[resolution_key].append(block)
                     logger.debug(f"归还内存块 {block.block_id} 到空闲池")
                     return True
-            
+                else:
+                    # 如果分辨率键不存在，创建新的空闲列表
+                    self.free_blocks[resolution_key] = [block]
+                    logger.debug(f"创建新的空闲列表并归还内存块 {block.block_id}")
+                    return True
+
+            logger.warning(f"内存块 {block.block_id} 状态 {block.status} 不允许归还")
             return False
     
     def get_stats(self) -> Dict[str, Any]:
