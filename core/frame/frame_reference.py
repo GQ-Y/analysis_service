@@ -196,6 +196,13 @@ class FrameReference:
                 "age_seconds": time.time() - self._last_access_time,
             }
     
+    def release(self) -> None:
+        """
+        释放帧引用
+        减少引用计数，当引用计数为0时自动清理资源
+        """
+        self._release()
+
     def _release(self) -> None:
         """内部释放方法"""
         with self._ref_lock:
