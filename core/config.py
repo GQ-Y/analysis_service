@@ -7,7 +7,7 @@
 from .config.unified_config import (
     unified_settings as settings,
     UnifiedSettings,
-    PerformanceMode,
+
     ServiceConfig,
     LoggingConfig,
     RedisConfig,
@@ -26,7 +26,7 @@ from .config.unified_config import (
 __all__ = [
     'settings',
     'UnifiedSettings',
-    'PerformanceMode',
+
     'ServiceConfig',
     'LoggingConfig', 
     'RedisConfig',

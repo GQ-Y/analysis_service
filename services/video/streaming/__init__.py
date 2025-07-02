@@ -1,8 +1,6 @@
 """
 视频流包
-提供直播推流功能
+已移除所有直播推流功能，仅保留零拷贝实时分析
 """
 
-from services.video.streaming.live_streamer import LiveStreamer
-
-__all__ = ["LiveStreamer"] 
+__all__ = [] 

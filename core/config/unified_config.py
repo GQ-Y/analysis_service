@@ -17,11 +17,7 @@ load_dotenv(override=True)
 # 枚举类型定义
 # ============================================================================
 
-class PerformanceMode(str, Enum):
-    """性能模式枚举"""
-    HIGH_QUALITY = "high_quality"
-    BALANCED = "balanced"
-    HIGH_PERFORMANCE = "high_performance"
+# 零拷贝架构下不需要性能模式枚举
 
 # ============================================================================
 # 基础配置模型
@@ -427,9 +423,8 @@ class MemoryConfig(BaseConfigModel):
 # 性能优化配置
 # ============================================================================
 
-class PerformanceConfig(BaseConfigModel):
-    """性能优化配置"""
-    mode: PerformanceMode = PerformanceMode.BALANCED
+class SystemConfig(BaseConfigModel):
+    """系统配置（优化后的配置）"""
     
     # 数据库优化
     db_pool_size: int = 20
@@ -476,7 +471,7 @@ class UnifiedSettings(BaseSettings):
     callback: CallbackConfig = CallbackConfig()
     storage: StorageConfig = StorageConfig()
     memory: MemoryConfig = MemoryConfig()
-    performance: PerformanceConfig = PerformanceConfig()
+    system: SystemConfig = SystemConfig()
     
     # 通信模式
     communication_mode: str = "http"
@@ -484,7 +479,7 @@ class UnifiedSettings(BaseSettings):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._load_from_environment()
-        self._apply_performance_mode()
+        # 零拷贝架构下不需要性能模式配置
         self._setup_logging()
     
     def _load_from_environment(self):
@@ -541,27 +536,7 @@ class UnifiedSettings(BaseSettings):
         if os.getenv("SOCKET_CALLBACK_PORT"):
             self.callback.socket_port = int(os.getenv("SOCKET_CALLBACK_PORT", "8090"))
     
-    def _apply_performance_mode(self):
-        """根据性能模式调整配置"""
-        mode_str = os.getenv("PERFORMANCE_MODE", "balanced")
-        try:
-            self.performance.mode = PerformanceMode(mode_str)
-        except ValueError:
-            self.performance.mode = PerformanceMode.BALANCED
-        
-        # 根据性能模式调整参数
-        if self.performance.mode == PerformanceMode.HIGH_QUALITY:
-            self.frame_processing.buffer_size = 100
-            self.frame_processing.target_fps = 30
-            self.task.max_concurrent = 20
-            self.frame_processing.stall_threshold = 1.0
-        elif self.performance.mode == PerformanceMode.HIGH_PERFORMANCE:
-            self.frame_processing.buffer_size = 30
-            self.frame_processing.target_fps = 20
-            self.task.max_concurrent = 100
-            self.frame_processing.stall_threshold = 5.0
-            self.frame_processing.adaptive_quality = False
-        # BALANCED模式使用默认值
+
     
     def _setup_logging(self):
         """设置日志"""

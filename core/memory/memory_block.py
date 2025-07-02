@@ -32,11 +32,11 @@ class MemoryBlock:
     管理单个内存块的生命周期、引用计数和数据访问
     """
     
-    def __init__(self, block_id: int, ptr: ctypes.c_void_p, size: int, 
-                 width: int, height: int, channels: int = 3):
+    def __init__(self, block_id: int, ptr: ctypes.c_void_p, size: int,
+                 width: int, height: int, channels: int = 3, manager=None):
         """
         初始化内存块
-        
+
         Args:
             block_id: 内存块唯一ID
             ptr: 内存指针
@@ -44,6 +44,7 @@ class MemoryBlock:
             width: 图像宽度
             height: 图像高度
             channels: 图像通道数，默认3（RGB）
+            manager: 内存块管理器引用
         """
         self.block_id = block_id
         self.ptr = ptr
@@ -51,6 +52,7 @@ class MemoryBlock:
         self.width = width
         self.height = height
         self.channels = channels
+        self.manager = manager
         
         # 引用计数（原子操作）
         self._ref_count = 0
@@ -139,8 +141,12 @@ class MemoryBlock:
                 self.status = MemoryBlockStatus.FREE
                 self.freed_time = time.time()
                 self.allocated_time = None
-                
-                logger.warning(f"强制释放内存块 {self.block_id}")
+
+                # 统计强制释放
+                if self.manager:
+                    self.manager._record_force_free()
+
+                logger.debug(f"强制释放内存块 {self.block_id}")
                 return True
             return False
     
@@ -293,7 +299,14 @@ class MemoryBlockManager:
         self.free_blocks = {}  # "widthxheight" -> [MemoryBlock]
         self.next_block_id = 1
         self.lock = threading.RLock()
-        
+
+        # 强制释放统计
+        self.force_free_stats = {
+            "total_count": 0,
+            "last_report_time": time.time(),
+            "report_interval": 60  # 每60秒报告一次
+        }
+
         logger.info("内存块管理器初始化完成")
     
     def create_block_pool(self, width: int, height: int, channels: int, 
@@ -336,7 +349,8 @@ class MemoryBlockManager:
                         size=aligned_size,
                         width=width,
                         height=height,
-                        channels=channels
+                        channels=channels,
+                        manager=self
                     )
                     
                     # 添加到管理器
@@ -452,3 +466,23 @@ class MemoryBlockManager:
                 stats["status_counts"][block.status.value] += 1
             
             return stats
+
+    def _record_force_free(self):
+        """记录强制释放统计"""
+        with self.lock:
+            self.force_free_stats["total_count"] += 1
+            current_time = time.time()
+
+            # 检查是否需要报告统计信息
+            if (current_time - self.force_free_stats["last_report_time"] >=
+                self.force_free_stats["report_interval"]):
+
+                count = self.force_free_stats["total_count"]
+                interval = self.force_free_stats["report_interval"]
+                rate = count / interval if interval > 0 else 0
+
+                logger.info(f"内存块强制释放统计: 过去{interval}秒内共{count}次, 平均{rate:.2f}次/秒")
+
+                # 重置统计
+                self.force_free_stats["total_count"] = 0
+                self.force_free_stats["last_report_time"] = current_time

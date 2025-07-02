@@ -21,10 +21,9 @@ from .unified_config import (
     AnalysisConfig,
     CallbackConfig,
     StorageConfig,
-    PerformanceConfig,
     
     # 枚举
-    PerformanceMode,
+
     
     # 全局实例
     unified_settings,
@@ -50,7 +49,7 @@ __all__ = [
     "CallbackConfig",
     "StorageConfig",
     "PerformanceConfig",
-    "PerformanceMode",
+
     "unified_settings",
     "settings"
 ] 

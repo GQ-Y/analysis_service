@@ -212,10 +212,9 @@ class ZeroCopyTaskProcessor:
             }
             self.task_threads[task_id] = thread
             
-            # 创建并启动结果处理器
-            result_handler = asyncio.create_task(self._handle_results(task_id, result_queue))
-            self.result_handlers[task_id] = result_handler
-            
+            # 异步启动结果处理器（不阻塞返回）
+            asyncio.ensure_future(self._handle_results(task_id, result_queue))
+
             normal_logger.info(f"零拷贝任务启动成功: {task_id}")
             return True
             
@@ -504,11 +503,15 @@ class ZeroCopyTaskProcessor:
 
             # 保存结果到Redis（如果配置了）
             if task_config.get("save_result", False):
-                await self._save_result_to_redis(task_id, result)
+                # 异步保存，不阻塞主流程
+                asyncio.ensure_future(self._save_result_to_redis(task_id, result))
+                # 异步保存到数据库
+                asyncio.ensure_future(self._save_result_to_database(task_id, result))
 
             # 保存图像（如果配置了）
             if task_config.get("save_images", False):
-                await self._save_analysis_image(task_id, result)
+                # 异步保存图像，不阻塞主流程
+                asyncio.ensure_future(self._save_analysis_image(task_id, result))
 
             # 发送回调（如果配置了）
             if task_config.get("enable_callback", False):
@@ -539,15 +542,130 @@ class ZeroCopyTaskProcessor:
         except Exception as e:
             exception_logger.exception(f"保存结果到Redis失败: {task_id}, {str(e)}")
 
-    async def _save_analysis_image(self, task_id: str, result: Dict[str, Any]) -> None:
-        """保存分析图像"""
+    async def _save_result_to_database(self, task_id: str, result: Dict[str, Any]) -> None:
+        """保存结果到数据库（异步，不阻塞主流程）"""
         try:
-            # 这里可以实现图像保存逻辑
-            # 暂时跳过，因为需要与现有的图像保存系统集成
-            pass
+            # 在线程池中执行数据库操作，避免阻塞主线程
+            import asyncio
+            import concurrent.futures
+
+            def _sync_save_to_db():
+                try:
+                    from models.database import AnalysisResult
+                    from shared.utils.database import get_db_session
+                    from datetime import datetime
+                    import json
+
+                    # 获取数据库会话
+                    db_session = get_db_session()
+                    if not db_session:
+                        normal_logger.warning("无法获取数据库会话，跳过数据库保存")
+                        return
+
+                    # 提取分析数据
+                    analysis_data = result.get("analysis_data", {})
+                    frame_metadata = result.get("frame_metadata", {})
+
+                    # 构建分析结果记录
+                    analysis_result = AnalysisResult(
+                        task_id=int(task_id) if task_id.isdigit() else 0,  # 转换为整数
+                        subtask_id=int(task_id) if task_id.isdigit() else 0,  # 暂时使用相同值
+                        status=1,  # 已完成
+                        progress=100,
+                        timestamp=int(result.get("timestamp", datetime.now().timestamp())),
+                        frame_id=result.get("frame_index", 0),
+                        objects=json.dumps(analysis_data.get("detections", [])),
+                        frame_info=json.dumps(frame_metadata),
+                        image_results=json.dumps(analysis_data.get("image_results", {})),
+                        image_path=result.get("image_path"),
+                        analysis_info=json.dumps({
+                            "processing_time": result.get("processing_time", 0),
+                            "inference_time": analysis_data.get("inference_time", 0),
+                            "model_info": analysis_data.get("model_info", {})
+                        }),
+                        scene_understanding=json.dumps(analysis_data.get("scene_understanding", {}))
+                    )
+
+                    # 保存到数据库
+                    db_session.add(analysis_result)
+                    db_session.commit()
+
+                    normal_logger.debug(f"分析结果已保存到数据库: task_id={task_id}, frame_id={result.get('frame_index', 0)}")
+
+                except Exception as e:
+                    exception_logger.exception(f"保存结果到数据库失败: {task_id}, {str(e)}")
+                    if 'db_session' in locals():
+                        db_session.rollback()
+
+            # 在线程池中异步执行数据库操作
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                await loop.run_in_executor(executor, _sync_save_to_db)
 
         except Exception as e:
-            exception_logger.exception(f"保存分析图像失败: {task_id}, {str(e)}")
+            exception_logger.exception(f"异步保存数据库操作失败: {task_id}, {str(e)}")
+
+    async def _save_analysis_image(self, task_id: str, result: Dict[str, Any]) -> None:
+        """保存分析图像（异步，不阻塞主流程）"""
+        try:
+            # 在线程池中执行文件操作，避免阻塞主线程
+            import asyncio
+            import concurrent.futures
+
+            def _sync_save_image():
+                try:
+                    # 检查是否有图像数据
+                    image_results = result.get("image_results")
+                    if not image_results or not isinstance(image_results, dict):
+                        return
+
+                    annotated = image_results.get("annotated")
+                    if not annotated or not isinstance(annotated, dict):
+                        return
+
+                    base64_data = annotated.get("base64")
+                    if not base64_data:
+                        return
+
+                    # 解码Base64图像数据
+                    import base64
+                    import os
+                    from datetime import datetime
+
+                    image_bytes = base64.b64decode(base64_data)
+
+                    # 构建保存路径
+                    current_date_str = datetime.now().strftime("%Y%m%d")
+                    frame_id = result.get("frame_id", 0)
+                    timestamp = result.get("timestamp", int(datetime.now().timestamp()))
+
+                    # 创建保存目录
+                    save_dir = os.path.join("temp", "analysis_results", task_id, current_date_str)
+                    os.makedirs(save_dir, exist_ok=True)
+
+                    # 生成文件名
+                    filename = f"{timestamp}_{frame_id}.jpg"
+                    full_path = os.path.join(save_dir, filename)
+
+                    # 保存图像文件
+                    with open(full_path, "wb") as f:
+                        f.write(image_bytes)
+
+                    # 更新结果中的图像路径
+                    result["image_path"] = os.path.join("analysis_results", task_id, current_date_str, filename)
+
+                    normal_logger.debug(f"保存分析图像成功: {full_path}")
+
+                except Exception as e:
+                    exception_logger.exception(f"保存分析图像失败: {task_id}, {str(e)}")
+
+            # 在线程池中异步执行文件操作
+            loop = asyncio.get_event_loop()
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                await loop.run_in_executor(executor, _sync_save_image)
+
+        except Exception as e:
+            exception_logger.exception(f"异步保存图像操作失败: {task_id}, {str(e)}")
 
     async def _send_result_callback(self, task_id: str, result: Dict[str, Any]) -> None:
         """发送结果回调"""

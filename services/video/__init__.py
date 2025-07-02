@@ -1,6 +1,6 @@
 """
 视频服务模块
-提供视频编码、推流等功能
+仅支持零拷贝实时分析
 """
 
 from services.video.video_service import VideoService

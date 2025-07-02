@@ -1,9 +1,8 @@
 """
 视频编码器包
-提供不同类型的视频编码器实现
+已移除所有编码器，仅保留基础接口
 """
 
 from services.video.encoders.base_encoder import BaseEncoder
-from services.video.encoders.file_encoder import FileEncoder
 
-__all__ = ["BaseEncoder", "FileEncoder"] 
+__all__ = ["BaseEncoder"] 

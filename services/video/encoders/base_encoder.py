@@ -1,6 +1,6 @@
 """
 视频编码器基类
-提供视频编码的通用功能
+简化为零拷贝架构的基础接口
 """
 from typing import Dict, Any, Optional, List, Union
 import os
@@ -17,8 +17,6 @@ import logging
 from core.config import settings
 from core.task_management.utils.status import TaskStatus
 from shared.utils.logger import get_normal_logger, get_exception_logger, get_test_logger
-from services.video.utils.frame_dropper import SmartFrameDropper
-from services.video.utils.ffmpeg_params import FFmpegParamsGenerator
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
@@ -27,7 +25,7 @@ test_logger = get_test_logger()
 
 
 class BaseEncoder:
-    """视频编码器基类"""
+    """视频编码器基类 - 零拷贝架构简化版"""
 
     def __init__(self):
         """初始化基础编码器"""
@@ -41,9 +39,6 @@ class BaseEncoder:
 
         # 存储编码线程
         self.encoding_threads = {}
-
-        # 智能帧丢弃器
-        self.frame_droppers = {}  # task_id -> SmartFrameDropper
 
         # 分析结果缓存，用于被动接收分析结果
         self.analysis_results_cache = {}  # {task_id: latest_analysis_result}
@@ -99,7 +94,7 @@ class BaseEncoder:
         normal_logger.info("- Chocolatey: choco install ffmpeg")
         normal_logger.info("- Scoop: scoop install ffmpeg")
         normal_logger.info("")
-        normal_logger.info("注意: 缺少FFmpeg将无法使用视频编码功能，但不影响分析服务正常运行")
+        normal_logger.info("注意: 零拷贝架构主要用于实时分析，视频编码功能已简化")
         normal_logger.info("=" * 60)
 
     def update_analysis_result(self, task_id: str, analysis_result: Dict[str, Any]):
@@ -154,16 +149,8 @@ class BaseEncoder:
         # 创建一个黑色的默认帧
         frame = np.zeros((height, width, 3), dtype=np.uint8)
         
-        # 导入帧渲染器来处理中文文本
-        from services.video.utils.frame_renderer import FrameRenderer
-        
-        # 在帧上绘制文本（支持中文）
-        frame = FrameRenderer._put_chinese_text(
-            frame,
-            message,
-            (int(width/2) - 100, int(height/2)),
-            24,
-            (255, 255, 255)
-        )
+        # 简单的英文文本（避免中文字体依赖）
+        cv2.putText(frame, message, (int(width/2) - 100, int(height/2)), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         
         return frame 
