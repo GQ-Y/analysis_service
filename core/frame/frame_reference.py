@@ -214,18 +214,27 @@ class FrameReference:
                 
                 # 如果引用计数为0，执行清理
                 if self._ref_count == 0:
-                    self._cleanup()
+                    # 防止重复清理
+                    if self._is_valid:
+                        self._cleanup()
+            else:
+                logger.warning(f"帧引用 {self.metadata.frame_id} 引用计数已为0，重复释放")
     
     def _cleanup(self) -> None:
         """清理资源"""
         if not self._is_valid:
+            logger.debug(f"帧引用 {self.metadata.frame_id} 已经清理过，跳过")
             return
         
         self._is_valid = False
         
         # 释放内存块引用
         if self.memory_block:
-            self.memory_block.release()
+            try:
+                if not self.memory_block.release():
+                    logger.warning(f"内存块 {self.memory_block.block_id} 释放失败")
+            except Exception as e:
+                logger.error(f"释放内存块时发生异常: {str(e)}")
         
         # 调用清理回调
         if self.cleanup_callback:

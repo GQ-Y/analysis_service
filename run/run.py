@@ -171,7 +171,10 @@ async def lifespan(app: FastAPI):
         await zero_copy_stream_manager.initialize()
         app_state_manager.register_service("stream_manager", zero_copy_stream_manager)
 
-        zero_copy_task_processor = ZeroCopyTaskProcessor(None, memory_pool)
+        # 修改初始化方式，先创建实例，然后设置属性
+        zero_copy_task_processor = ZeroCopyTaskProcessor()
+        zero_copy_task_processor.memory_pool = memory_pool
+        
         # 创建零拷贝任务管理器（使用零拷贝处理器）
         from core.task_management.manager import TaskManager
         task_manager = TaskManager()
