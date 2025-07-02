@@ -2,11 +2,11 @@
 统一配置管理模块
 整合所有分散的配置到一个统一的架构中
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 import os
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 from dotenv import load_dotenv
 
@@ -260,6 +260,169 @@ class StorageConfig(BaseConfigModel):
     cleanup_days: int = 7
 
 # ============================================================================
+# 零拷贝内存配置
+# ============================================================================
+
+class MemoryConfig(BaseConfigModel):
+    """零拷贝内存管理配置"""
+
+    # 基础内存池配置
+    enable_memory_pool: bool = Field(
+        True,
+        description="是否启用内存池管理"
+    )
+
+    max_memory_usage_percent: float = Field(
+        50.0,  # 降低到50%以适应开发环境
+        ge=10.0,
+        le=90.0,
+        description="最大使用系统内存的百分比（开发环境优化）"
+    )
+
+    min_free_memory_gb: float = Field(
+        1.0,  # 降低到1GB以适应开发环境
+        ge=0.5,
+        le=8.0,
+        description="至少保留的系统内存（GB，开发环境优化）"
+    )
+
+    # 支持的分辨率配置
+    supported_resolutions: List[Tuple[int, int]] = Field(
+        default=[(640, 480), (1280, 720), (1920, 1080), (320, 240)],
+        description="支持的视频分辨率列表"
+    )
+
+    # 每种分辨率的内存块数量（调整为适合开发环境）
+    blocks_per_resolution: Dict[str, int] = Field(
+        default={
+            "640x480": 300,   # 减少到300块 (约264MB)
+            "1280x720": 100,  # 减少到100块 (约263MB)
+            "1920x1080": 50,  # 减少到50块 (约280MB)
+            "320x240": 400    # 减少到400块 (约88MB)
+        },
+        description="每种分辨率预分配的内存块数量（开发环境优化）"
+    )
+
+    # 内存回收策略配置
+    auto_cleanup_interval: int = Field(
+        30,
+        ge=5,
+        le=300,
+        description="自动清理间隔（秒）"
+    )
+
+    max_block_age: int = Field(
+        300,
+        ge=60,
+        le=3600,
+        description="内存块最大存活时间（秒）"
+    )
+
+    memory_pressure_threshold: float = Field(
+        0.9,
+        ge=0.5,
+        le=0.99,
+        description="内存压力阈值（0.5-0.99）"
+    )
+
+    force_cleanup_threshold: float = Field(
+        0.95,
+        ge=0.8,
+        le=0.99,
+        description="强制清理阈值（0.8-0.99）"
+    )
+
+    # 性能优化配置
+    enable_memory_alignment: bool = Field(
+        True,
+        description="启用内存对齐优化"
+    )
+
+    alignment_bytes: int = Field(
+        64,
+        ge=16,
+        le=256,
+        description="内存对齐字节数"
+    )
+
+    enable_zero_copy: bool = Field(
+        True,
+        description="启用零拷贝优化"
+    )
+
+    enable_batch_processing: bool = Field(
+        True,
+        description="启用批处理优化"
+    )
+
+    max_batch_size: int = Field(
+        8,
+        ge=1,
+        le=32,
+        description="最大批处理大小"
+    )
+
+    def validate_system_memory(self) -> bool:
+        """
+        验证系统内存是否满足配置要求
+
+        Returns:
+            bool: 是否满足要求
+        """
+        try:
+            import psutil
+            from ..memory.memory_utils import calculate_memory_requirements
+
+            # 获取系统内存信息
+            memory = psutil.virtual_memory()
+            total_memory_gb = memory.total / (1024**3)
+            available_memory_gb = memory.available / (1024**3)
+
+            # 计算内存需求
+            total_requirement_bytes = calculate_memory_requirements(self)
+            total_requirement_gb = total_requirement_bytes / (1024**3)
+
+            # 计算最大可用内存
+            max_usable_gb = min(
+                total_memory_gb * (self.max_memory_usage_percent / 100),
+                available_memory_gb - self.min_free_memory_gb
+            )
+
+            # 检查是否满足要求
+            return total_requirement_gb <= max_usable_gb
+
+        except Exception:
+            # 如果检查失败，返回True以允许继续
+            return True
+
+    def calculate_total_memory_requirement(self) -> int:
+        """
+        计算总内存需求（字节）
+
+        Returns:
+            int: 总内存需求（字节）
+        """
+        total_bytes = 0
+
+        for width, height in self.supported_resolutions:
+            res_key = f"{width}x{height}"
+            block_count = self.blocks_per_resolution.get(res_key, 100)
+
+            # 计算单个帧的内存需求（RGB 3通道）
+            frame_size = width * height * 3
+
+            # 考虑内存对齐
+            if self.enable_memory_alignment:
+                frame_size = ((frame_size + self.alignment_bytes - 1)
+                             // self.alignment_bytes) * self.alignment_bytes
+
+            # 计算该分辨率的总内存需求
+            resolution_memory = frame_size * block_count
+            total_bytes += resolution_memory
+
+        return total_bytes
+
+# ============================================================================
 # 性能优化配置
 # ============================================================================
 
@@ -311,6 +474,7 @@ class UnifiedSettings(BaseSettings):
     analysis: AnalysisConfig = AnalysisConfig()
     callback: CallbackConfig = CallbackConfig()
     storage: StorageConfig = StorageConfig()
+    memory: MemoryConfig = MemoryConfig()
     performance: PerformanceConfig = PerformanceConfig()
     
     # 通信模式

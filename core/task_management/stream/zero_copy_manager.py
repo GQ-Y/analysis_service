@@ -34,19 +34,29 @@ class ZeroCopyStreamManager(StreamManager):
     零拷贝流管理器
     扩展基础流管理器，支持零拷贝帧引用传递和共享内存池
     """
-    
-    def __init__(self, memory_pool: MemoryPool):
+
+    def __init__(self):
         """
         初始化零拷贝流管理器
-        
+        """
+        super().__init__()
+
+        # 零拷贝相关组件（延迟初始化）
+        self.memory_pool: Optional[MemoryPool] = None
+        self.frame_ref_manager: Optional[FrameReferenceManager] = None
+        self._zero_copy_initialized = False
+
+    def set_memory_pool(self, memory_pool: MemoryPool):
+        """
+        设置内存池并初始化零拷贝组件
+
         Args:
             memory_pool: 内存池实例
         """
-        super().__init__()
-        
-        # 零拷贝相关组件
         self.memory_pool = memory_pool
         self.frame_ref_manager = FrameReferenceManager()
+        self._zero_copy_initialized = True
+        normal_logger.info("零拷贝流管理器内存池设置完成")
         
         # 零拷贝流缓冲区
         self._zero_copy_buffers: Dict[str, AsyncFrameReferenceQueue] = {}
@@ -69,8 +79,25 @@ class ZeroCopyStreamManager(StreamManager):
         }
         
         normal_logger.info("零拷贝流管理器初始化完成")
-    
-    async def subscribe_stream_zero_copy(self, 
+
+    def _check_zero_copy_ready(self) -> bool:
+        """
+        检查零拷贝组件是否已准备就绪
+
+        Returns:
+            bool: 是否准备就绪
+        """
+        if not self._zero_copy_initialized:
+            normal_logger.error("零拷贝组件未初始化，请先调用 set_memory_pool()")
+            return False
+
+        if not self.memory_pool or not self.memory_pool.initialized:
+            normal_logger.error("内存池未初始化或不可用")
+            return False
+
+        return True
+
+    async def subscribe_stream_zero_copy(self,
                                        stream_id: str, 
                                        subscriber_id: str, 
                                        config: Dict[str, Any],
@@ -88,10 +115,14 @@ class ZeroCopyStreamManager(StreamManager):
             Tuple[bool, Optional[AsyncFrameReferenceQueue]]: (是否成功, 帧引用队列)
         """
         try:
+            # 检查零拷贝组件是否就绪
+            if not self._check_zero_copy_ready():
+                return False, None
+
             # 使用默认零拷贝配置
             if zero_copy_config is None:
                 zero_copy_config = ZeroCopyStreamConfig()
-            
+
             # 首先尝试获取或创建流
             stream = await self.get_or_create_stream(stream_id, config)
             if not stream:

@@ -9,7 +9,7 @@ import asyncio
 
 from models.requests import StreamTask, BatchStreamTask
 from models.responses import BaseResponse
-from services.http.task_service import TaskService
+from services.http.zero_copy_task_service import ZeroCopyTaskService
 from core.task_management.utils.status import TaskStatus
 from core.config import settings
 from shared.utils.logger import get_normal_logger, get_exception_logger
@@ -26,7 +26,7 @@ router = APIRouter(
 )
 
 # 依赖注入
-async def get_task_service(request: Request) -> TaskService:
+async def get_task_service(request: Request) -> ZeroCopyTaskService:
     """获取任务服务实例"""
     if not hasattr(request.app.state, "task_service"):
         raise HTTPException(status_code=500, detail="任务服务未初始化")
@@ -37,7 +37,7 @@ async def get_task_service(request: Request) -> TaskService:
 @router.post("/start", response_model=BaseResponse, summary="启动单个流分析任务")
 async def start_task(
     task: StreamTask,
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     启动单个流分析任务
@@ -191,7 +191,7 @@ async def start_task(
 @router.post("/batch/start", response_model=BaseResponse, summary="批量启动流分析任务")
 async def start_batch_tasks(
     batch_task: BatchStreamTask,
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     批量启动流分析任务
@@ -380,7 +380,7 @@ async def start_batch_tasks(
 @router.post("/stop/{task_id}", response_model=BaseResponse, summary="停止分析任务")
 async def stop_task(
     task_id: str = Path(..., description="任务ID"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     停止正在运行的分析任务
@@ -432,7 +432,7 @@ async def stop_task(
 @router.get("/status/{task_id}", response_model=BaseResponse, summary="获取任务状态")
 async def get_task_status(
     task_id: str = Path(..., description="任务ID"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     获取任务状态
@@ -509,7 +509,7 @@ async def get_task_status(
 async def list_tasks(
     status: Optional[int] = Query(None, description="任务状态过滤：0-等待中, 1-处理中, 2-已完成, 3-重试中, -1-失败, -4-停止中, -5-已停止"),
     limit: int = Query(100, description="返回数量限制，默认100"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ) -> BaseResponse:
     """
     获取任务列表

@@ -8,7 +8,6 @@ import time
 from typing import Dict, Any, Optional
 import psutil
 
-from ..config.memory_config import MemoryConfig
 from ..memory.memory_pool import MemoryPool
 from ..memory.memory_utils import check_system_memory, calculate_memory_requirements
 
@@ -27,12 +26,12 @@ class MemoryInitializer:
     负责系统检查、配置验证和内存池初始化
     """
     
-    def __init__(self, config: MemoryConfig):
+    def __init__(self, config):
         """
         初始化内存初始化器
-        
+
         Args:
-            config: 内存配置
+            config: 内存配置（MemoryConfig类型）
         """
         self.config = config
         self.memory_pool = None
@@ -296,32 +295,36 @@ class MemoryInitializer:
             logger.info("内存初始化器清理完成")
 
 
-def create_memory_initializer(config: Optional[MemoryConfig] = None) -> MemoryInitializer:
+def create_memory_initializer(config=None) -> MemoryInitializer:
     """
     创建内存初始化器
-    
+
     Args:
         config: 内存配置，为None时使用默认配置
-    
+
     Returns:
         MemoryInitializer: 内存初始化器实例
     """
     if config is None:
-        from ..config.memory_config import default_memory_config
-        config = default_memory_config
-    
+        from core.config import settings
+        config = settings.memory
+
     return MemoryInitializer(config)
 
 
-def initialize_memory_system(config: Optional[MemoryConfig] = None) -> Optional[MemoryPool]:
+async def initialize_memory_system(config=None) -> Optional[MemoryPool]:
     """
     初始化内存系统（便捷函数）
-    
+
     Args:
-        config: 内存配置，为None时使用默认配置
-    
+        config: 内存配置，为None时使用统一配置中的内存配置
+
     Returns:
         Optional[MemoryPool]: 初始化的内存池，失败返回None
     """
+    if config is None:
+        from core.config import settings
+        config = settings.memory
+
     initializer = create_memory_initializer(config)
     return initializer.initialize_memory_pool()

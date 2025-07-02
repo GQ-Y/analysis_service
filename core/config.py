@@ -19,6 +19,7 @@ from .config.unified_config import (
     AnalysisConfig,
     CallbackConfig,
     StorageConfig,
+    MemoryConfig,
     PerformanceConfig
 )
 
@@ -37,5 +38,6 @@ __all__ = [
     'AnalysisConfig',
     'CallbackConfig',
     'StorageConfig',
+    'MemoryConfig',
     'PerformanceConfig'
 ]

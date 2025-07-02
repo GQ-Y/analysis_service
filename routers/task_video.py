@@ -11,7 +11,7 @@ from typing import Dict, Any, Optional, Literal
 
 from models.requests import VideoEncodingRequest
 from models.responses import BaseResponse
-from services.http.task_service import TaskService
+from services.http.zero_copy_task_service import ZeroCopyTaskService
 from services.video.video_service import VideoService
 from core.task_management.utils.status import TaskStatus
 from core.config import settings
@@ -29,10 +29,10 @@ router = APIRouter(
 )
 
 # 依赖注入
-async def get_task_service(request: Request) -> TaskService:
-    """获取任务服务实例"""
+async def get_task_service(request: Request) -> ZeroCopyTaskService:
+    """获取零拷贝任务服务实例"""
     if not hasattr(request.app.state, "task_service"):
-        raise HTTPException(status_code=500, detail="任务服务未初始化")
+        raise HTTPException(status_code=500, detail="零拷贝任务服务未初始化")
     return request.app.state.task_service
 
 async def get_video_service(request: Request) -> VideoService:
@@ -42,10 +42,10 @@ async def get_video_service(request: Request) -> VideoService:
         request.app.state.video_service = VideoService()
     return request.app.state.video_service
 
-@router.post("/video", response_model=BaseResponse, summary="启动实时分析视频直播流")
+@router.post("/video", response_model=BaseResponse, summary="启动零拷贝实时分析视频直播流")
 async def start_task_video_stream(
     encoding_request: VideoEncodingRequest,
-    task_service: TaskService = Depends(get_task_service),
+    task_service: ZeroCopyTaskService = Depends(get_task_service),
     video_service: VideoService = Depends(get_video_service)
 ) -> BaseResponse:
     """
@@ -158,7 +158,7 @@ async def start_task_video_stream(
 @router.post("/video/file", response_model=BaseResponse, summary="启动实时分析视频文件编码")
 async def start_task_video_file(
     encoding_request: VideoEncodingRequest,
-    task_service: TaskService = Depends(get_task_service),
+    task_service: ZeroCopyTaskService = Depends(get_task_service),
     video_service: VideoService = Depends(get_video_service)
 ) -> BaseResponse:
     """
@@ -643,7 +643,7 @@ async def start_enhanced_video_encoding(
     width: Optional[int] = Query(None, description="视频宽度"),
     height: Optional[int] = Query(None, description="视频高度"),
     fps: int = Query(15, description="帧率"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ):
     """启动增强版视频编码 - 集成帧稳定器"""
     try:
@@ -703,7 +703,7 @@ async def start_enhanced_video_encoding(
 @router.delete("/video/enhanced/encoding/{task_id}")
 async def stop_enhanced_video_encoding(
     task_id: str = Path(..., description="任务ID"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ):
     """停止增强版视频编码"""
     try:
@@ -751,7 +751,7 @@ async def start_enhanced_live_stream(
     height: Optional[int] = Query(None, description="视频高度"),
     fps: int = Query(15, description="帧率"),
     stream_type: str = Query("ffmpeg", description="推流类型 (ffmpeg, zlm)"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ):
     """启动增强版直播流 - 集成帧稳定器"""
     try:
@@ -813,7 +813,7 @@ async def start_enhanced_live_stream(
 @router.delete("/video/enhanced/live/{task_id}")
 async def stop_enhanced_live_stream(
     task_id: str = Path(..., description="任务ID"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ):
     """停止增强版直播流"""
     try:
@@ -856,7 +856,7 @@ async def stop_enhanced_live_stream(
 async def get_enhanced_video_stats(
     task_id: str = Path(..., description="任务ID"),
     stat_type: str = Query("all", description="统计类型 (encoding, streaming, all)"),
-    task_service: TaskService = Depends(get_task_service)
+    task_service: ZeroCopyTaskService = Depends(get_task_service)
 ):
     """获取增强版视频编码/推流的统计信息"""
     try:

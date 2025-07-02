@@ -22,6 +22,13 @@ from run.middlewares.exception_handler import setup_exception_handlers, UnifiedE
 from run.middlewares.request_logging import RequestLoggingMiddleware
 from run.signal_handler import signal_handler
 
+# 导入零拷贝架构组件
+from core.memory.memory_pool import MemoryPool
+from core.config.memory_config import MemoryConfig
+from core.initialization.memory_initializer import initialize_memory_system
+from core.task_management.zero_copy_processor import ZeroCopyTaskProcessor
+from core.task_management.stream.zero_copy_manager import ZeroCopyStreamManager
+
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
@@ -95,11 +102,13 @@ def create_app() -> FastAPI:
     # 注册路由
     from routers import task_router, health_router, stream_router, discovery_router
     from routers.task_video import router as video_router
+    from routers.zero_copy_task import router as zero_copy_router
     app.include_router(task_router)
     app.include_router(health_router)
     app.include_router(video_router)
     app.include_router(stream_router)
     app.include_router(discovery_router)
+    app.include_router(zero_copy_router)
 
     # 添加静态文件支持
     from fastapi.staticfiles import StaticFiles
@@ -142,44 +151,64 @@ async def lifespan(app: FastAPI):
         from shared.utils.app_state import app_state_manager
         from core.media_kit.zlm_manager import zlm_manager
         from core.analyzer.analyzer_factory import analyzer_factory
-        from core.task_management.stream import StreamManager
-        from core.task_management.manager import TaskManager
-        from core.task_management.stream import StreamTaskBridge
         from core.task_management.callback_service import callback_service
-        from services.http.task_service import TaskService
+        from services.http.zero_copy_task_service import ZeroCopyTaskService
 
         # 1. 初始化基础服务
         app_state_manager.initialize()
         await zlm_manager.initialize()
         analyzer_factory.initialize()
 
-        # 2. 初始化业务服务
-        stream_manager = StreamManager()
-        await stream_manager.initialize()
-        app_state_manager.register_service("stream_manager", stream_manager)
+        # 2. 初始化零拷贝内存系统
+        normal_logger.info("正在初始化零拷贝内存系统...")
+        memory_pool = await initialize_memory_system()
+        if not memory_pool:
+            raise RuntimeError("零拷贝内存系统初始化失败")
+        app_state_manager.register_service("memory_pool", memory_pool)
+        normal_logger.info("零拷贝内存系统初始化完成")
 
+        # 3. 初始化零拷贝业务服务
+        zero_copy_stream_manager = ZeroCopyStreamManager()
+        zero_copy_stream_manager.set_memory_pool(memory_pool)
+        await zero_copy_stream_manager.initialize()
+        app_state_manager.register_service("stream_manager", zero_copy_stream_manager)
+
+        zero_copy_task_processor = ZeroCopyTaskProcessor(None, memory_pool)
+        # 创建零拷贝任务管理器（使用零拷贝处理器）
+        from core.task_management.manager import TaskManager
         task_manager = TaskManager()
+        task_manager.task_processor = zero_copy_task_processor
+        zero_copy_task_processor.task_manager = task_manager
         await task_manager.initialize()
         app_state_manager.register_service("task_manager", task_manager)
 
+        # 4. 初始化零拷贝流任务桥接器
+        from core.task_management.stream import StreamTaskBridge
         stream_task_bridge = StreamTaskBridge()
+        # 使用零拷贝流管理器
+        stream_task_bridge.stream_manager = zero_copy_stream_manager
         await stream_task_bridge.initialize()
         app_state_manager.register_service("stream_task_bridge", stream_task_bridge)
 
         callback_service.initialize()
         app_state_manager.register_service("callback_service", callback_service)
 
-        # 初始化视频服务并注册到全局状态管理器
+        # 5. 初始化零拷贝视频服务并注册到全局状态管理器
         from services.video.video_service import VideoService
         video_service = VideoService()
+        # 将内存池注入视频服务以支持零拷贝
+        if hasattr(video_service, 'set_memory_pool'):
+            video_service.set_memory_pool(memory_pool)
         app_state_manager.register_video_service(video_service)
         app.state.video_service = video_service
-        normal_logger.info("视频服务已初始化并注册到全局状态管理器")
+        normal_logger.info("零拷贝视频服务已初始化并注册到全局状态管理器")
 
-        # 3. 初始化任务服务并注册到app.state
-        task_service = TaskService(task_manager=task_manager)
-        app.state.task_service = task_service
-        normal_logger.info("任务服务已初始化并注册")
+        # 6. 初始化零拷贝任务服务并注册到app.state
+        zero_copy_task_service = ZeroCopyTaskService(task_manager=task_manager, memory_pool=memory_pool)
+        # 设置零拷贝组件
+        zero_copy_task_service.set_zero_copy_components(zero_copy_task_processor, zero_copy_stream_manager)
+        app.state.task_service = zero_copy_task_service
+        normal_logger.info("零拷贝任务服务已初始化并注册")
 
         # 等待服务就绪
         await asyncio.sleep(2)
@@ -192,7 +221,12 @@ async def lifespan(app: FastAPI):
         # 启动回调服务
         await callback_service.start()
 
-        normal_logger.info("分析服务已就绪")
+        # 7. 输出零拷贝架构初始化摘要
+        normal_logger.info("=== 零拷贝架构初始化完成 ===")
+        normal_logger.info(f"内存池状态: {memory_pool.get_stats()}")
+        normal_logger.info(f"零拷贝流管理器: {zero_copy_stream_manager.__class__.__name__}")
+        normal_logger.info(f"零拷贝任务处理器: {zero_copy_task_processor.__class__.__name__}")
+        normal_logger.info("=== 分析服务已就绪（零拷贝模式）===")
         yield
 
     except Exception as e:
@@ -202,11 +236,17 @@ async def lifespan(app: FastAPI):
         normal_logger.info("正在关闭服务...")
         
         try:
+            normal_logger.info("正在关闭零拷贝架构服务...")
             await callback_service.stop()
             await stream_task_bridge.shutdown()
             await task_manager.shutdown()
-            await stream_manager.shutdown()
+            await zero_copy_stream_manager.shutdown()
             await zlm_manager.shutdown()
+
+            # 关闭内存池
+            if memory_pool:
+                memory_pool.cleanup()
+                normal_logger.info("内存池已关闭")
         except Exception as e:
             exception_logger.error(f"关闭服务时发生错误: {str(e)}")
 
