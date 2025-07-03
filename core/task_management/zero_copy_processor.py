@@ -294,8 +294,15 @@ class ZeroCopyTaskProcessor:
                     if frame_counter % 100 == 0:  # 每100次尝试记录一次
                         analysis_logger.info(f"[等待帧引用] 任务 {task_id} 正在等待帧引用队列, 队列大小: {frame_ref_queue.qsize()}")
                     
-                    # 获取帧引用
-                    frame_ref = await frame_ref_queue.get()
+                    # 获取帧引用（支持超时）
+                    try:
+                        frame_ref = await asyncio.wait_for(frame_ref_queue.get(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        # 超时检查是否应该继续等待
+                        if frame_counter % 20 == 0:  # 每20次超时记录一次
+                            analysis_logger.warning(f"[帧引用超时] 任务 {task_id} 等待帧引用超时，队列大小: {frame_ref_queue.qsize()}")
+                        continue
+                    
                     if frame_ref is None:
                         analysis_logger.warning(f"[帧引用为空] 任务 {task_id} 从队列获取到空的帧引用")
                         continue

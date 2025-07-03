@@ -111,9 +111,17 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
             Dict[str, Any]: 来自 YOLODetector.detect 的完整结果，可能包含额外的分析器级别统计。
                            预期结构见 YOLODetector.detect 文档字符串。
         """
+        # 记录分析开始时间
         analyzer_level_start_time = time.perf_counter()
         frame_count_for_log = self._frame_count + 1 # 用于日志，_frame_count 在 process_video_frame 中更新
         
+        # 获取帧入内存时间戳
+        enqueue_time = None
+        if hasattr(self, 'current_metadata') and self.current_metadata:
+            enqueue_time = self.current_metadata.get('enqueue_time')
+        elif isinstance(kwargs.get('metadata'), dict):
+            enqueue_time = kwargs['metadata'].get('enqueue_time')
+
         # 添加分析日志：开始分析帧
         analysis_logger.info(f"[分析开始] YOLO检测器开始分析第 {frame_count_for_log} 帧, "
                            f"帧大小: {frame.shape}, 置信度阈值: {kwargs.get('confidence', self.confidence)}")
@@ -176,6 +184,7 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
                                    f"检测到 {num_detections} 个目标: {', '.join(target_info)}, "
                                    f"处理耗时: {analyzer_detect_call_duration_ms:.2f}ms")
                 
+                
                 # 日志截断，避免过长的输出
                 log_dets = detector_result["detections"][:3]
                 normal_logger.info(f"YOLODetectionAnalyzer: 部分检测结果: {log_dets}")
@@ -215,6 +224,22 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
                 except Exception as e:
                     exception_logger.exception(f"YOLODetectionAnalyzer: 嵌套检测处理失败: {str(e)}")
                     # 嵌套检测失败不影响主要检测结果
+            
+            # 记录分析完成时间
+            analyzer_level_end_time = time.perf_counter()
+            analyze_cost = (analyzer_level_end_time - analyzer_level_start_time) * 1000
+            # 计算整体耗时
+            overall_cost = None
+            if enqueue_time:
+                overall_cost = (time.time() - enqueue_time) * 1000
+            if len(detector_result.get("detections", [])) > 0:
+                analysis_logger.info(
+                    f"[分析完成] YOLO检测器完成第 {frame_count_for_log} 帧分析, 检测到 {len(detector_result['detections'])} 个目标: {', '.join(target_info)}, 处理耗时: {analyze_cost:.2f}ms, 整体耗时: {overall_cost:.2f}ms" if overall_cost else f"[分析完成] YOLO检测器完成第 {frame_count_for_log} 帧分析, 检测到 {len(detector_result['detections'])} 个目标: {', '.join(target_info)}, 处理耗时: {analyze_cost:.2f}ms"
+                )
+            else:
+                analysis_logger.info(
+                    f"[分析完成] YOLO检测器完成第 {frame_count_for_log} 帧分析, 未检测到目标, 处理耗时: {analyze_cost:.2f}ms, 整体耗时: {overall_cost:.2f}ms" if overall_cost else f"[分析完成] YOLO检测器完成第 {frame_count_for_log} 帧分析, 未检测到目标, 处理耗时: {analyze_cost:.2f}ms"
+                )
             
             return detector_result
             

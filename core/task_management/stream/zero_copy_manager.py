@@ -199,7 +199,7 @@ class ZeroCopyStreamManager(StreamManager):
                                          frame_queue: AsyncFrameReferenceQueue,
                                          config: ZeroCopyStreamConfig) -> None:
         """
-        分发帧引用任务
+        分发帧引用任务 - 增强版本，支持重试和降级机制
         
         Args:
             stream: 零拷贝视频流
@@ -209,24 +209,56 @@ class ZeroCopyStreamManager(StreamManager):
         """
         normal_logger.info(f"启动帧引用分发任务: {buffer_key}")
         
+        # 分发状态跟踪
+        consecutive_failures = 0
+        last_success_time = time.time()
+        total_distributed = 0
+        
         try:
             while buffer_key in self._zero_copy_buffers:
-                # 检查内存压力
-                if config.enable_memory_monitoring and stream.is_memory_pressure_high():
-                    self._memory_stats["memory_pressure_events"] += 1
+                try:
+                    # 检查内存压力
+                    if config.enable_memory_monitoring and stream.is_memory_pressure_high():
+                        self._memory_stats["memory_pressure_events"] += 1
+                        
+                        if config.frame_drop_on_pressure:
+                            # 内存压力下丢帧
+                            normal_logger.warning(f"内存压力高，跳过帧获取: {buffer_key}")
+                            await asyncio.sleep(0.01)  # 短暂等待
+                            continue
                     
-                    if config.frame_drop_on_pressure:
-                        # 内存压力下丢帧
-                        normal_logger.warning(f"内存压力高，跳过帧获取: {buffer_key}")
-                        await asyncio.sleep(0.01)  # 短暂等待
-                        continue
-                
-                # 获取帧引用
-                if config.enable_batch_processing:
-                    # 批量获取
-                    success, frame_refs = await stream.get_frame_references_batch(config.batch_size)
-                    if success and frame_refs:
-                        for frame_ref in frame_refs:
+                    success = False
+                    frame_refs = []
+                    
+                    # 获取帧引用（支持重试）
+                    for retry_count in range(3):  # 最多重试3次
+                        if config.enable_batch_processing:
+                            # 批量获取
+                            success, frame_refs = await stream.get_frame_references_batch(config.batch_size)
+                            if success and frame_refs:
+                                # 批量分发成功
+                                for frame_ref in frame_refs:
+                                    if frame_queue.full():
+                                        # 队列满时丢弃最旧的帧
+                                        old_ref = await frame_queue.get_nowait()
+                                        if old_ref:
+                                            old_ref.release()
+                                        self._memory_stats["frames_dropped"] += 1
+                                    
+                                    await frame_queue.put(frame_ref)
+                                
+                                self._performance_stats["batch_operations"] += 1
+                                self._performance_stats["zero_copy_operations"] += len(frame_refs)
+                                total_distributed += len(frame_refs)
+                                break
+                            else:
+                                # 批量获取失败，尝试单帧获取作为降级
+                                if retry_count == 0:
+                                    analysis_logger.warning(f"[帧引用分发] 批量获取失败，尝试单帧降级: {buffer_key}")
+                        
+                        # 单帧获取（主要路径或降级路径）
+                        success, frame_ref = await stream.get_frame_reference()
+                        if success and frame_ref:
                             if frame_queue.full():
                                 # 队列满时丢弃最旧的帧
                                 old_ref = await frame_queue.get_nowait()
@@ -235,46 +267,69 @@ class ZeroCopyStreamManager(StreamManager):
                                 self._memory_stats["frames_dropped"] += 1
                             
                             await frame_queue.put(frame_ref)
+                            self._performance_stats["zero_copy_operations"] += 1
+                            total_distributed += 1
+                            break
                         
-                        self._performance_stats["batch_operations"] += 1
-                        self._performance_stats["zero_copy_operations"] += len(frame_refs)
+                        # 重试前等待
+                        if retry_count < 2:
+                            await asyncio.sleep(0.005)  # 5ms
+                    
+                    # 处理获取结果
+                    if success:
+                        # 成功重置失败计数
+                        if consecutive_failures > 0:
+                            analysis_logger.info(f"[帧引用分发] {buffer_key} 恢复正常，连续失败 {consecutive_failures} 次后成功")
+                            consecutive_failures = 0
+                        
+                        last_success_time = time.time()
+                        
+                        # 短暂等待避免CPU占用过高
+                        await asyncio.sleep(0.001)
                     else:
-                        # 添加调试日志：批量获取失败
-                        analysis_logger.warning(f"[帧引用分发] 批量获取帧引用失败: {buffer_key}, success={success}, frame_refs={len(frame_refs) if frame_refs else 0}")
-                else:
-                    # 单帧获取
-                    success, frame_ref = await stream.get_frame_reference()
-                    if success and frame_ref:
-                        if frame_queue.full():
-                            # 队列满时丢弃最旧的帧
-                            old_ref = await frame_queue.get_nowait()
-                            if old_ref:
-                                old_ref.release()
-                            self._memory_stats["frames_dropped"] += 1
+                        # 失败处理
+                        consecutive_failures += 1
                         
-                        await frame_queue.put(frame_ref)
-                        self._performance_stats["zero_copy_operations"] += 1
-                    else:
-                        # 添加调试日志：单帧获取失败
-                        analysis_logger.warning(f"[帧引用分发] 单帧获取帧引用失败: {buffer_key}, success={success}, frame_ref={frame_ref is not None}")
+                        # 根据失败次数调整等待时间（指数退避）
+                        if consecutive_failures <= 10:
+                            wait_time = 0.01  # 10ms
+                        elif consecutive_failures <= 50:
+                            wait_time = 0.05  # 50ms
+                        else:
+                            wait_time = 0.1   # 100ms
                         
-                        # 检查流状态
-                        if hasattr(stream, 'get_status'):
-                            stream_status = stream.get_status()
-                            analysis_logger.info(f"[帧引用分发] 流状态: {buffer_key}, status={stream_status}")
+                        # 定期记录失败状态
+                        if consecutive_failures % 100 == 0:
+                            time_since_success = time.time() - last_success_time
+                            analysis_logger.warning(f"[帧引用分发] {buffer_key} 连续失败 {consecutive_failures} 次, "
+                                                   f"上次成功: {time_since_success:.1f}秒前, 总分发: {total_distributed}")
+                            
+                            # 检查流状态
+                            if hasattr(stream, 'get_status'):
+                                stream_status = stream.get_status()
+                                analysis_logger.info(f"[帧引用分发] 流状态: {buffer_key}, status={stream_status}")
+                            
+                            # 检查连接状态
+                            if hasattr(stream, 'is_connected'):
+                                is_connected = stream.is_connected
+                                analysis_logger.info(f"[帧引用分发] 连接状态: {buffer_key}, is_connected={is_connected}")
                         
-                        # 检查是否有订阅者
-                        if hasattr(stream, '_subscribers'):
-                            subscriber_count = len(stream._subscribers)
-                            analysis_logger.info(f"[帧引用分发] 订阅者数量: {buffer_key}, subscribers={subscriber_count}")
-                
-                # 短暂等待避免CPU占用过高
-                await asyncio.sleep(0.001)
-                
+                        await asyncio.sleep(wait_time)
+                        
+                except asyncio.CancelledError:
+                    # 任务被取消
+                    normal_logger.info(f"帧引用分发任务被取消: {buffer_key}")
+                    break
+                except Exception as e:
+                    consecutive_failures += 1
+                    exception_logger.exception(f"帧引用分发异常: {buffer_key}, {str(e)}")
+                    await asyncio.sleep(0.1)  # 异常后等待更长时间
+                    
         except Exception as e:
-            exception_logger.exception(f"帧引用分发任务异常: {buffer_key}, {str(e)}")
+            exception_logger.exception(f"帧引用分发任务严重异常: {buffer_key}, {str(e)}")
         finally:
-            normal_logger.info(f"帧引用分发任务结束: {buffer_key}")
+            normal_logger.info(f"帧引用分发任务结束: {buffer_key}, 总分发帧数: {total_distributed}, "
+                             f"最终连续失败: {consecutive_failures} 次")
     
     async def unsubscribe_stream_zero_copy(self, stream_id: str, subscriber_id: str) -> bool:
         """
@@ -345,3 +400,109 @@ class ZeroCopyStreamManager(StreamManager):
             }
         
         return buffer_stats
+
+    async def check_zero_copy_system_health(self) -> Dict[str, Any]:
+        """
+        检查零拷贝系统健康状态
+        
+        Returns:
+            Dict[str, Any]: 健康状态报告
+        """
+        health_report = {
+            "timestamp": time.time(),
+            "overall_health": "healthy",
+            "streams": {},
+            "memory_stats": self._memory_stats.copy(),
+            "performance_stats": self._performance_stats.copy(),
+            "issues": []
+        }
+        
+        try:
+            # 检查每个流的状态
+            for buffer_key, buffer_info in self._zero_copy_buffers.items():
+                stream = buffer_info.get("stream")
+                frame_queue = buffer_info.get("frame_queue")
+                
+                stream_health = {
+                    "stream_id": getattr(stream, '_stream_id', 'unknown'),
+                    "is_running": getattr(stream, 'is_running', False),
+                    "is_connected": getattr(stream, 'is_connected', False),
+                    "queue_size": frame_queue.qsize() if frame_queue else 0,
+                    "queue_maxsize": getattr(frame_queue, 'maxsize', 0),
+                    "frame_count": getattr(stream, 'frame_count', 0),
+                    "error_count": getattr(stream, 'error_count', 0),
+                    "last_frame_time": getattr(stream, 'last_frame_time', 0),
+                }
+                
+                # 检查流是否有问题
+                current_time = time.time()
+                time_since_last_frame = current_time - stream_health["last_frame_time"]
+                
+                if not stream_health["is_running"]:
+                    health_report["issues"].append(f"流 {buffer_key} 未运行")
+                elif not stream_health["is_connected"]:
+                    health_report["issues"].append(f"流 {buffer_key} 未连接")
+                elif time_since_last_frame > 30 and stream_health["last_frame_time"] > 0:
+                    health_report["issues"].append(f"流 {buffer_key} 超过30秒未收到帧")
+                elif stream_health["queue_size"] == 0:
+                    health_report["issues"].append(f"流 {buffer_key} 帧引用队列为空")
+                elif stream_health["error_count"] > 100:
+                    health_report["issues"].append(f"流 {buffer_key} 错误计数过高: {stream_health['error_count']}")
+                
+                # 检查帧引用获取统计
+                if hasattr(stream, '_get_reference_failures'):
+                    stream_health["reference_failures"] = stream._get_reference_failures
+                    stream_health["last_successful_get_time"] = getattr(stream, '_last_successful_get_time', 0)
+                    
+                    if stream_health["reference_failures"] > 1000:
+                        health_report["issues"].append(f"流 {buffer_key} 帧引用获取失败次数过多: {stream_health['reference_failures']}")
+                
+                health_report["streams"][buffer_key] = stream_health
+            
+            # 检查内存压力
+            if self._memory_stats.get("memory_pressure_events", 0) > 100:
+                health_report["issues"].append(f"内存压力事件过多: {self._memory_stats['memory_pressure_events']}")
+            
+            # 检查丢帧率
+            total_frames = self._performance_stats.get("zero_copy_operations", 0)
+            dropped_frames = self._memory_stats.get("frames_dropped", 0)
+            if total_frames > 0:
+                drop_rate = (dropped_frames / total_frames) * 100
+                health_report["drop_rate_percent"] = round(drop_rate, 2)
+                if drop_rate > 10:  # 丢帧率超过10%
+                    health_report["issues"].append(f"丢帧率过高: {drop_rate:.1f}%")
+            
+            # 设置整体健康状态
+            if health_report["issues"]:
+                if len(health_report["issues"]) > 5:
+                    health_report["overall_health"] = "critical"
+                else:
+                    health_report["overall_health"] = "warning"
+            
+            return health_report
+            
+        except Exception as e:
+            exception_logger.exception(f"零拷贝系统健康检查失败: {str(e)}")
+            return {
+                "timestamp": time.time(),
+                "overall_health": "error",
+                "error": str(e),
+                "streams": {},
+                "issues": ["健康检查执行失败"]
+            }
+
+    def log_system_health_summary(self):
+        """
+        记录系统健康状态摘要（供定期调用）
+        """
+        try:
+            # 简化的健康状态记录
+            active_streams = len(self._zero_copy_buffers)
+            total_operations = self._performance_stats.get("zero_copy_operations", 0)
+            total_dropped = self._memory_stats.get("frames_dropped", 0)
+            
+            normal_logger.info(f"[零拷贝系统] 活跃流数: {active_streams}, "
+                             f"总操作数: {total_operations}, 总丢帧: {total_dropped}")
+            
+        except Exception as e:
+            exception_logger.exception(f"记录系统健康摘要失败: {str(e)}")

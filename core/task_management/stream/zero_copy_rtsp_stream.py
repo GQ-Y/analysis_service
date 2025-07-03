@@ -65,7 +65,13 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
         self._subscribers: Dict[str, AsyncFrameReferenceQueue] = {}
         self.subscriber_lock = threading.Lock()
         
-        # 最新帧引用缓存（用于get_frame_reference方法）
+        # 增强的帧引用缓存机制（环形缓存）
+        self._frame_cache_size = 5  # 缓存最近5帧
+        self._frame_cache: List[Optional[FrameReference]] = [None] * self._frame_cache_size
+        self._cache_index = 0
+        self._cache_lock = threading.RLock()
+        
+        # 兼容性：保持原有的单帧缓存（作为快速访问）
         self._latest_frame_ref: Optional[FrameReference] = None
         self._latest_frame_lock = threading.RLock()
         
@@ -85,6 +91,10 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
         
         # 用于保证"至少 1 fps" 分析
         self._last_distributed_time: float = 0.0
+        
+        # 新增：帧引用获取失败统计
+        self._get_reference_failures = 0
+        self._last_successful_get_time = 0.0
         
         normal_logger.info(f"创建零拷贝RTSP流: {self._stream_id}, URL: {self._stream_url}")
 
@@ -156,50 +166,113 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
 
     async def get_frame_reference(self) -> Tuple[bool, Optional[FrameReference]]:
         """
-        获取帧引用（零拷贝）
+        获取帧引用（零拷贝）- 增强版本，支持重试和环形缓存
 
         Returns:
             Tuple[bool, Optional[FrameReference]]: (是否成功, 帧引用)
         """
         try:
-            # 检查流是否正在运行且已连接
-            if not self.is_running or not self.is_connected:
+            # 快速路径：检查流基本状态
+            if not self.is_running:
                 return False, None
             
-            # 从最新帧引用缓存中获取
-            with self._latest_frame_lock:
-                if self._latest_frame_ref and self._latest_frame_ref.is_valid():
-                    # 创建新的引用返回
-                    new_ref = self._latest_frame_ref.create_reference()
-                    if new_ref:
-                        return True, new_ref
+            # 尝试从最新帧缓存获取（快速路径）
+            if self.is_connected:
+                with self._latest_frame_lock:
+                    if self._latest_frame_ref and self._latest_frame_ref.is_valid():
+                        new_ref = self._latest_frame_ref.create_reference()
+                        if new_ref:
+                            self._last_successful_get_time = time.time()
+                            return True, new_ref
+            
+            # 回退到环形缓存获取
+            with self._cache_lock:
+                # 从最新到最旧遍历缓存
+                for i in range(self._frame_cache_size):
+                    # 计算索引（从最新开始）
+                    idx = (self._cache_index - 1 - i) % self._frame_cache_size
+                    frame_ref = self._frame_cache[idx]
+                    
+                    if frame_ref and frame_ref.is_valid():
+                        new_ref = frame_ref.create_reference()
+                        if new_ref:
+                            self._last_successful_get_time = time.time()
+                            analysis_logger.info(f"[帧缓存命中] 流 {self._stream_id} 从环形缓存索引 {idx} 获取帧引用")
+                            return True, new_ref
+            
+            # 所有缓存都失效，记录失败
+            self._get_reference_failures += 1
+            
+            # 每100次失败记录一次详细状态
+            if self._get_reference_failures % 100 == 0:
+                analysis_logger.warning(f"[帧引用获取] 流 {self._stream_id} 连续失败 {self._get_reference_failures} 次, "
+                                      f"is_running={self.is_running}, is_connected={self.is_connected}, "
+                                      f"上次成功时间: {time.time() - self._last_successful_get_time:.1f}秒前")
             
             return False, None
+            
         except Exception as e:
             exception_logger.exception(f"获取帧引用失败: {self._stream_id}, {str(e)}")
+            self._get_reference_failures += 1
             return False, None
 
     async def get_frame_references_batch(self, count: int = 1) -> Tuple[bool, List[FrameReference]]:
         """
-        批量获取帧引用（零拷贝）
-
+        批量获取帧引用（零拷贝）- 增强版本，支持真正的批量获取
         Args:
             count: 获取的帧数量
-
         Returns:
             Tuple[bool, List[FrameReference]]: (是否成功, 帧引用列表)
         """
         try:
             refs = []
-            with self._latest_frame_lock:
-                if self._latest_frame_ref and self._latest_frame_ref.is_valid():
-                    for _ in range(count):
-                        ref = self._latest_frame_ref.create_reference()
-                        if ref:
-                            refs.append(ref)
-            return (bool(refs), refs)
+            requested_count = min(count, self._frame_cache_size)  # 限制在缓存大小内
+            
+            # 快速路径：如果只需要1个引用，使用单帧获取
+            if requested_count == 1:
+                success, ref = await self.get_frame_reference()
+                if success and ref:
+                    return True, [ref]
+                return False, []
+            
+            # 批量获取：从环形缓存中获取多个不同的帧引用
+            with self._cache_lock:
+                # 收集可用的帧引用
+                available_refs = []
+                for i in range(self._frame_cache_size):
+                    idx = (self._cache_index - 1 - i) % self._frame_cache_size
+                    frame_ref = self._frame_cache[idx]
+                    if frame_ref and frame_ref.is_valid():
+                        available_refs.append(frame_ref)
+                
+                # 根据请求数量创建引用
+                refs_to_create = min(requested_count, len(available_refs))
+                
+                for i in range(refs_to_create):
+                    frame_ref = available_refs[i]
+                    new_ref = frame_ref.create_reference()
+                    if new_ref:
+                        refs.append(new_ref)
+            
+            # 如果批量获取成功获得了引用
+            if refs:
+                self._last_successful_get_time = time.time()
+                analysis_logger.info(f"[批量帧获取] 流 {self._stream_id} 成功获取 {len(refs)}/{requested_count} 个帧引用")
+                return True, refs
+            
+            # 批量获取失败，尝试降级到单帧获取
+            success, ref = await self.get_frame_reference()
+            if success and ref:
+                analysis_logger.info(f"[批量帧降级] 流 {self._stream_id} 降级到单帧获取成功")
+                return True, [ref]
+            
+            # 完全失败
+            self._get_reference_failures += 1
+            return False, []
+            
         except Exception as e:
             exception_logger.exception(f"批量获取帧引用失败: {self._stream_id}, {str(e)}")
+            self._get_reference_failures += 1
             return False, []
 
     def get_memory_usage(self) -> Dict[str, Any]:
@@ -412,7 +485,7 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
     
     def _pull_stream_worker(self):
         """
-        拉流工作线程
+        拉流工作线程 - 增强版本，支持连接监控和自动恢复
         """
         normal_logger.info(f"零拷贝RTSP流 {self._stream_id} 拉流线程启动")
 
@@ -434,59 +507,114 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
         normal_logger.info(f"流 {self._stream_id} 内存池和帧引用管理器设置完成，开始拉流")
 
         reconnect_attempts = 0
+        max_reconnect_attempts = 5  # 最大重连次数
+        stable_frame_count = 0  # 稳定帧计数
+        last_connection_check = 0
+        connection_check_interval = 5.0  # 每5秒检查一次连接状态
         
         while not self.stop_event.is_set():
             try:
                 # 连接流
                 if not self._connect_stream():
                     reconnect_attempts += 1
-                    if reconnect_attempts >= self.zero_copy_config.max_reconnect_attempts:
-                        normal_logger.error(f"流 {self._stream_id} 重连次数超过限制，停止拉流")
+                    if reconnect_attempts >= max_reconnect_attempts:
+                        normal_logger.error(f"流 {self._stream_id} 重连次数超过限制 {max_reconnect_attempts}，停止拉流")
                         break
 
-                    normal_logger.warning(f"流 {self._stream_id} 连接失败，{self.zero_copy_config.reconnect_interval}秒后重试")
-                    time.sleep(self.zero_copy_config.reconnect_interval)
+                    # 指数退避重连
+                    reconnect_delay = min(2 ** reconnect_attempts, 30)  # 最多等待30秒
+                    normal_logger.warning(f"流 {self._stream_id} 连接失败，{reconnect_delay}秒后重试 (尝试 {reconnect_attempts}/{max_reconnect_attempts})")
+                    time.sleep(reconnect_delay)
                     continue
-                
-                # 重置重连计数
-                reconnect_attempts = 0
-                self.is_connected = True
-                
-                # 拉流循环
-                while not self.stop_event.is_set() and self.cap and self.cap.isOpened():
-                    ret, frame = self.cap.read()
-                    
-                    if not ret or frame is None:
-                        normal_logger.warning(f"流 {self._stream_id} 读取帧失败")
-                        self.error_count += 1
-                        break
-                    
-                    # 处理帧
-                    self._process_frame(frame)
-                    
-                    # 更新统计
-                    self.frame_count += 1
-                    self.last_frame_time = time.time()
-                
-                # 连接断开
-                self.is_connected = False
-                if self.cap:
-                    self.cap.release()
-                    self.cap = None
-                
+
+                # 连接成功，重置重连计数
+                if reconnect_attempts > 0:
+                    normal_logger.info(f"流 {self._stream_id} 重连成功，重置重连计数")
+                    reconnect_attempts = 0
+
+                # 主拉流循环
+                consecutive_failures = 0
+                while not self.stop_event.is_set() and self.is_connected:
+                    try:
+                        # 定期检查连接状态
+                        current_time = time.time()
+                        if current_time - last_connection_check >= connection_check_interval:
+                            last_connection_check = current_time
+                            
+                            # 检查连接健康状态
+                            if self.cap and not self.cap.isOpened():
+                                normal_logger.warning(f"流 {self._stream_id} 检测到连接断开，准备重连")
+                                self.is_connected = False
+                                break
+                            
+                            # 检查帧获取是否长时间失败
+                            if current_time - self.last_frame_time > 10.0 and self.last_frame_time > 0:
+                                normal_logger.warning(f"流 {self._stream_id} 超过10秒未收到帧，可能连接异常")
+                                
+                        # 读取帧
+                        ret, frame = self.cap.read()
+                        if not ret or frame is None:
+                            consecutive_failures += 1
+                            
+                            if consecutive_failures > 50:  # 连续50次失败
+                                normal_logger.error(f"流 {self._stream_id} 连续读取失败 {consecutive_failures} 次，断开连接")
+                                self.is_connected = False
+                                break
+                            
+                            # 短暂等待后重试
+                            time.sleep(0.02)
+                            continue
+
+                        # 成功读取帧，重置失败计数
+                        consecutive_failures = 0
+                        stable_frame_count += 1
+
+                        # 处理帧
+                        self._process_frame(frame)
+
+                        # 记录稳定运行状态
+                        if stable_frame_count % 1000 == 0:
+                            normal_logger.info(f"流 {self._stream_id} 稳定运行，已处理 {stable_frame_count} 帧")
+
+                    except Exception as e:
+                        consecutive_failures += 1
+                        exception_logger.exception(f"拉流处理异常: {self._stream_id}, {str(e)}")
+                        
+                        if consecutive_failures > 10:
+                            normal_logger.error(f"流 {self._stream_id} 处理异常次数过多，断开连接")
+                            self.is_connected = False
+                            break
+                        
+                        time.sleep(0.1)
+
             except Exception as e:
-                exception_logger.exception(f"拉流线程异常: {self._stream_id}, {str(e)}")
                 self.error_count += 1
+                exception_logger.exception(f"拉流线程异常: {self._stream_id}, {str(e)}")
                 self.is_connected = False
-                
+                time.sleep(1)
+
+            finally:
+                # 清理连接
                 if self.cap:
                     self.cap.release()
                     self.cap = None
-                
-                # 等待后重试
-                time.sleep(self.zero_copy_config.reconnect_interval)
-        
-        normal_logger.info(f"零拷贝RTSP流 {self._stream_id} 拉流线程结束")
+                    normal_logger.info(f"流 {self._stream_id} 连接已清理")
+
+        # 清理环形缓存
+        with self._cache_lock:
+            for i in range(self._frame_cache_size):
+                if self._frame_cache[i]:
+                    self._frame_cache[i].release()
+                    self._frame_cache[i] = None
+
+        # 清理最新帧引用
+        with self._latest_frame_lock:
+            if self._latest_frame_ref:
+                self._latest_frame_ref.release()
+                self._latest_frame_ref = None
+
+        self.is_running = False
+        normal_logger.info(f"零拷贝RTSP流 {self._stream_id} 拉流线程结束，总处理帧数: {stable_frame_count}")
     
     def _connect_stream(self) -> bool:
         """
@@ -532,10 +660,14 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             except Exception:
                 pass
 
+            # 连接成功，设置状态
+            self.is_connected = True
+            normal_logger.info(f"流 {self._stream_id} 连接成功，分辨率: {self.width}x{self.height}, FPS: {self.fps}")
             return True
 
         except Exception as e:
             exception_logger.exception(f"连接流失败: {self._stream_id}, {str(e)}")
+            self.is_connected = False
             return False
     
     def _process_frame(self, frame: np.ndarray):
@@ -631,6 +763,15 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
                 memory_block_ref=memory_block.block_id
             )
 
+            # 在metadata中记录帧入内存时间戳
+            if hasattr(metadata, 'enqueue_time'):
+                metadata.enqueue_time = time.time()
+            else:
+                try:
+                    setattr(metadata, 'enqueue_time', time.time())
+                except Exception:
+                    pass
+
             # 通过帧引用管理器创建帧引用（这样会自动设置清理回调）
             frame_ref = self.frame_reference_manager.create_reference(memory_block, metadata)
             if frame_ref:
@@ -638,14 +779,26 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
                 analysis_logger.info(f"[帧投递] 流 {self._stream_id} 第 {self.frame_count} 帧成功投递到内存块 {memory_block.block_id}, "
                                    f"帧大小: {self.width}x{self.height}, 内存地址: {hex(memory_block.ptr.value)}")
                 
-                # 更新最新帧引用缓存
+                # 更新环形缓存（主要）
+                with self._cache_lock:
+                    # 释放要被覆盖的旧帧引用
+                    old_ref = self._frame_cache[self._cache_index]
+                    if old_ref:
+                        old_ref.release()
+                    
+                    # 存储新的帧引用到环形缓存
+                    self._frame_cache[self._cache_index] = frame_ref
+                    self._cache_index = (self._cache_index + 1) % self._frame_cache_size
+                
+                # 更新最新帧引用缓存（快速访问）
                 with self._latest_frame_lock:
-                    # 释放旧的帧引用
                     if self._latest_frame_ref:
                         self._latest_frame_ref.release()
-                    # 创建新的引用保存到缓存
-                    self._latest_frame_ref = frame_ref.create_reference()
-                
+                    self._latest_frame_ref = frame_ref.create_reference()  # 创建独立引用
+                    
+                analysis_logger.info(f"[帧缓存] 流 {self._stream_id} 更新环形缓存索引 {(self._cache_index - 1) % self._frame_cache_size}, "
+                                   f"内存块: {memory_block.block_id}")
+
                 # 分发给所有订阅者
                 self._distribute_frame(frame_ref)
 

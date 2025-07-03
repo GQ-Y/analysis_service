@@ -199,7 +199,8 @@ class FrameReference:
         """
         with self._lock:
             if self._released:
-                logger.warning(f"帧引用 {self.metadata.frame_id} 已经释放，重复释放")
+                # 优化重复释放警告：只在debug级别记录，减少日志噪音
+                logger.debug(f"帧引用 {self.metadata.frame_id} 已经释放，重复释放（这通常是正常的引用计数行为）")
                 return
 
             self._released = True
