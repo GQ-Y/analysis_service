@@ -96,33 +96,34 @@ class IZeroCopyVideoStream(IVideoStream):
 
 
 class ZeroCopyStreamConfig:
-    """零拷贝流配置"""
-    
-    def __init__(self, 
+    """零拷贝流配置
+
+    新增:
+        max_in_flight_frames: 订阅者队列在途帧上限 (用于 back-pressure)
+        estimate_latency_ms: 订阅者平均推理耗时估计 (用于预扩容)
+    """
+
+    def __init__(self,
                  buffer_size: int = 10,
                  enable_batch_processing: bool = True,
                  batch_size: int = 4,
                  memory_pressure_threshold: float = 0.8,
                  enable_memory_monitoring: bool = True,
-                 frame_drop_on_pressure: bool = True):
-        """
-        初始化零拷贝流配置
-        
-        Args:
-            buffer_size: 缓冲区大小
-            enable_batch_processing: 是否启用批处理
-            batch_size: 批处理大小
-            memory_pressure_threshold: 内存压力阈值
-            enable_memory_monitoring: 是否启用内存监控
-            frame_drop_on_pressure: 内存压力时是否丢帧
-        """
+                 frame_drop_on_pressure: bool = True,
+                 max_in_flight_frames: int = 90,
+                 estimate_latency_ms: int = 200):
+        # 基础配置
         self.buffer_size = buffer_size
         self.enable_batch_processing = enable_batch_processing
         self.batch_size = batch_size
         self.memory_pressure_threshold = memory_pressure_threshold
         self.enable_memory_monitoring = enable_memory_monitoring
         self.frame_drop_on_pressure = frame_drop_on_pressure
-    
+
+        # 新增配置
+        self.max_in_flight_frames = max_in_flight_frames
+        self.estimate_latency_ms = estimate_latency_ms
+
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
         return {
@@ -132,6 +133,8 @@ class ZeroCopyStreamConfig:
             "memory_pressure_threshold": self.memory_pressure_threshold,
             "enable_memory_monitoring": self.enable_memory_monitoring,
             "frame_drop_on_pressure": self.frame_drop_on_pressure,
+            "max_in_flight_frames": self.max_in_flight_frames,
+            "estimate_latency_ms": self.estimate_latency_ms,
         }
 
 
@@ -205,7 +208,7 @@ class AsyncFrameReferenceQueue:
             self.stats["total_get"] += 1
             self.stats["current_size"] = self.queue.qsize()
             return frame_ref
-        except asyncio.QueueEmpty:
+        except Exception:
             return None
     
     def qsize(self) -> int:
@@ -223,3 +226,26 @@ class AsyncFrameReferenceQueue:
     def get_stats(self) -> Dict[str, Any]:
         """获取队列统计信息"""
         return self.stats.copy()
+
+    # ------------------ 新增同步接口，供非协程线程使用 ------------------
+
+    def put_nowait(self, frame_ref: FrameReference) -> bool:
+        """同步 put，不阻塞事件循环，可在线程中调用"""
+        try:
+            self.queue.put_nowait(frame_ref)
+            self.stats["total_put"] += 1
+            self.stats["current_size"] = self.queue.qsize()
+            self.stats["max_size_reached"] = max(
+                self.stats["max_size_reached"], self.stats["current_size"]
+            )
+            return True
+        except asyncio.QueueFull:
+            return False
+
+    def full(self) -> bool:
+        """队列是否已满"""
+        return self.queue.full()
+
+    def qsize(self) -> int:
+        """当前大小 (线程安全)"""
+        return self.queue.qsize()

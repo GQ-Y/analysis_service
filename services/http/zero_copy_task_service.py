@@ -225,15 +225,35 @@ class ZeroCopyTaskService:
             task.zero_copy_enabled = True
             task.memory_pool_enabled = True
             
-            # 创建任务
-            result = await self.create_task(task, task_id)
+            # ✅ 初始化任务信息并立即返回
+            init_time = time.time()
+            self.active_tasks[task_id] = {
+                "task_config": None,
+                "analyzer": None,
+                "start_time": init_time,
+                "status": "initializing",
+                "frames_processed": 0,
+                "zero_copy_enabled": True,
+            }
             
-            if result["success"]:
-                normal_logger.info(f"零拷贝任务启动成功: {task_id}")
-            else:
-                normal_logger.error(f"零拷贝任务启动失败: {result['message']}")
+            # ✅ 异步启动任务初始化
+            initialization_task = asyncio.create_task(
+                self._async_initialize_task(task_id, task)
+            )
+            # 记录初始化任务，以便后续跟踪（可选）
+            self._track_initialization(task_id, initialization_task)
             
-            return result
+            # 构造立即返回的响应
+            response = {
+                "success": True,
+                "message": "任务正在初始化",
+                "task_id": task_id,
+                "status": "initializing",
+                "zero_copy_enabled": True
+            }
+            
+            normal_logger.info(f"零拷贝任务{task_id}提交初始化，立即返回响应")
+            return response
             
         except Exception as e:
             exception_logger.exception(f"启动零拷贝任务异常: {str(e)}")
@@ -243,6 +263,36 @@ class ZeroCopyTaskService:
                 "task_id": None,
                 "zero_copy_enabled": False
             }
+
+    # ================= 新增: 异步初始化相关 =================
+    async def _async_initialize_task(self, task_id: str, task: 'StreamTask') -> None:
+        """后台异步初始化零拷贝任务"""
+        try:
+            normal_logger.info(f"[初始化] 开始异步初始化零拷贝任务: {task_id}")
+            result = await self.create_task(task, task_id)
+            if result.get("success"):
+                # create_task 已经将任务状态设置为 running
+                normal_logger.info(f"[初始化] 零拷贝任务初始化完成: {task_id}")
+            else:
+                # 更新状态为 failed
+                task_info = self.active_tasks.get(task_id, {})
+                task_info["status"] = "failed"
+                task_info["message"] = result.get("message", "初始化失败")
+                self.active_tasks[task_id] = task_info
+                normal_logger.error(f"[初始化] 零拷贝任务初始化失败: {task_id}, {result.get('message')}")
+        except Exception as e:
+            # 捕获异常并更新任务状态
+            exception_logger.exception(f"[初始化] 零拷贝任务{task_id} 初始化异常: {str(e)}")
+            task_info = self.active_tasks.get(task_id, {})
+            task_info["status"] = "failed"
+            task_info["message"] = str(e)
+            self.active_tasks[task_id] = task_info
+
+    def _track_initialization(self, task_id: str, init_task: 'asyncio.Task') -> None:
+        """跟踪初始化任务，便于后续监控或取消"""
+        if not hasattr(self, "_initialization_tasks"):
+            self._initialization_tasks: Dict[str, asyncio.Task] = {}
+        self._initialization_tasks[task_id] = init_task
 
     def _build_zero_copy_task_config(self, task: StreamTask, task_id: str) -> Dict[str, Any]:
         """

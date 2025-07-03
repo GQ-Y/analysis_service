@@ -106,7 +106,8 @@ class MemoryBlock:
     def release(self) -> bool:
         """
         释放内存块引用（减少引用计数）
-        
+        当引用计数为0时自动回收到内存池
+
         Returns:
             bool: 是否成功释放引用
         """
@@ -114,15 +115,26 @@ class MemoryBlock:
             if self._ref_count > 0:
                 self._ref_count -= 1
                 self.last_access_time = time.time()
-                
+
                 logger.debug(f"内存块 {self.block_id} 引用计数: {self._ref_count}")
-                
-                # 如果引用计数为0，标记为待释放
+
+                # 如果引用计数为0，自动回收到内存池
                 if self._ref_count == 0:
                     with self._status_lock:
                         self.status = MemoryBlockStatus.PENDING_FREE
                         self.freed_time = time.time()
-                
+
+                    # 自动回收到内存池
+                    if self.manager:
+                        try:
+                            success = self.manager.return_block(self)
+                            if success:
+                                logger.debug(f"内存块 {self.block_id} 自动回收到内存池")
+                            else:
+                                logger.warning(f"内存块 {self.block_id} 自动回收失败")
+                        except Exception as e:
+                            logger.error(f"内存块 {self.block_id} 自动回收异常: {str(e)}")
+
                 return True
             else:
                 logger.warning(f"内存块 {self.block_id} 引用计数已为0，无法继续释放")
@@ -481,7 +493,7 @@ class MemoryBlockManager:
                 interval = self.force_free_stats["report_interval"]
                 rate = count / interval if interval > 0 else 0
 
-                logger.info(f"内存块强制释放统计: 过去{interval}秒内共{count}次, 平均{rate:.2f}次/秒")
+                logger.debug(f"内存块强制释放统计: 过去{interval}秒内共{count}次, 平均{rate:.2f}次/秒")
 
                 # 重置统计
                 self.force_free_stats["total_count"] = 0

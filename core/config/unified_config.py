@@ -359,6 +359,22 @@ class MemoryConfig(BaseConfigModel):
         description="最大批处理大小"
     )
 
+    # =========================================================================
+    # 动态扩容配置
+    # =========================================================================
+
+    enable_dynamic_expansion: bool = Field(
+        True,
+        description="当分辨率空闲内存块耗尽时自动扩容"
+    )
+
+    dynamic_expand_block_count: int = Field(
+        20,
+        ge=1,
+        le=1000,
+        description="动态扩容时新增的内存块数量"
+    )
+
     def validate_system_memory(self) -> bool:
         """
         验证系统内存是否满足配置要求

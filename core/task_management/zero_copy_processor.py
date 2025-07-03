@@ -18,13 +18,15 @@ from .stream.zero_copy_manager import ZeroCopyStreamManager
 
 # 使用项目现有的日志系统
 try:
-    from shared.utils.logger import get_normal_logger, get_exception_logger
+    from shared.utils.logger import get_normal_logger, get_exception_logger, get_analysis_logger
     normal_logger = get_normal_logger(__name__)
     exception_logger = get_exception_logger(__name__)
+    analysis_logger = get_analysis_logger()
 except ImportError:
     import logging
     normal_logger = logging.getLogger(__name__)
     exception_logger = logging.getLogger(__name__)
+    analysis_logger = logging.getLogger(__name__)
 
 
 class ZeroCopyTaskProcessor:
@@ -72,6 +74,13 @@ class ZeroCopyTaskProcessor:
             "memory_allocation_time": 0.0,
             "frame_processing_time": 0.0,
         }
+
+        # 状态监控
+        self._last_stats_log_time: float = 0.0
+        self._stats_log_interval: float = 30.0  # 每30秒记录一次统计
+
+        # 结果处理器任务引用，便于后续取消，防止任务泄漏
+        self._result_handler_tasks = {}
 
         normal_logger.info("零拷贝任务处理器初始化完成（唯一任务处理器）")
     
@@ -179,6 +188,19 @@ class ZeroCopyTaskProcessor:
                 normal_logger.error(f"订阅零拷贝流失败: {stream_id}")
                 return False
             
+            # 从任务配置中提取分析器
+            analyzer = task_config.get("analyzer")
+
+            # 先保存任务信息（在启动线程之前）
+            self.running_tasks[task_id] = {
+                "config": task_config,
+                "analyzer": analyzer,  # 保存分析器引用
+                "start_time": time.time(),
+                "status": "PROCESSING",
+                "stream_id": stream_id,
+                "zero_copy_enabled": True,
+            }
+
             # 保存零拷贝任务信息
             self._zero_copy_tasks[task_id] = {
                 "frame_ref_queue": frame_ref_queue,
@@ -186,8 +208,8 @@ class ZeroCopyTaskProcessor:
                 "stream_id": stream_id,
                 "start_time": time.time(),
             }
-            
-            # 创建并启动零拷贝任务线程
+
+            # 创建并启动零拷贝任务线程（在任务信息保存之后）
             thread = threading.Thread(
                 target=asyncio.run,
                 args=(self.process_stream_worker_zero_copy(
@@ -196,24 +218,19 @@ class ZeroCopyTaskProcessor:
                 daemon=True
             )
             thread.start()
-            
-            # 从任务配置中提取分析器
-            analyzer = task_config.get("analyzer")
 
-            # 保存任务信息
-            self.running_tasks[task_id] = {
-                "thread": thread,
-                "config": task_config,
-                "analyzer": analyzer,  # 保存分析器引用
-                "start_time": time.time(),
-                "status": "PROCESSING",
-                "stream_id": stream_id,
-                "zero_copy_enabled": True,
-            }
+            # 更新任务信息中的线程引用
+            self.running_tasks[task_id]["thread"] = thread
             self.task_threads[task_id] = thread
             
-            # 异步启动结果处理器（不阻塞返回）
-            asyncio.ensure_future(self._handle_results(task_id, result_queue))
+            # 启动结果处理器后台任务，并保存引用
+            handler_task = asyncio.create_task(self._handle_results(task_id, result_queue))
+            self._result_handler_tasks[task_id] = handler_task
+            # 兼容旧字段，便于已有停止逻辑复用
+            self.result_handlers[task_id] = handler_task
+
+            # 注册任务完成回调，及时清理引用，防止任务泄漏
+            handler_task.add_done_callback(lambda t, _task_id=task_id: self._on_result_task_done(_task_id, t))
 
             normal_logger.info(f"零拷贝任务启动成功: {task_id}")
             return True
@@ -241,10 +258,14 @@ class ZeroCopyTaskProcessor:
             frame_ref_queue: 帧引用队列
         """
         normal_logger.info(f"启动零拷贝流处理工作器: {task_id}")
-        
+
         try:
+            # 确保任务配置中包含task_id
+            task_config_with_id = task_config.copy()
+            task_config_with_id["task_id"] = task_id
+
             # 获取分析器
-            analyzer = await self._get_analyzer(task_config)
+            analyzer = await self._get_analyzer(task_config_with_id)
             if not analyzer:
                 normal_logger.error(f"无法获取分析器: {task_id}")
                 return
@@ -269,9 +290,14 @@ class ZeroCopyTaskProcessor:
                         await asyncio.sleep(0.1)
                         continue
                     
+                    # 添加调试日志：等待帧引用
+                    if frame_counter % 100 == 0:  # 每100次尝试记录一次
+                        analysis_logger.info(f"[等待帧引用] 任务 {task_id} 正在等待帧引用队列, 队列大小: {frame_ref_queue.qsize()}")
+                    
                     # 获取帧引用
                     frame_ref = await frame_ref_queue.get()
                     if frame_ref is None:
+                        analysis_logger.warning(f"[帧引用为空] 任务 {task_id} 从队列获取到空的帧引用")
                         continue
                     
                     frame_counter += 1
@@ -307,7 +333,16 @@ class ZeroCopyTaskProcessor:
                         self._zero_copy_stats["zero_copy_operations"] += 1
                     
                     self._zero_copy_stats["total_frames_processed"] += 1
-                    
+
+                    # 定期记录处理统计
+                    current_time = time.time()
+                    if current_time - self._last_stats_log_time >= self._stats_log_interval:
+                        normal_logger.info(f"零拷贝任务 {task_id} 处理统计: "
+                                         f"总帧数: {self._zero_copy_stats['total_frames_processed']}, "
+                                         f"零拷贝操作: {self._zero_copy_stats['zero_copy_operations']}, "
+                                         f"批处理操作: {self._zero_copy_stats['batch_operations']}")
+                        self._last_stats_log_time = current_time
+
                 except Exception as e:
                     exception_logger.exception(f"零拷贝帧处理异常: {task_id}, {str(e)}")
                     continue
@@ -348,6 +383,12 @@ class ZeroCopyTaskProcessor:
                 normal_logger.warning(f"任务 {task_id}: 无法获取帧数据")
                 return
 
+            # 添加分析日志：分析器读取帧数据
+            metadata = frame_ref.get_metadata()
+            analysis_logger.info(f"[帧读取] 任务 {task_id} 分析器成功读取第 {frame_index} 帧数据, "
+                               f"帧ID: {metadata.frame_id}, 内存块ID: {metadata.memory_block_ref}, "
+                               f"帧大小: {metadata.width}x{metadata.height}, 时间戳: {metadata.timestamp}")
+
             # 执行分析
             analysis_data = await analyzer.process_video_frame(
                 frame_data, frame_index=frame_index
@@ -356,6 +397,12 @@ class ZeroCopyTaskProcessor:
             # 记录处理时间
             processing_time = time.time() - start_time
             self._zero_copy_stats["frame_processing_time"] += processing_time
+
+            # 记录分析结果（每100帧记录一次）
+            if frame_index % 100 == 0:
+                normal_logger.info(f"任务 {task_id} 分析进度: 第 {frame_index} 帧, "
+                                 f"处理时间: {processing_time:.3f}s, "
+                                 f"检测结果: {len(analysis_data.get('detections', [])) if analysis_data else 0} 个目标")
 
             # 构建结果
             result = {
@@ -475,6 +522,10 @@ class ZeroCopyTaskProcessor:
                     exception_logger.exception(f"处理结果时出错: {task_id}, {str(e)}")
                     continue
 
+            # 清理 _result_handler_tasks 记录，避免内存泄漏
+            if task_id in self._result_handler_tasks:
+                del self._result_handler_tasks[task_id]
+
         except Exception as e:
             exception_logger.exception(f"结果处理器异常: {task_id}, {str(e)}")
         finally:
@@ -546,31 +597,28 @@ class ZeroCopyTaskProcessor:
         """保存结果到数据库（异步，不阻塞主流程）"""
         try:
             # 在线程池中执行数据库操作，避免阻塞主线程
-            import asyncio
-            import concurrent.futures
+            from shared.utils.thread_pool import GlobalThreadPool
 
             def _sync_save_to_db():
+                """同步执行的数据库保存逻辑，在线程池中运行"""
                 try:
                     from models.database import AnalysisResult
                     from shared.utils.database import get_db_session
                     from datetime import datetime
                     import json
 
-                    # 获取数据库会话
                     db_session = get_db_session()
                     if not db_session:
                         normal_logger.warning("无法获取数据库会话，跳过数据库保存")
                         return
 
-                    # 提取分析数据
                     analysis_data = result.get("analysis_data", {})
                     frame_metadata = result.get("frame_metadata", {})
 
-                    # 构建分析结果记录
                     analysis_result = AnalysisResult(
-                        task_id=int(task_id) if task_id.isdigit() else 0,  # 转换为整数
-                        subtask_id=int(task_id) if task_id.isdigit() else 0,  # 暂时使用相同值
-                        status=1,  # 已完成
+                        task_id=int(task_id) if task_id.isdigit() else 0,
+                        subtask_id=int(task_id) if task_id.isdigit() else 0,
+                        status=1,
                         progress=100,
                         timestamp=int(result.get("timestamp", datetime.now().timestamp())),
                         frame_id=result.get("frame_index", 0),
@@ -581,26 +629,21 @@ class ZeroCopyTaskProcessor:
                         analysis_info=json.dumps({
                             "processing_time": result.get("processing_time", 0),
                             "inference_time": analysis_data.get("inference_time", 0),
-                            "model_info": analysis_data.get("model_info", {})
+                            "model_info": analysis_data.get("model_info", {}),
                         }),
-                        scene_understanding=json.dumps(analysis_data.get("scene_understanding", {}))
+                        scene_understanding=json.dumps(analysis_data.get("scene_understanding", {})),
                     )
 
-                    # 保存到数据库
                     db_session.add(analysis_result)
                     db_session.commit()
-
-                    normal_logger.debug(f"分析结果已保存到数据库: task_id={task_id}, frame_id={result.get('frame_index', 0)}")
 
                 except Exception as e:
                     exception_logger.exception(f"保存结果到数据库失败: {task_id}, {str(e)}")
                     if 'db_session' in locals():
                         db_session.rollback()
 
-            # 在线程池中异步执行数据库操作
             loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                await loop.run_in_executor(executor, _sync_save_to_db)
+            await loop.run_in_executor(GlobalThreadPool().db_executor, _sync_save_to_db)
 
         except Exception as e:
             exception_logger.exception(f"异步保存数据库操作失败: {task_id}, {str(e)}")
@@ -610,7 +653,6 @@ class ZeroCopyTaskProcessor:
         try:
             # 在线程池中执行文件操作，避免阻塞主线程
             import asyncio
-            import concurrent.futures
 
             def _sync_save_image():
                 try:
@@ -659,10 +701,9 @@ class ZeroCopyTaskProcessor:
                 except Exception as e:
                     exception_logger.exception(f"保存分析图像失败: {task_id}, {str(e)}")
 
-            # 在线程池中异步执行文件操作
+            from shared.utils.thread_pool import GlobalThreadPool
             loop = asyncio.get_event_loop()
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                await loop.run_in_executor(executor, _sync_save_image)
+            await loop.run_in_executor(GlobalThreadPool().io_executor, _sync_save_image)
 
         except Exception as e:
             exception_logger.exception(f"异步保存图像操作失败: {task_id}, {str(e)}")
@@ -702,21 +743,26 @@ class ZeroCopyTaskProcessor:
     async def _get_analyzer(self, task_config: Dict[str, Any]):
         """获取分析器"""
         try:
-            task_id = task_config.get("task_id")
-            if not task_id:
-                normal_logger.error("任务配置中缺少task_id")
-                return None
+            # 优先从任务配置中直接获取分析器
+            analyzer = task_config.get("analyzer")
+            if analyzer:
+                normal_logger.info("从任务配置中获取到分析器")
+            else:
+                # 备用方案：从运行任务中获取分析器
+                task_id = task_config.get("task_id")
+                if not task_id:
+                    normal_logger.error("任务配置中缺少task_id和analyzer")
+                    return None
 
-            # 从运行任务中获取分析器
-            task_info = self.running_tasks.get(task_id)
-            if not task_info:
-                normal_logger.error(f"任务信息不存在: {task_id}")
-                return None
+                task_info = self.running_tasks.get(task_id)
+                if not task_info:
+                    normal_logger.error(f"任务信息不存在且配置中无分析器: {task_id}")
+                    return None
 
-            analyzer = task_info.get("analyzer")
-            if not analyzer:
-                normal_logger.error(f"任务中没有分析器: {task_id}")
-                return None
+                analyzer = task_info.get("analyzer")
+                if not analyzer:
+                    normal_logger.error(f"任务中没有分析器: {task_id}")
+                    return None
 
             # 确保分析器已加载模型
             if hasattr(analyzer, 'is_model_loaded') and not analyzer.is_model_loaded():
@@ -811,6 +857,9 @@ class ZeroCopyTaskProcessor:
             bool: 是否停止成功
         """
         try:
+            # 添加日志：接收到停止任务请求
+            normal_logger.info(f"[停止任务] 接收到停止零拷贝任务请求: {task_id}")
+            
             # 检查任务是否存在
             if task_id not in self.running_tasks:
                 normal_logger.warning(f"零拷贝任务不存在: {task_id}")
@@ -838,8 +887,13 @@ class ZeroCopyTaskProcessor:
                 stream_id = zero_copy_task_info.get("stream_id")
 
                 if stream_id and self.zero_copy_stream_manager:
-                    # 取消零拷贝流订阅
-                    await self.zero_copy_stream_manager.unsubscribe_stream_zero_copy(stream_id, task_id)
+                    # 取消零拷贝流订阅（异步）
+                    try:
+                        asyncio.create_task(
+                            self.zero_copy_stream_manager.unsubscribe_stream_zero_copy(stream_id, task_id)
+                        )
+                    except Exception:
+                        pass
 
                 # 清理零拷贝任务信息
                 del self._zero_copy_tasks[task_id]
@@ -878,3 +932,62 @@ class ZeroCopyTaskProcessor:
         except Exception as e:
             exception_logger.exception(f"停止零拷贝任务失败: {task_id}, {str(e)}")
             return False
+
+    def _on_result_task_done(self, task_id: str, task: asyncio.Task) -> None:
+        """处理结果任务完成后的清理逻辑"""
+        try:
+            # 清理结果处理器引用
+            if task_id in self.result_handlers:
+                del self.result_handlers[task_id]
+
+            # 清理结果处理器任务引用
+            if task_id in self._result_handler_tasks:
+                del self._result_handler_tasks[task_id]
+
+            # 清理零拷贝任务信息
+            if task_id in self._zero_copy_tasks:
+                zero_copy_task_info = self._zero_copy_tasks[task_id]
+                stream_id = zero_copy_task_info.get("stream_id")
+
+                if stream_id and self.zero_copy_stream_manager:
+                    # 取消零拷贝流订阅（异步）
+                    try:
+                        asyncio.create_task(
+                            self.zero_copy_stream_manager.unsubscribe_stream_zero_copy(stream_id, task_id)
+                        )
+                    except Exception:
+                        pass
+
+                # 清理零拷贝任务信息
+                del self._zero_copy_tasks[task_id]
+
+            # 清理批处理配置
+            if task_id in self._batch_configs:
+                del self._batch_configs[task_id]
+
+            # 更新任务状态
+            if task_id in self.running_tasks:
+                from core.task_management.utils.status import TaskStatus
+                self.running_tasks[task_id]["status"] = TaskStatus.STOPPED
+                self.running_tasks[task_id]["end_time"] = time.time()
+
+            # **重要：更新TaskManager中的任务状态为STOPPED**
+            if self.task_manager:
+                from core.task_management.utils.status import TaskStatus
+                self.task_manager.update_task_status(task_id, TaskStatus.STOPPED)
+                normal_logger.info(f"TaskManager中任务状态已更新为STOPPED: {task_id}")
+
+            # 清理资源
+            if task_id in self.stop_events:
+                del self.stop_events[task_id]
+            if task_id in self.pause_events:
+                del self.pause_events[task_id]
+            if task_id in self.task_threads:
+                del self.task_threads[task_id]
+            if task_id in self.running_tasks:
+                del self.running_tasks[task_id]
+
+            normal_logger.info(f"零拷贝任务已停止: {task_id}")
+
+        except Exception as e:
+            exception_logger.exception(f"处理结果任务完成后的清理逻辑失败: {task_id}, {str(e)}")

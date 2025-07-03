@@ -11,11 +11,12 @@ import numpy as np
 from core.analyzer.base_analyzer import DetectionAnalyzer
 from core.analyzer.detection.yolo_detector import YOLODetector
 from core.analyzer.registry import register_analyzer
-from shared.utils.logger import get_normal_logger, get_exception_logger
+from shared.utils.logger import get_normal_logger, get_exception_logger, get_analysis_logger
 
 # 初始化日志记录器
 normal_logger = get_normal_logger(__name__)
 exception_logger = get_exception_logger(__name__)
+analysis_logger = get_analysis_logger()
 
 @register_analyzer("detection")
 class YOLODetectionAnalyzer(DetectionAnalyzer):
@@ -113,6 +114,10 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
         analyzer_level_start_time = time.perf_counter()
         frame_count_for_log = self._frame_count + 1 # 用于日志，_frame_count 在 process_video_frame 中更新
         
+        # 添加分析日志：开始分析帧
+        analysis_logger.info(f"[分析开始] YOLO检测器开始分析第 {frame_count_for_log} 帧, "
+                           f"帧大小: {frame.shape}, 置信度阈值: {kwargs.get('confidence', self.confidence)}")
+        
         normal_logger.info(f"YOLODetectionAnalyzer: 开始检测第 {frame_count_for_log} 帧 (粗略计数), 帧大小: {frame.shape}")
         
         if not self.loaded:
@@ -162,6 +167,15 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
             num_detections = len(detector_result.get("detections", []))
             normal_logger.info(f"YOLODetectionAnalyzer: 成功处理第 {frame_count_for_log} 帧 (粗略计数)。耗时 (detect call): {analyzer_detect_call_duration_ms:.2f} ms。检测到 {num_detections} 个目标。")
             if num_detections > 0:
+                # 添加分析日志：检测到目标
+                detections = detector_result.get("detections", [])
+                target_info = []
+                for det in detections[:3]:  # 只记录前3个检测结果
+                    target_info.append(f"{det.get('class_name', 'unknown')}({det.get('confidence', 0):.2f})")
+                analysis_logger.info(f"[分析完成] YOLO检测器完成第 {frame_count_for_log} 帧分析, "
+                                   f"检测到 {num_detections} 个目标: {', '.join(target_info)}, "
+                                   f"处理耗时: {analyzer_detect_call_duration_ms:.2f}ms")
+                
                 # 日志截断，避免过长的输出
                 log_dets = detector_result["detections"][:3]
                 normal_logger.info(f"YOLODetectionAnalyzer: 部分检测结果: {log_dets}")

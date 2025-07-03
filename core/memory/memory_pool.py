@@ -247,9 +247,38 @@ class MemoryPool:
                     self.stats["total_allocations"] += 1
                     logger.debug(f"分配内存块: {block.block_id} ({width}x{height})")
                 else:
+                    # 尝试动态扩容
                     self.stats["allocation_failures"] += 1
-                    logger.warning(f"分配内存块失败: {width}x{height}")
-                
+
+                    if getattr(self.config, "enable_dynamic_expansion", False):
+                        expand_count = getattr(self.config, "dynamic_expand_block_count", 20)
+                        logger.warning(
+                            f"没有可用的内存块: {width}x{height}, 尝试动态扩容 {expand_count} 个块")
+
+                        created = self.block_manager.create_block_pool(
+                            width=width,
+                            height=height,
+                            channels=3,
+                            count=expand_count,
+                            alignment=self.config.alignment_bytes if self.config.enable_memory_alignment else 1,
+                        )
+
+                        if created:
+                            # 更新统计
+                            self.stats["total_blocks"] = self.block_manager.get_stats().get("total_blocks", 0)
+
+                            # 再次尝试分配
+                            block = self.block_manager.get_block_by_resolution(width, height)
+                            if block:
+                                self.stats["total_allocations"] += 1
+                                logger.info(
+                                    f"动态扩容后成功分配内存块: {block.block_id} ({width}x{height})")
+                                return block
+
+                        # 如果动态扩容仍失败
+                        logger.error(f"动态扩容失败: {width}x{height}, 仍无法分配内存块")
+                    else:
+                        logger.warning(f"分配内存块失败: {width}x{height}")
                 return block
                 
         except Exception as e:
@@ -494,3 +523,21 @@ class MemoryPool:
         """析构函数"""
         if self.initialized:
             self.cleanup()
+
+    def ensure_capacity(self, width: int, height: int, channels: int, required: int) -> None:
+        """确保指定分辨率的内存块池至少有 required 个块，不足则一次性补足。
+
+        Args:
+            width: 宽
+            height: 高
+            channels: 通道
+            required: 需求数量
+        """
+        resolution_key = f"{width}x{height}"
+        with self.lock:
+            current_total = len(self.block_manager.blocks_by_resolution.get(resolution_key, []))
+            if current_total >= required:
+                return
+            need_create = required - current_total
+            logger.info(f"[MemoryPool] 扩容{resolution_key}: 当前{current_total}, 目标{required}, 需新增{need_create}")
+            self.block_manager.create_block_pool(width, height, channels, need_create)

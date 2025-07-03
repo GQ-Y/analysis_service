@@ -8,26 +8,19 @@ import threading
 import time
 import cv2
 import numpy as np
+import math
 from typing import Dict, Any, Optional, List, Tuple
 from queue import Queue, Empty
-from dataclasses import dataclass
 
-from shared.utils.logger import normal_logger, exception_logger
+from shared.utils.logger import normal_logger, exception_logger, analysis_logger
 from ...memory.memory_pool import MemoryPool
 from ...frame.frame_reference import FrameReference, FrameReferenceManager, FrameMetadata
-from ...interfaces.zero_copy_stream_interface import IZeroCopyVideoStream, AsyncFrameReferenceQueue
+from ...interfaces.zero_copy_stream_interface import (
+    IZeroCopyVideoStream,
+    AsyncFrameReferenceQueue,
+    ZeroCopyStreamConfig,  # 直接使用接口统一定义的配置类
+)
 from ...interfaces.stream_interface import StreamStatus, StreamHealthStatus
-
-
-@dataclass
-class ZeroCopyStreamConfig:
-    """零拷贝流配置"""
-    max_queue_size: int = 10
-    frame_timeout: float = 5.0
-    reconnect_interval: float = 5.0
-    max_reconnect_attempts: int = 5
-    buffer_size: int = 1
-    enable_threading: bool = True
 
 
 class ZeroCopyRTSPStream(IZeroCopyVideoStream):
@@ -72,6 +65,10 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
         self._subscribers: Dict[str, AsyncFrameReferenceQueue] = {}
         self.subscriber_lock = threading.Lock()
         
+        # 最新帧引用缓存（用于get_frame_reference方法）
+        self._latest_frame_ref: Optional[FrameReference] = None
+        self._latest_frame_lock = threading.RLock()
+        
         # 拉流线程
         self.pull_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
@@ -85,6 +82,9 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
         self.frame_count = 0
         self.error_count = 0
         self.reconnect_count = 0
+        
+        # 用于保证"至少 1 fps" 分析
+        self._last_distributed_time: float = 0.0
         
         normal_logger.info(f"创建零拷贝RTSP流: {self._stream_id}, URL: {self._stream_url}")
 
@@ -162,9 +162,18 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             Tuple[bool, Optional[FrameReference]]: (是否成功, 帧引用)
         """
         try:
-            # 这里应该从内部帧队列获取最新帧引用
-            # 暂时返回None，因为这个方法通常不会被直接调用
-            # 实际的帧分发通过订阅机制进行
+            # 检查流是否正在运行且已连接
+            if not self.is_running or not self.is_connected:
+                return False, None
+            
+            # 从最新帧引用缓存中获取
+            with self._latest_frame_lock:
+                if self._latest_frame_ref and self._latest_frame_ref.is_valid():
+                    # 创建新的引用返回
+                    new_ref = self._latest_frame_ref.create_reference()
+                    if new_ref:
+                        return True, new_ref
+            
             return False, None
         except Exception as e:
             exception_logger.exception(f"获取帧引用失败: {self._stream_id}, {str(e)}")
@@ -181,8 +190,14 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             Tuple[bool, List[FrameReference]]: (是否成功, 帧引用列表)
         """
         try:
-            # 暂时返回空列表，实际的帧分发通过订阅机制进行
-            return False, []
+            refs = []
+            with self._latest_frame_lock:
+                if self._latest_frame_ref and self._latest_frame_ref.is_valid():
+                    for _ in range(count):
+                        ref = self._latest_frame_ref.create_reference()
+                        if ref:
+                            refs.append(ref)
+            return (bool(refs), refs)
         except Exception as e:
             exception_logger.exception(f"批量获取帧引用失败: {self._stream_id}, {str(e)}")
             return False, []
@@ -319,6 +334,12 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
                     except:
                         pass
                 self._subscribers.clear()
+            
+            # 清理最新帧引用缓存
+            with self._latest_frame_lock:
+                if self._latest_frame_ref:
+                    self._latest_frame_ref.release()
+                    self._latest_frame_ref = None
             
             self.is_running = False
             self.is_connected = False
@@ -492,6 +513,25 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             self.fps = self.cap.get(cv2.CAP_PROP_FPS)
             
             normal_logger.info(f"流 {self._stream_id} 连接成功: {self.width}x{self.height}@{self.fps}fps")
+
+            # 根据帧率与订阅者估算需求缓存，并提前扩容内存池（防止运行期频繁动态扩容）
+            try:
+                subs = max(1, len(self._subscribers) or 1)
+
+                # ≈ FPS × latency × subs × safety
+                latency_sec = self.zero_copy_config.estimate_latency_ms / 1000.0
+                safety = 1.5
+                est_need = math.ceil(self.fps * latency_sec * subs * safety)
+
+                # 至少为 (max_in_flight_frames × subs × 1.1)
+                baseline = int(self.zero_copy_config.max_in_flight_frames * subs * 1.1)
+
+                required_blocks = max(est_need, baseline, int(self.fps))
+
+                self.memory_pool.ensure_capacity(self.width, self.height, 3, required_blocks)
+            except Exception:
+                pass
+
             return True
 
         except Exception as e:
@@ -506,6 +546,25 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             frame: OpenCV帧数据
         """
         try:
+            # 拥塞控制：如在途帧数已达上限且距离上一次分发不足1秒，则跳过本帧（但仍保持拉流连续）
+            in_flight_frames = 0
+            with self.subscriber_lock:
+                for queue in self._subscribers.values():
+                    try:
+                        in_flight_frames += queue.qsize()
+                    except Exception:
+                        pass
+
+            # 判断是否需要强制保留（至少每秒一帧进入分析流程）
+            force_process = (time.time() - self._last_distributed_time) >= 1.0
+
+            if (not force_process and
+                in_flight_frames >= self.zero_copy_config.max_in_flight_frames):
+                # 拥塞 — 直接跳过处理，保持拉流不中断
+                self._memory_stats = getattr(self, "_memory_stats", {"frames_skipped": 0})
+                self._memory_stats["frames_skipped"] = self._memory_stats.get("frames_skipped", 0) + 1
+                return
+
             # 检查内存池和帧引用管理器是否已设置
             if self.memory_pool is None or self.frame_reference_manager is None:
                 # 这种情况在正常启动流程中不应该发生，因为start()方法已经验证过
@@ -575,11 +634,26 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             # 通过帧引用管理器创建帧引用（这样会自动设置清理回调）
             frame_ref = self.frame_reference_manager.create_reference(memory_block, metadata)
             if frame_ref:
+                # 添加分析日志：帧投递成功
+                analysis_logger.info(f"[帧投递] 流 {self._stream_id} 第 {self.frame_count} 帧成功投递到内存块 {memory_block.block_id}, "
+                                   f"帧大小: {self.width}x{self.height}, 内存地址: {hex(memory_block.ptr.value)}")
+                
+                # 更新最新帧引用缓存
+                with self._latest_frame_lock:
+                    # 释放旧的帧引用
+                    if self._latest_frame_ref:
+                        self._latest_frame_ref.release()
+                    # 创建新的引用保存到缓存
+                    self._latest_frame_ref = frame_ref.create_reference()
+                
                 # 分发给所有订阅者
                 self._distribute_frame(frame_ref)
 
                 self.frame_count += 1
                 self.last_frame_time = time.time()
+
+                # 记录最近一次成功分发时间
+                self._last_distributed_time = self.last_frame_time
 
                 # 释放我们的引用（订阅者会持有自己的引用）
                 frame_ref.release()
@@ -601,11 +675,18 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             with self.subscriber_lock:
                 for subscriber_id, queue in list(self._subscribers.items()):
                     try:
-                        # 创建新的引用（增加引用计数）
+                        # 创建新的引用
+                        if queue.full():
+                            # 订阅者队列已满，跳过该订阅者
+                            continue
+
                         subscriber_ref = frame_ref.create_reference()
                         if subscriber_ref:
-                            # 异步放入队列
-                            asyncio.create_task(queue.put(subscriber_ref))
+                            # 同步 put_nowait，可在工作线程中立即更新队列大小，形成背压
+                            success = queue.put_nowait(subscriber_ref)
+                            if not success:
+                                # put 失败（极小概率并发满），立即释放引用
+                                subscriber_ref.release()
 
                     except Exception as e:
                         exception_logger.exception(f"分发帧给订阅者失败: {subscriber_id}, {str(e)}")

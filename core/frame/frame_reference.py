@@ -25,12 +25,12 @@ class FrameReference:
     零拷贝帧引用
     管理帧数据的引用计数和生命周期，支持零拷贝数据访问
     """
-    
-    def __init__(self, memory_block: MemoryBlock, metadata: FrameMetadata, 
+
+    def __init__(self, memory_block: MemoryBlock, metadata: FrameMetadata,
                  cleanup_callback: Optional[Callable[['FrameReference'], None]] = None):
         """
         初始化帧引用
-        
+
         Args:
             memory_block: 内存块
             metadata: 帧元数据
@@ -39,50 +39,51 @@ class FrameReference:
         self.memory_block = memory_block
         self.metadata = metadata
         self.cleanup_callback = cleanup_callback
-        
-        # 引用计数（原子操作）
-        self._ref_count = 1
-        self._ref_lock = threading.RLock()
-        
-        # 状态管理
-        self._is_valid = True
+
+        # 状态管理 - 每个引用独立管理
+        self._released = False
         self._access_count = 0
         self._last_access_time = time.time()
-        
+        self._creation_time = time.time()
+
+        # 每个引用使用独立的锁
+        self._lock = threading.RLock()
+
         # 弱引用管理器
         self._weak_refs = set()
         self._weak_ref_lock = threading.Lock()
-        
-        # 确保内存块被正确引用
+
+        # 确保内存块被正确引用 - 每个FrameReference都增加内存块引用计数
         if not self.memory_block.acquire():
             raise RuntimeError(f"无法获取内存块 {memory_block.block_id} 的引用")
-        
+
         logger.debug(f"创建帧引用: frame_id={metadata.frame_id}, "
-                    f"memory_block={memory_block.block_id}")
+                    f"memory_block={memory_block.block_id}, "
+                    f"memory_block_refs={memory_block.get_ref_count()}")
     
     def get_data(self) -> Optional[np.ndarray]:
         """
         获取帧数据（零拷贝）
-        
+
         Returns:
             Optional[np.ndarray]: numpy数组视图，失败返回None
         """
-        with self._ref_lock:
-            if not self._is_valid:
-                logger.warning(f"帧引用 {self.metadata.frame_id} 已失效")
+        with self._lock:
+            if self._released:
+                logger.warning(f"帧引用 {self.metadata.frame_id} 已释放")
                 return None
-            
+
             # 更新访问统计
             self._access_count += 1
             self._last_access_time = time.time()
-            
+
             # 获取零拷贝numpy视图
             array = self.memory_block.get_numpy_view()
             if array is not None:
                 logger.debug(f"帧 {self.metadata.frame_id} 零拷贝数据访问成功")
             else:
                 logger.error(f"帧 {self.metadata.frame_id} 零拷贝数据访问失败")
-            
+
             return array
     
     def get_metadata(self) -> FrameMetadata:
@@ -103,41 +104,35 @@ class FrameReference:
         """
         return self.memory_block
     
-    def clone(self) -> Optional['FrameReference']:
+    def create_reference(self) -> Optional['FrameReference']:
         """
-        克隆帧引用（增加引用计数）
-        
+        为新订阅者创建独立的帧引用
+        每个引用都会增加内存块的引用计数，确保内存安全
+
         Returns:
             Optional[FrameReference]: 新的帧引用，失败返回None
         """
-        with self._ref_lock:
-            if not self._is_valid:
-                logger.warning(f"无法克隆已失效的帧引用 {self.metadata.frame_id}")
+        with self._lock:
+            if self._released:
+                logger.warning(f"无法从已释放的帧引用创建新引用 {self.metadata.frame_id}")
                 return None
-            
-            # 增加引用计数
-            self._ref_count += 1
-            
-            # 创建新的引用对象
-            new_ref = FrameReference.__new__(FrameReference)
-            new_ref.memory_block = self.memory_block
-            new_ref.metadata = self.metadata
-            new_ref.cleanup_callback = self.cleanup_callback
-            new_ref._ref_count = 0  # 新引用从0开始，会在下面设置为1
-            new_ref._ref_lock = self._ref_lock  # 共享锁
-            new_ref._is_valid = True
-            new_ref._access_count = 0
-            new_ref._last_access_time = time.time()
-            new_ref._weak_refs = set()
-            new_ref._weak_ref_lock = threading.Lock()
-            
-            # 设置新引用的引用计数为1
-            new_ref._ref_count = 1
-            
-            logger.debug(f"克隆帧引用: frame_id={self.metadata.frame_id}, "
-                        f"总引用计数={self._ref_count}")
-            
-            return new_ref
+
+            try:
+                # 创建完全独立的新引用，每个引用都会调用memory_block.acquire()
+                new_ref = FrameReference(
+                    memory_block=self.memory_block,
+                    metadata=self.metadata,
+                    cleanup_callback=self.cleanup_callback
+                )
+
+                logger.debug(f"创建新帧引用: frame_id={self.metadata.frame_id}, "
+                            f"memory_block_refs={self.memory_block.get_ref_count()}")
+
+                return new_ref
+
+            except Exception as e:
+                logger.error(f"创建帧引用失败: {self.metadata.frame_id}, {str(e)}")
+                return None
     
     def create_weak_reference(self) -> Optional[weakref.ReferenceType]:
         """
@@ -163,112 +158,99 @@ class FrameReference:
     def is_valid(self) -> bool:
         """
         检查引用是否有效
-        
+
         Returns:
             bool: 是否有效
         """
-        return self._is_valid
-    
-    def get_ref_count(self) -> int:
+        return not self._released
+
+    def get_memory_block_ref_count(self) -> int:
         """
-        获取引用计数
-        
+        获取内存块的引用计数
+
         Returns:
-            int: 引用计数
+            int: 内存块引用计数
         """
-        with self._ref_lock:
-            return self._ref_count
+        return self.memory_block.get_ref_count() if self.memory_block else 0
     
     def get_access_stats(self) -> Dict[str, Any]:
         """
         获取访问统计信息
-        
+
         Returns:
             Dict[str, Any]: 访问统计
         """
-        with self._ref_lock:
+        with self._lock:
             return {
                 "access_count": self._access_count,
                 "last_access_time": self._last_access_time,
-                "ref_count": self._ref_count,
-                "is_valid": self._is_valid,
+                "creation_time": self._creation_time,
+                "is_released": self._released,
+                "memory_block_refs": self.get_memory_block_ref_count(),
                 "weak_ref_count": len(self._weak_refs),
                 "age_seconds": time.time() - self._last_access_time,
+                "lifetime_seconds": time.time() - self._creation_time,
             }
     
     def release(self) -> None:
         """
         释放帧引用
-        减少引用计数，当引用计数为0时自动清理资源
+        每个引用独立释放，减少内存块引用计数
         """
-        self._release()
+        with self._lock:
+            if self._released:
+                logger.warning(f"帧引用 {self.metadata.frame_id} 已经释放，重复释放")
+                return
 
-    def _release(self) -> None:
-        """内部释放方法"""
-        with self._ref_lock:
-            if self._ref_count > 0:
-                self._ref_count -= 1
-                
+            self._released = True
+
+            # 释放内存块引用 - 每个FrameReference释放时都减少内存块引用计数
+            if self.memory_block:
+                memory_block_refs_before = self.memory_block.get_ref_count()
+                success = self.memory_block.release()
+                memory_block_refs_after = self.memory_block.get_ref_count()
+
                 logger.debug(f"释放帧引用: frame_id={self.metadata.frame_id}, "
-                            f"剩余引用计数={self._ref_count}")
-                
-                # 如果引用计数为0，执行清理
-                if self._ref_count == 0:
-                    # 防止重复清理
-                    if self._is_valid:
-                        self._cleanup()
-            else:
-                logger.warning(f"帧引用 {self.metadata.frame_id} 引用计数已为0，重复释放")
-    
-    def _cleanup(self) -> None:
-        """清理资源"""
-        if not self._is_valid:
-            logger.debug(f"帧引用 {self.metadata.frame_id} 已经清理过，跳过")
-            return
-        
-        self._is_valid = False
-        
-        # 释放内存块引用
-        if self.memory_block:
-            try:
-                if not self.memory_block.release():
+                            f"内存块引用计数: {memory_block_refs_before} -> {memory_block_refs_after}")
+
+                if not success:
                     logger.warning(f"内存块 {self.memory_block.block_id} 释放失败")
-            except Exception as e:
-                logger.error(f"释放内存块时发生异常: {str(e)}")
-        
-        # 调用清理回调
-        if self.cleanup_callback:
-            try:
-                self.cleanup_callback(self)
-            except Exception as e:
-                logger.error(f"帧引用清理回调失败: {str(e)}")
-        
-        # 清理弱引用
-        with self._weak_ref_lock:
-            self._weak_refs.clear()
-        
-        logger.debug(f"帧引用清理完成: frame_id={self.metadata.frame_id}")
+
+            # 执行清理回调 - 只用于引用管理，不处理内存块释放
+            if self.cleanup_callback:
+                try:
+                    self.cleanup_callback(self)
+                except Exception as e:
+                    logger.error(f"帧引用清理回调失败: {str(e)}")
+
+            # 清理弱引用
+            with self._weak_ref_lock:
+                self._weak_refs.clear()
+
+            logger.debug(f"帧引用释放完成: frame_id={self.metadata.frame_id}")
     
     def __enter__(self) -> 'FrameReference':
         """上下文管理器入口"""
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         """上下文管理器出口"""
-        self._release()
-    
+        self.release()
+
     def __del__(self):
-        """析构函数"""
-        if hasattr(self, '_is_valid') and self._is_valid:
-            self._release()
+        """析构函数 - 确保资源被释放"""
+        if hasattr(self, '_released') and not self._released:
+            logger.warning(f"帧引用 {getattr(self.metadata, 'frame_id', 'unknown')} "
+                          f"在析构时仍未释放，自动释放")
+            self.release()
     
     def __str__(self) -> str:
         """字符串表示"""
         return (f"FrameReference(frame_id={self.metadata.frame_id}, "
                 f"memory_block={self.memory_block.block_id}, "
-                f"refs={self._ref_count}, "
-                f"valid={self._is_valid})")
-    
+                f"memory_block_refs={self.get_memory_block_ref_count()}, "
+                f"released={self._released})")
+
     def __repr__(self) -> str:
         """详细字符串表示"""
         return self.__str__()
@@ -374,21 +356,18 @@ class FrameReferenceManager:
             return self.active_references.get(frame_id)
     
     def _on_reference_cleanup(self, frame_ref: FrameReference) -> None:
-        """引用清理回调"""
+        """
+        引用清理回调 - 只处理引用管理，不处理内存块释放
+        内存块释放由MemoryBlock自己的引用计数机制处理
+        """
         with self.lock:
             frame_id = frame_ref.metadata.frame_id
 
-            # 如果有内存池，调用内存池的释放方法
-            if self.memory_pool and frame_ref.memory_block:
-                try:
-                    self.memory_pool.deallocate_frame_block(frame_ref.memory_block)
-                    logger.debug(f"通过内存池释放内存块: {frame_ref.memory_block.block_id}")
-                except Exception as e:
-                    logger.error(f"内存池释放内存块失败: {str(e)}")
-
-            # 从活跃引用中移除
+            # 只从活跃引用中移除，不处理内存块释放
+            # 内存块的释放由MemoryBlock的引用计数机制自动处理
             if frame_id in self.active_references:
                 del self.active_references[frame_id]
+                logger.debug(f"从活跃引用中移除: frame_id={frame_id}")
 
             # 移除统计信息
             if frame_id in self.reference_stats:
@@ -397,7 +376,8 @@ class FrameReferenceManager:
             # 更新统计
             self.stats["released_count"] += 1
 
-            logger.debug(f"帧引用清理回调: frame_id={frame_id}")
+            logger.debug(f"帧引用清理回调完成: frame_id={frame_id}, "
+                        f"剩余活跃引用: {len(self.active_references)}")
     
     def cleanup_expired_references(self, max_age: float = 300.0) -> int:
         """

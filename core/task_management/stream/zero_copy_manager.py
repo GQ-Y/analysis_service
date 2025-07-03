@@ -21,13 +21,15 @@ from .zero_copy_rtsp_stream import ZeroCopyRTSPStream
 
 # 使用项目现有的日志系统
 try:
-    from shared.utils.logger import get_normal_logger, get_exception_logger
+    from shared.utils.logger import get_normal_logger, get_exception_logger, get_analysis_logger
     normal_logger = get_normal_logger(__name__)
     exception_logger = get_exception_logger(__name__)
+    analysis_logger = get_analysis_logger()
 except ImportError:
     import logging
     normal_logger = logging.getLogger(__name__)
     exception_logger = logging.getLogger(__name__)
+    analysis_logger = logging.getLogger(__name__)
 
 
 class ZeroCopyStreamManager(StreamManager):
@@ -160,17 +162,29 @@ class ZeroCopyStreamManager(StreamManager):
                 normal_logger.error(f"无法为流 {stream_id} 设置内存池")
                 return False, None
             
-            # 创建零拷贝缓冲区
+            # 创建零拷贝缓冲区（帧引用队列），并注册到流的订阅者列表中，便于拉流线程进行拥塞控制
             buffer_key = f"{stream_id}_{subscriber_id}"
-            frame_queue = AsyncFrameReferenceQueue(maxsize=zero_copy_config.buffer_size)
-            
+            frame_queue = AsyncFrameReferenceQueue(maxsize=zero_copy_config.max_in_flight_frames)
+
+            # 将队列注册到流内部，保证 _process_frame 能够正确统计 in_flight_frames
+            try:
+                with stream.subscriber_lock:
+                    stream._subscribers[subscriber_id] = frame_queue  # noqa: SLF001  (内部属性，性能考虑)
+            except Exception as reg_err:
+                exception_logger.exception(
+                    f"注册订阅者队列到流 {stream_id} 失败: {reg_err}"
+                )
+
+            # 在管理器侧保存映射，方便后续取消订阅与监控
             self._zero_copy_buffers[buffer_key] = frame_queue
             self._zero_copy_configs[buffer_key] = zero_copy_config
-            
-            # 启动帧引用分发任务
-            asyncio.create_task(self._distribute_frame_references(
-                stream, buffer_key, frame_queue, zero_copy_config
-            ))
+
+            # 启动帧引用分发任务 —— 将队列中的帧提供给任务处理器
+            asyncio.create_task(
+                self._distribute_frame_references(
+                    stream, buffer_key, frame_queue, zero_copy_config
+                )
+            )
             
             normal_logger.info(f"零拷贝订阅成功: stream_id={stream_id}, subscriber_id={subscriber_id}")
             return True, frame_queue
@@ -224,6 +238,9 @@ class ZeroCopyStreamManager(StreamManager):
                         
                         self._performance_stats["batch_operations"] += 1
                         self._performance_stats["zero_copy_operations"] += len(frame_refs)
+                    else:
+                        # 添加调试日志：批量获取失败
+                        analysis_logger.warning(f"[帧引用分发] 批量获取帧引用失败: {buffer_key}, success={success}, frame_refs={len(frame_refs) if frame_refs else 0}")
                 else:
                     # 单帧获取
                     success, frame_ref = await stream.get_frame_reference()
@@ -237,6 +254,19 @@ class ZeroCopyStreamManager(StreamManager):
                         
                         await frame_queue.put(frame_ref)
                         self._performance_stats["zero_copy_operations"] += 1
+                    else:
+                        # 添加调试日志：单帧获取失败
+                        analysis_logger.warning(f"[帧引用分发] 单帧获取帧引用失败: {buffer_key}, success={success}, frame_ref={frame_ref is not None}")
+                        
+                        # 检查流状态
+                        if hasattr(stream, 'get_status'):
+                            stream_status = stream.get_status()
+                            analysis_logger.info(f"[帧引用分发] 流状态: {buffer_key}, status={stream_status}")
+                        
+                        # 检查是否有订阅者
+                        if hasattr(stream, '_subscribers'):
+                            subscriber_count = len(stream._subscribers)
+                            analysis_logger.info(f"[帧引用分发] 订阅者数量: {buffer_key}, subscribers={subscriber_count}")
                 
                 # 短暂等待避免CPU占用过高
                 await asyncio.sleep(0.001)
