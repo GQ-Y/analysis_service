@@ -463,7 +463,7 @@ class ZeroCopyTaskService:
 
             # 停止零拷贝处理
             if self.zero_copy_processor:
-                await self.zero_copy_processor.stop_zero_copy_task(task_id)
+                await self.zero_copy_processor.stop_task_zero_copy(task_id)
 
             # 停止任务管理器中的任务
             if self.task_manager:

@@ -129,19 +129,22 @@ class YOLODetectionAnalyzer(DetectionAnalyzer):
         normal_logger.info(f"YOLODetectionAnalyzer: 开始检测第 {frame_count_for_log} 帧 (粗略计数), 帧大小: {frame.shape}")
         
         if not self.loaded:
-            normal_logger.warning(f"YOLODetectionAnalyzer: 模型 {self.current_model_code or '未指定'} 未加载，无法执行检测。")
-            analyzer_level_end_time = time.perf_counter()
-            return {
-                "success": False,
-                "error": f"模型 {self.current_model_code or '未指定'} 未加载",
-                "detections": [],
-                "applied_config": {},
-                "image_info": {"original_height": frame.shape[0], "original_width": frame.shape[1]},
-                "timing_stats": {
-                    "analyzer_detect_call_time_ms": (analyzer_level_end_time - analyzer_level_start_time) * 1000
-                },
-                "annotated_image_base64": None
-            }
+            normal_logger.warning(f"YOLODetectionAnalyzer: 模型 {self.current_model_code or '未指定'} 未加载，尝试加载。")
+            load_success = await self.load_model(self.current_model_code)
+            if not load_success:
+                normal_logger.error(f"YOLODetectionAnalyzer: 模型 {self.current_model_code or '未指定'} 加载失败，无法执行检测。")
+                analyzer_level_end_time = time.perf_counter()
+                return {
+                    "success": False,
+                    "error": f"模型 {self.current_model_code or '未指定'} 加载失败",
+                    "detections": [],
+                    "applied_config": {},
+                    "image_info": {"original_height": frame.shape[0], "original_width": frame.shape[1]},
+                    "timing_stats": {
+                        "analyzer_detect_call_time_ms": (analyzer_level_end_time - analyzer_level_start_time) * 1000
+                    },
+                    "annotated_image_base64": None
+                }
         
         try:
             # 调用底层 YOLO 检测器的 detect 方法

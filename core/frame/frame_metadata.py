@@ -42,31 +42,24 @@ class FrameMetadata:
     timestamp: float = field(default_factory=time.time)  # 8B - 时间戳
     memory_block_ref: int = 0            # 8B - 内存块引用ID
     sequence_number: int = 0             # 8B - 序列号
-    
+
+    # 流信息 (36B)
+    stream_id: str = ""                  # 36B - 流ID (UUID字符串，固定36字符)
+
     # 图像信息 (16B)
     width: int = 0                       # 4B - 图像宽度
     height: int = 0                      # 4B - 图像高度
     channels: int = 3                    # 4B - 图像通道数
     format_type: int = 0                 # 4B - 图像格式类型
-    
+
     # 分析状态 (8B)
     analysis_status: int = FrameAnalysisStatus.PENDING  # 4B - 分析状态位掩码
     analysis_progress: int = 0           # 4B - 分析进度(0-100)
-    
-    # ROI信息 (16B)
-    roi_count: int = 0                   # 4B - ROI数量
-    roi_data_compressed: bytes = field(default_factory=lambda: b'\x00' * 12)  # 12B - 压缩ROI数据
-    
-    # 结果索引 (16B)
-    detection_index: int = 0             # 8B - 检测结果索引（0表示无结果）
+
+    # 结果索引 (8B)
+    detection_index: int = 0             # 4B - 检测结果索引（0表示无结果）
     result_data_size: int = 0            # 4B - 结果数据大小
-    result_checksum: int = 0             # 4B - 结果校验和
-    
-    # 预留字段 (12B)
-    reserved1: int = 0                   # 4B - 预留字段1
-    reserved2: int = 0                   # 4B - 预留字段2
-    reserved3: int = 0                   # 4B - 预留字段3
-    
+
     # 总计: 100B
     
     def __post_init__(self):
@@ -110,92 +103,66 @@ class FrameMetadata:
             types.append("classification")
         return types
     
-    def set_roi_data(self, rois: List[Tuple[int, int, int, int]]) -> None:
+    def _normalize_stream_id(self, stream_id: str) -> str:
         """
-        设置ROI数据（压缩存储）
-        
+        标准化stream_id为固定36字符长度
+
         Args:
-            rois: ROI列表，每个ROI为(x, y, width, height)
-        """
-        self.roi_count = len(rois)
-        if rois:
-            # 简单压缩：只存储前3个ROI的坐标
-            compressed_data = bytearray(12)
-            for i, (x, y, w, h) in enumerate(rois[:3]):
-                # 每个ROI用4字节存储：x(1B) + y(1B) + w(1B) + h(1B)
-                # 坐标归一化到0-255范围
-                offset = i * 4
-                compressed_data[offset] = min(255, max(0, x // 8))
-                compressed_data[offset + 1] = min(255, max(0, y // 8))
-                compressed_data[offset + 2] = min(255, max(0, w // 8))
-                compressed_data[offset + 3] = min(255, max(0, h // 8))
-            self.roi_data_compressed = bytes(compressed_data)
-        else:
-            self.roi_data_compressed = b'\x00' * 12
-    
-    def get_roi_data(self) -> List[Tuple[int, int, int, int]]:
-        """
-        获取ROI数据（解压缩）
-        
+            stream_id: 原始stream_id
+
         Returns:
-            List[Tuple[int, int, int, int]]: ROI列表
+            str: 标准化后的stream_id（36字符）
         """
-        rois = []
-        if self.roi_count > 0 and len(self.roi_data_compressed) >= 12:
-            for i in range(min(3, self.roi_count)):
-                offset = i * 4
-                x = self.roi_data_compressed[offset] * 8
-                y = self.roi_data_compressed[offset + 1] * 8
-                w = self.roi_data_compressed[offset + 2] * 8
-                h = self.roi_data_compressed[offset + 3] * 8
-                rois.append((x, y, w, h))
-        return rois
+        if not stream_id:
+            return " " * 36  # 空字符串用空格填充
+
+        # 截断或填充到36字符
+        if len(stream_id) > 36:
+            return stream_id[:36]
+        else:
+            return stream_id.ljust(36)
     
     def serialize(self) -> bytes:
         """
         序列化为二进制数据
-        
+
         Returns:
             bytes: 序列化后的二进制数据（100字节）
         """
         try:
+            # 标准化stream_id为36字节
+            normalized_stream_id = self._normalize_stream_id(self.stream_id)
+
             # 使用struct打包为固定100字节
             data = struct.pack(
                 '<QdQQ'      # frame_id, timestamp, memory_block_ref, sequence_number (32B)
+                '36s'        # stream_id (36B)
                 'IIII'       # width, height, channels, format_type (16B)
                 'II'         # analysis_status, analysis_progress (8B)
-                'I12s'       # roi_count, roi_data_compressed (16B)
-                'QII'        # detection_index, result_data_size, result_checksum (16B)
-                'III',       # reserved1, reserved2, reserved3 (12B)
-                
+                'II',        # detection_index, result_data_size (8B)
+
                 self.frame_id,
                 self.timestamp,
                 self.memory_block_ref,
                 self.sequence_number,
-                
+
+                normalized_stream_id.encode('utf-8'),
+
                 self.width,
                 self.height,
                 self.channels,
                 self.format_type,
-                
+
                 self.analysis_status,
                 self.analysis_progress,
-                
-                self.roi_count,
-                self.roi_data_compressed,
-                
+
                 self.detection_index,
-                self.result_data_size,
-                self.result_checksum,
-                
-                self.reserved1,
-                self.reserved2,
-                self.reserved3
+                self.result_data_size
             )
-            
+
             logger.debug(f"帧 {self.frame_id} 序列化完成，大小: {len(data)}字节")
             return data
-            
+
         except Exception as e:
             logger.error(f"帧 {self.frame_id} 序列化失败: {str(e)}")
             raise
@@ -204,57 +171,53 @@ class FrameMetadata:
     def deserialize(cls, data: bytes) -> 'FrameMetadata':
         """
         从二进制数据反序列化
-        
+
         Args:
             data: 二进制数据
-            
+
         Returns:
             FrameMetadata: 反序列化的帧元数据
         """
         try:
             if len(data) != 100:
                 raise ValueError(f"数据长度错误: 期望100字节，实际{len(data)}字节")
-            
+
             # 解包二进制数据
             unpacked = struct.unpack(
                 '<QdQQ'      # frame_id, timestamp, memory_block_ref, sequence_number
+                '36s'        # stream_id
                 'IIII'       # width, height, channels, format_type
                 'II'         # analysis_status, analysis_progress
-                'I12s'       # roi_count, roi_data_compressed
-                'QII'        # detection_index, result_data_size, result_checksum
-                'III',       # reserved1, reserved2, reserved3
+                'II',        # detection_index, result_data_size
                 data
             )
-            
+
+            # 解码stream_id并去除填充的空格
+            stream_id = unpacked[4].decode('utf-8').rstrip()
+
             metadata = cls(
                 frame_id=unpacked[0],
                 timestamp=unpacked[1],
                 memory_block_ref=unpacked[2],
                 sequence_number=unpacked[3],
-                
-                width=unpacked[4],
-                height=unpacked[5],
-                channels=unpacked[6],
-                format_type=unpacked[7],
-                
-                analysis_status=unpacked[8],
-                analysis_progress=unpacked[9],
-                
-                roi_count=unpacked[10],
-                roi_data_compressed=unpacked[11],
-                
-                detection_index=unpacked[12],
-                result_data_size=unpacked[13],
-                result_checksum=unpacked[14],
-                
-                reserved1=unpacked[15],
-                reserved2=unpacked[16],
-                reserved3=unpacked[17]
+
+                stream_id=stream_id,
+
+                width=unpacked[5],
+                height=unpacked[6],
+                channels=unpacked[7],
+                format_type=unpacked[8],
+
+                analysis_status=unpacked[9],
+                analysis_progress=unpacked[10],
+
+                detection_index=unpacked[11],
+                result_data_size=unpacked[12]
             )
-            
+
             logger.debug(f"帧 {metadata.frame_id} 反序列化完成")
             return metadata
-            
+
         except Exception as e:
             logger.error(f"帧元数据反序列化失败: {str(e)}")
             raise
@@ -262,7 +225,7 @@ class FrameMetadata:
     def to_dict(self) -> Dict[str, Any]:
         """
         转换为字典格式
-        
+
         Returns:
             Dict[str, Any]: 字典格式的元数据
         """
@@ -271,23 +234,21 @@ class FrameMetadata:
             "timestamp": self.timestamp,
             "memory_block_ref": self.memory_block_ref,
             "sequence_number": self.sequence_number,
-            
+
+            "stream_id": self.stream_id,
+
             "width": self.width,
             "height": self.height,
             "channels": self.channels,
             "format_type": self.format_type,
-            
+
             "analysis_status": self.analysis_status,
             "analysis_progress": self.analysis_progress,
             "analysis_types": self.get_analysis_types(),
-            
-            "roi_count": self.roi_count,
-            "roi_data": self.get_roi_data(),
-            
+
             "detection_index": self.detection_index,
             "result_data_size": self.result_data_size,
-            "result_checksum": self.result_checksum,
-            
+
             "is_complete": self.is_analysis_complete(),
             "is_failed": self.is_analysis_failed(),
         }
@@ -313,6 +274,7 @@ class FrameMetadata:
     def __str__(self) -> str:
         """字符串表示"""
         return (f"FrameMetadata(id={self.frame_id}, "
+                f"stream={self.stream_id}, "
                 f"size={self.width}x{self.height}x{self.channels}, "
                 f"status={self.analysis_status:08b}, "
                 f"progress={self.analysis_progress}%)")

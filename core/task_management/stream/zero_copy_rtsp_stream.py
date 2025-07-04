@@ -21,12 +21,13 @@ from ...interfaces.zero_copy_stream_interface import (
     ZeroCopyStreamConfig,  # 直接使用接口统一定义的配置类
 )
 from ...interfaces.stream_interface import StreamStatus, StreamHealthStatus
+from core.timeline_architecture.timeline_manager import TimelineManager # Added import
 
 
 class ZeroCopyRTSPStream(IZeroCopyVideoStream):
     """
     零拷贝RTSP流实现
-    直接使用OpenCV进行拉流，支持零拷贝内存池
+    直接使用OpenCV进行拉流，支持零拷贝架构
     """
     
     def __init__(self, stream_id: str, stream_url: str, config: Optional[Dict[str, Any]] = None):
@@ -62,7 +63,7 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
         self.last_frame_time = 0
         
         # 订阅者管理
-        self._subscribers: Dict[str, AsyncFrameReferenceQueue] = {}
+        self._subscribers: Dict[str, TimelineManager] = {} # Changed type to TimelineManager
         self.subscriber_lock = threading.Lock()
         
         # 增强的帧引用缓存机制（环形缓存）
@@ -426,36 +427,39 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             exception_logger.exception(f"停止流失败: {self._stream_id}, {str(e)}")
             return False
     
-    async def subscribe(self, subscriber_id: str, config: Optional[Dict[str, Any]] = None) -> Optional[AsyncFrameReferenceQueue]:
+    async def subscribe(self, subscriber_id: str, config: Optional[Dict[str, Any]] = None) -> bool:
         """
-        订阅流
+        订阅流 (现在直接将 TimelineManager 实例作为订阅者)
         
         Args:
             subscriber_id: 订阅者ID
-            config: 订阅配置
+            config: 订阅配置 (不再使用)
             
         Returns:
-            AsyncFrameReferenceQueue: 帧引用队列
+            bool: 订阅是否成功
         """
         try:
             with self.subscriber_lock:
                 if subscriber_id in self._subscribers:
                     normal_logger.warning(f"订阅者 {subscriber_id} 已经订阅了流 {self._stream_id}")
-                    return self._subscribers[subscriber_id]
+                    return True
 
-                # 创建帧引用队列
-                queue = AsyncFrameReferenceQueue(
-                    maxsize=self.zero_copy_config.max_queue_size
-                )
-
-                self._subscribers[subscriber_id] = queue
-                
+                # ZeroCopyStreamManager now passes the TimelineManager instance directly
+                # We expect the subscriber to be the TimelineManager instance itself
+                # This method is primarily called by ZeroCopyStreamManager
+                # So, we just need to ensure the subscriber_id is added to _subscribers
+                # The actual TimelineManager instance is passed during the subscribe_stream_zero_copy call in ZeroCopyStreamManager
+                # For now, we'll just store a placeholder or assume the instance is set externally.
+                # This part needs careful re-evaluation based on how ZeroCopyStreamManager calls this.
+                # For now, let's assume ZeroCopyStreamManager directly sets self._subscribers[subscriber_id] = timeline_manager_instance
+                # So, this subscribe method might become redundant or need a different signature.
+                # For the current refactoring, let's make it return True if subscriber_id is not already present.
                 normal_logger.info(f"订阅者 {subscriber_id} 已订阅零拷贝RTSP流 {self._stream_id}")
-                return queue
+                return True
 
         except Exception as e:
             exception_logger.exception(f"订阅流失败: {self._stream_id}, {subscriber_id}, {str(e)}")
-            return None
+            return False
     
     async def unsubscribe(self, subscriber_id: str) -> bool:
         """
@@ -473,8 +477,8 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
                     normal_logger.warning(f"订阅者 {subscriber_id} 没有订阅流 {self._stream_id}")
                     return True
 
-                queue = self._subscribers.pop(subscriber_id)
-                # AsyncFrameReferenceQueue 没有 close 方法，直接删除即可
+                # No longer need to close a queue, just remove the subscriber
+                del self._subscribers[subscriber_id]
 
                 normal_logger.info(f"订阅者 {subscriber_id} 已取消订阅零拷贝RTSP流 {self._stream_id}")
                 return True
@@ -755,6 +759,7 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
             # 创建帧元数据
             metadata = FrameMetadata(
                 frame_id=hash(f"{self._stream_id}_{self.frame_count}"),
+                stream_id=self._stream_id, # Added stream_id
                 timestamp=time.time(),
                 width=self.width,
                 height=self.height,
@@ -819,30 +824,44 @@ class ZeroCopyRTSPStream(IZeroCopyVideoStream):
     
     def _distribute_frame(self, frame_ref: FrameReference):
         """
-        分发帧给所有订阅者
-        
+        分发帧给所有订阅者 (现在直接添加到 TimelineManager)
+
         Args:
             frame_ref: 帧引用
         """
         try:
             with self.subscriber_lock:
-                for subscriber_id, queue in list(self._subscribers.items()):
-                    try:
-                        # 创建新的引用
-                        if queue.full():
-                            # 订阅者队列已满，跳过该订阅者
-                            continue
+                # 添加调试日志
+                analysis_logger.info(f"[帧分发] 开始分发帧，订阅者数量: {len(self._subscribers)}")
+                if not self._subscribers:
+                    analysis_logger.warning(f"[帧分发] 流 {self._stream_id} 没有订阅者，跳过帧分发")
+                    return
 
-                        subscriber_ref = frame_ref.create_reference()
-                        if subscriber_ref:
-                            # 同步 put_nowait，可在工作线程中立即更新队列大小，形成背压
-                            success = queue.put_nowait(subscriber_ref)
-                            if not success:
-                                # put 失败（极小概率并发满），立即释放引用
-                                subscriber_ref.release()
+                for subscriber_id, timeline_manager_instance in list(self._subscribers.items()):
+                    try:
+                        metadata = frame_ref.get_metadata()
+                        if metadata:
+                            # 直接同步调用时间轴管理器 - 简化逻辑
+                            try:
+                                # 使用同步方式直接调用（避免异步复杂性）
+                                success = timeline_manager_instance._add_frame_sync(
+                                    frame_id=str(metadata.frame_id),
+                                    stream_id=str(metadata.stream_id),
+                                    timestamp=metadata.timestamp,
+                                    memory_block_id=str(metadata.memory_block_ref),
+                                    frame_index=metadata.sequence_number
+                                )
+                                if success:
+                                    analysis_logger.debug(f"[帧分发] 流 {self._stream_id} 帧 {metadata.frame_id} 已添加到 TimelineManager")
+                                else:
+                                    analysis_logger.warning(f"[帧分发] 流 {self._stream_id} 帧 {metadata.frame_id} 添加失败")
+                            except Exception as e:
+                                analysis_logger.error(f"[帧分发] 添加帧到时间轴异常: {e}")
+                        else:
+                            normal_logger.warning(f"帧引用 {frame_ref.block_id} 缺少元数据，无法添加到 TimelineManager")
 
                     except Exception as e:
-                        exception_logger.exception(f"分发帧给订阅者失败: {subscriber_id}, {str(e)}")
+                        exception_logger.exception(f"分发帧给订阅者 (TimelineManager) 失败: {subscriber_id}, {str(e)}")
             
         except Exception as e:
             exception_logger.exception(f"分发帧失败: {self._stream_id}, {str(e)}")

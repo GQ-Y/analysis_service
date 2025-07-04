@@ -4,7 +4,7 @@
 """
 import time
 import threading
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, Optional, Any
 
 from .memory_block import MemoryBlock, MemoryBlockManager, MemoryBlockStatus
 from .memory_utils import check_system_memory, calculate_memory_requirements
@@ -54,6 +54,29 @@ class MemoryPool:
         self.cleanup_stop_event = threading.Event()
         
         logger.info("内存池管理器创建完成")
+
+    def _recycle_block_callback(self, block: MemoryBlock):
+        """
+        内存块回收回调 - 参考timelinetool的_recycle_buffer
+
+        Args:
+            block: 要回收的内存块
+        """
+        try:
+            with self.lock:
+                # 重置内存块状态
+                block.reset()
+
+                # 回收到内存池
+                success = self.block_manager.return_block(block)
+                if success:
+                    self.stats["total_deallocations"] += 1
+                    logger.debug(f"内存块回收成功: {block.block_id}")
+                else:
+                    logger.warning(f"内存块回收失败: {block.block_id}")
+
+        except Exception as e:
+            logger.error(f"内存块回收回调异常: {block.block_id}, {str(e)}")
     
     def initialize(self) -> bool:
         """
@@ -225,25 +248,28 @@ class MemoryPool:
     
     def allocate_frame_block(self, width: int, height: int) -> Optional[MemoryBlock]:
         """
-        分配帧内存块
-        
+        分配帧内存块 - 参考timelinetool的get_buffer设计
+
         Args:
             width: 图像宽度
             height: 图像高度
-        
+
         Returns:
             Optional[MemoryBlock]: 分配的内存块，失败返回None
         """
         if not self.initialized:
             logger.error("内存池未初始化")
             return None
-        
+
         try:
             with self.lock:
                 # 从内存块管理器获取内存块
                 block = self.block_manager.get_block_by_resolution(width, height)
-                
+
                 if block:
+                    # 设置回收回调（参考timelinetool的_pool引用）
+                    block.set_pool_reference(self, self._recycle_block_callback)
+
                     self.stats["total_allocations"] += 1
                     logger.debug(f"分配内存块: {block.block_id} ({width}x{height})")
                 else:
@@ -280,10 +306,102 @@ class MemoryPool:
                     else:
                         logger.warning(f"分配内存块失败: {width}x{height}")
                 return block
-                
+
         except Exception as e:
             logger.error(f"分配内存块异常: {str(e)}")
             self.stats["allocation_failures"] += 1
+            return None
+
+    def get_buffer(self, frame_id: str, width: int, height: int, timestamp: float = None) -> Optional[MemoryBlock]:
+        """
+        获取内存缓冲区 - 参考timelinetool的get_buffer接口
+
+        Args:
+            frame_id: 帧ID
+            width: 图像宽度
+            height: 图像高度
+            timestamp: 时间戳（可选）
+
+        Returns:
+            Optional[MemoryBlock]: 内存块，失败返回None
+        """
+        block = self.allocate_frame_block(width, height)
+        if block:
+            # 设置帧相关的元数据
+            block.set_metadata("frame_id", frame_id)
+            if timestamp is not None:
+                block.set_metadata("timestamp", timestamp)
+
+            # 获取引用（参考timelinetool的add_ref）
+            if block.add_ref():
+                logger.debug(f"获取缓冲区成功: {frame_id} -> {block.block_id}")
+                return block
+            else:
+                logger.error(f"获取缓冲区引用失败: {frame_id}")
+                return None
+        else:
+            logger.warning(f"获取缓冲区失败: {frame_id} ({width}x{height})")
+            return None
+
+    def put_frame(self, frame_data, frame_id: str, target_width: int = None, target_height: int = None) -> Optional[MemoryBlock]:
+        """
+        存储帧数据到内存池 - 参考timelinetool的put_frame
+
+        Args:
+            frame_data: 帧数据（numpy数组）
+            frame_id: 帧ID
+            target_width: 目标宽度（可选，默认使用帧数据的宽度）
+            target_height: 目标高度（可选，默认使用帧数据的高度）
+
+        Returns:
+            Optional[MemoryBlock]: 存储成功的内存块，失败返回None
+        """
+        try:
+            import numpy as np
+
+            if not isinstance(frame_data, np.ndarray):
+                logger.error(f"帧数据必须是numpy数组: {frame_id}")
+                return None
+
+            # 获取帧尺寸
+            if len(frame_data.shape) == 3:
+                frame_h, frame_w, _ = frame_data.shape
+            elif len(frame_data.shape) == 2:
+                frame_h, frame_w = frame_data.shape
+            else:
+                logger.error(f"不支持的帧数据形状: {frame_data.shape}")
+                return None
+
+            # 确定目标尺寸
+            target_w = target_width or frame_w
+            target_h = target_height or frame_h
+
+            # 获取内存缓冲区
+            buffer = self.get_buffer(frame_id, target_w, target_h, time.time())
+            if not buffer:
+                logger.warning(f"无法获取缓冲区，丢弃帧: {frame_id}")
+                return None
+
+            # 调整帧尺寸（如果需要）
+            processed_frame = frame_data
+            if target_w != frame_w or target_h != frame_h:
+                import cv2
+                processed_frame = cv2.resize(frame_data, (target_w, target_h))
+                logger.debug(f"帧 {frame_id} 尺寸从 {frame_w}x{frame_h} 调整为 {target_w}x{target_h}")
+
+            # 复制数据到内存块
+            numpy_view = buffer.get_numpy_view()
+            if numpy_view is not None:
+                np.copyto(numpy_view, processed_frame)
+                logger.debug(f"帧数据复制成功: {frame_id} -> {buffer.block_id}")
+                return buffer
+            else:
+                logger.error(f"无法获取内存块视图: {buffer.block_id}")
+                buffer.release()  # 释放无效的缓冲区
+                return None
+
+        except Exception as e:
+            logger.error(f"存储帧数据异常: {frame_id}, {str(e)}")
             return None
     
     def deallocate_frame_block(self, block: MemoryBlock) -> bool:
@@ -365,14 +483,19 @@ class MemoryPool:
     
     def get_pool_stats(self) -> Dict[str, Any]:
         """
-        获取内存池统计信息
-        
+        获取内存池统计信息 - 参考timelinetool的统计设计
+
         Returns:
             Dict[str, Any]: 统计信息
         """
         with self.lock:
             block_stats = self.block_manager.get_stats()
-            
+
+            # 计算使用率
+            total_blocks = block_stats.get("total_blocks", 0)
+            free_blocks = block_stats.get("free_blocks", 0)
+            usage_rate = (total_blocks - free_blocks) / total_blocks if total_blocks > 0 else 0
+
             return {
                 "initialized": self.initialized,
                 "initialization_time": self.initialization_time,
@@ -385,6 +508,15 @@ class MemoryPool:
                 },
                 "memory_stats": self.stats.copy(),
                 "block_stats": block_stats,
+                "usage_rate": usage_rate,
+                "performance": {
+                    "allocation_success_rate": (
+                        self.stats["total_allocations"] /
+                        (self.stats["total_allocations"] + self.stats["allocation_failures"])
+                        if (self.stats["total_allocations"] + self.stats["allocation_failures"]) > 0 else 1.0
+                    ),
+                    "memory_efficiency": self.stats["current_usage"] / self.stats["peak_usage"] if self.stats["peak_usage"] > 0 else 0,
+                }
             }
     
     def _log_initialization_summary(self) -> None:
@@ -397,6 +529,21 @@ class MemoryPool:
         logger.info(f"内存使用: {self.stats['current_usage']/1024/1024/1024:.2f}GB")
         logger.info(f"清理间隔: {stats['config']['auto_cleanup_interval']}秒")
         logger.info("========================")
+
+    def log_status(self):
+        """记录内存池状态 - 参考timelinetool的_log_status"""
+        stats = self.get_pool_stats()
+        block_stats = stats["block_stats"]
+
+        logger.info(
+            f"[内存池] 状态: "
+            f"总块数={block_stats.get('total_blocks', 0)}, "
+            f"空闲={block_stats.get('free_blocks', 0)}, "
+            f"使用中={block_stats.get('allocated_blocks', 0)}, "
+            f"使用率={stats['usage_rate']*100:.1f}%, "
+            f"分配成功率={stats['performance']['allocation_success_rate']*100:.1f}%, "
+            f"内存效率={stats['performance']['memory_efficiency']*100:.1f}%"
+        )
     
     def cleanup(self) -> None:
         """清理内存池资源"""

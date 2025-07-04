@@ -92,13 +92,8 @@ logger.add(
     filter=lambda record: record["extra"].get("log_type") == "analysis",
     mode="w"  
 )
-# 分析日志也输出到控制台，以便自动化脚本捕获
-logger.add(
-    sys.stdout, 
-    level="INFO",
-    format="分析日志 | {message}", 
-    filter=lambda record: record["extra"].get("log_type") == "analysis"
-)
+# 分析日志仅输出到文件，不输出到控制台（避免频繁的帧处理日志刷屏）
+# 如需查看分析日志，请查看 logs/analysis.log 文件
 analysis_logger = logger.bind(log_type="analysis")
 
 

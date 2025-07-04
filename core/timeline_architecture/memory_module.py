@@ -11,6 +11,17 @@ from dataclasses import dataclass
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 
+try:
+    from shared.utils.logger import get_normal_logger, get_exception_logger, get_analysis_logger
+    normal_logger = get_normal_logger(__name__)
+    exception_logger = get_exception_logger(__name__)
+    analysis_logger = get_analysis_logger()
+except ImportError:
+    import logging
+    normal_logger = logging.getLogger(__name__)
+    exception_logger = logging.getLogger(__name__)
+    analysis_logger = logging.getLogger(__name__)
+
 @dataclass
 class MemoryBlockInfo:
     """内存块信息"""
@@ -76,14 +87,14 @@ class MemoryModule:
     def __init__(self, max_memory_mb: int = 1024, cleanup_interval: float = 0.5):
         self.max_memory_bytes = max_memory_mb * 1024 * 1024
         self.cleanup_interval = cleanup_interval
-        
+
         # 内存池
         self.memory_blocks: Dict[str, MemoryBlock] = {}
-        self.blocks_lock = asyncio.Lock()
-        
+        self.blocks_lock = None  # 延迟初始化，避免事件循环绑定问题
+
         # 索引
         self.frame_to_block: Dict[str, str] = {}  # frame_id -> block_id
-        
+
         # 统计信息
         self.stats = {
             "total_blocks": 0,
@@ -92,40 +103,53 @@ class MemoryModule:
             "allocation_count": 0,
             "deallocation_count": 0
         }
-        
+
         self.running = False
         self.cleanup_task: Optional[asyncio.Task] = None
-        
-        print(f"[内存模块] 初始化完成 - 最大内存: {max_memory_mb}MB")
+
+        normal_logger.info(f"[内存模块] 初始化完成 - 最大内存: {max_memory_mb}MB")
     
     async def start(self):
         """启动内存模块"""
         if self.running:
             return
-        
+
+        # 在当前事件循环中初始化锁，避免事件循环绑定问题
+        if self.blocks_lock is None:
+            self.blocks_lock = asyncio.Lock()
+
         self.running = True
         self.cleanup_task = asyncio.create_task(self._cleanup_expired_blocks())
-        print("[内存模块] 启动完成")
+        normal_logger.info("[内存模块] 启动完成")
     
     async def stop(self):
         """停止内存模块"""
         if not self.running:
             return
-        
+
         self.running = False
-        
+
         if self.cleanup_task and not self.cleanup_task.done():
             self.cleanup_task.cancel()
-        
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
+
         await self._cleanup_all_blocks()
-        print("[内存模块] 停止完成")
+
+        # 重置锁对象，避免事件循环绑定问题
+        self.blocks_lock = None
+
+        normal_logger.info("[内存模块] 停止完成")
     
     def store_frame(self, frame_id: str, frame_data: np.ndarray, metadata: Dict[str, Any]) -> Optional[str]:
         """存储帧数据到内存块"""
         try:
             # 检查内存限制
             if (self.stats["total_memory_bytes"] + frame_data.nbytes) > self.max_memory_bytes:
-                print(f"[内存模块] 内存不足，拒绝存储帧: {frame_id}")
+                # 使用analysis_logger记录内存不足信息，避免控制台刷屏
+                analysis_logger.info(f"[内存模块] 内存不足，拒绝存储帧: {frame_id}")
                 return None
             
             # 生成块ID
@@ -143,7 +167,7 @@ class MemoryModule:
             return block_id
             
         except Exception as e:
-            print(f"[内存模块] 存储帧异常: {frame_id}, {e}")
+            exception_logger.exception(f"[内存模块] 存储帧异常: {frame_id}, {str(e)}")
             return None
     
     async def _store_block_async(self, block_id: str, memory_block: MemoryBlock, frame_id: str):
@@ -160,7 +184,7 @@ class MemoryModule:
                 self.stats["allocation_count"] += 1
             
         except Exception as e:
-            print(f"[内存模块] 异步存储异常: {block_id}, {e}")
+            exception_logger.exception(f"[内存模块] 异步存储异常: {block_id}, {str(e)}")
     
     def get_frame_data(self, frame_id: str) -> Optional[np.ndarray]:
         """获取帧数据（零拷贝）"""
@@ -176,7 +200,7 @@ class MemoryModule:
             return memory_block.get_data_view()
                 
         except Exception as e:
-            print(f"[内存模块] 获取帧数据异常: {frame_id}, {e}")
+            exception_logger.exception(f"[内存模块] 获取帧数据异常: {frame_id}, {str(e)}")
             return None
     
     def get_frame_reference(self, frame_id: str) -> Optional[str]:
@@ -196,7 +220,7 @@ class MemoryModule:
             return None
             
         except Exception as e:
-            print(f"[内存模块] 获取帧引用异常: {frame_id}, {e}")
+            exception_logger.exception(f"[内存模块] 获取帧引用异常: {frame_id}, {str(e)}")
             return None
     
     def release_frame_reference(self, block_id: str) -> bool:
@@ -215,7 +239,7 @@ class MemoryModule:
             return True
             
         except Exception as e:
-            print(f"[内存模块] 释放帧引用异常: {block_id}, {e}")
+            exception_logger.exception(f"[内存模块] 释放帧引用异常: {block_id}, {str(e)}")
             return False
     
     async def _schedule_block_cleanup(self, block_id: str):
@@ -229,7 +253,7 @@ class MemoryModule:
                     await self._remove_memory_block(block_id)
                     
         except Exception as e:
-            print(f"[内存模块] 调度清理异常: {block_id}, {e}")
+            exception_logger.exception(f"[内存模块] 调度清理异常: {block_id}, {str(e)}")
     
     async def _cleanup_expired_blocks(self):
         """清理过期内存块的后台任务"""
@@ -249,10 +273,11 @@ class MemoryModule:
                     await self._remove_memory_block(block_id)
                 
                 if expired_blocks:
-                    print(f"[内存模块] 清理过期块: {len(expired_blocks)}个")
+                    # 使用analysis_logger记录清理信息，避免控制台刷屏
+                    analysis_logger.info(f"[内存模块] 清理过期块: {len(expired_blocks)}个")
                 
             except Exception as e:
-                print(f"[内存模块] 清理异常: {e}")
+                exception_logger.exception(f"[内存模块] 清理异常: {str(e)}")
                 await asyncio.sleep(1.0)
     
     async def _remove_memory_block(self, block_id: str):
@@ -278,7 +303,7 @@ class MemoryModule:
                 del self.memory_blocks[block_id]
                 
         except Exception as e:
-            print(f"[内存模块] 移除内存块异常: {block_id}, {e}")
+            exception_logger.exception(f"[内存模块] 移除内存块异常: {block_id}, {str(e)}")
     
     async def _cleanup_all_blocks(self):
         """清理所有内存块"""
@@ -290,10 +315,10 @@ class MemoryModule:
                     await self._remove_memory_block(block_id)
                 
                 self.frame_to_block.clear()
-                print(f"[内存模块] 清理所有内存块完成: {len(block_ids)}个")
-                
+                normal_logger.info(f"[内存模块] 清理所有内存块完成: {len(block_ids)}个")
+            
         except Exception as e:
-            print(f"[内存模块] 清理所有块异常: {e}")
+            exception_logger.exception(f"[内存模块] 清理所有块异常: {str(e)}")
     
     def get_memory_statistics(self) -> Dict[str, Any]:
         """获取内存统计信息"""

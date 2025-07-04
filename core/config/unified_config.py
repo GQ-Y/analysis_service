@@ -81,8 +81,8 @@ class RedisConfig(BaseConfigModel):
 
 class TaskConfig(BaseConfigModel):
     """任务管理配置"""
-    max_concurrent: int = 50
-    max_queue_size: int = 1000
+    max_concurrent: int = 100 # 增加并发任务数
+    max_queue_size: int = 2000 # 增加任务队列大小
     timeout: int = 7200  # 2小时
     cleanup_interval: int = 180  # 3分钟
     max_retries: int = 3
@@ -187,7 +187,7 @@ class StreamingConfig(BaseConfigModel):
     read_timeout: int = 30
     connect_timeout: int = 10
     max_consecutive_errors: int = 5
-    frame_buffer_size: int = 30
+    frame_buffer_size: int = 60 # 增加帧缓冲区大小
     log_level: str = "INFO"
 
 # ============================================================================
@@ -196,7 +196,7 @@ class StreamingConfig(BaseConfigModel):
 
 class FrameProcessingConfig(BaseConfigModel):
     """帧处理配置"""
-    buffer_size: int = 50
+    buffer_size: int = 100 # 增加帧处理缓冲区大小
     target_fps: int = 25
     stall_threshold: float = 3.0
     stall_recovery_threshold: float = 1.0
@@ -213,8 +213,8 @@ class AnalysisConfig(BaseConfigModel):
     iou: float = 0.4
     max_det: int = 300
     device: str = "auto"
-    analyze_interval: int = 100
-    alarm_interval: int = 5000
+    analyze_interval: int = 50 # 减少分析间隔
+    alarm_interval: int = 2000 # 减少报警间隔
     random_interval_min: int = 50
     random_interval_max: int = 150
     push_interval: int = 1000
@@ -269,17 +269,17 @@ class MemoryConfig(BaseConfigModel):
     )
 
     max_memory_usage_percent: float = Field(
-        50.0,  # 降低到50%以适应开发环境
+        80.0,  # 提高到80%以适应高性能环境
         ge=10.0,
-        le=90.0,
-        description="最大使用系统内存的百分比（开发环境优化）"
+        le=95.0,
+        description="最大使用系统内存的百分比"
     )
 
     min_free_memory_gb: float = Field(
-        1.0,  # 降低到1GB以适应开发环境
+        2.0,  # 提高到2GB以适应高性能环境
         ge=0.5,
-        le=8.0,
-        description="至少保留的系统内存（GB，开发环境优化）"
+        le=16.0,
+        description="至少保留的系统内存（GB）"
     )
 
     # 支持的分辨率配置
@@ -291,25 +291,25 @@ class MemoryConfig(BaseConfigModel):
     # 每种分辨率的内存块数量（调整为适合开发环境）
     blocks_per_resolution: Dict[str, int] = Field(
         default={
-            "640x480": 300,   # 减少到300块 (约264MB)
-            "1280x720": 100,  # 减少到100块 (约263MB)
-            "1920x1080": 50,  # 减少到50块 (约280MB)
-            "320x240": 400,   # 减少到400块 (约88MB)
-            "3072x1728": 30   # 添加3072x1728支持 (约480MB)
+            "640x480": 500,   # 增加到500块
+            "1280x720": 200,  # 增加到200块
+            "1920x1080": 100, # 增加到100块
+            "320x240": 800,   # 增加到800块
+            "3072x1728": 50   # 增加到50块
         },
-        description="每种分辨率预分配的内存块数量（开发环境优化）"
+        description="每种分辨率预分配的内存块数量"
     )
 
     # 内存回收策略配置
     auto_cleanup_interval: int = Field(
-        30,
+        60,
         ge=5,
         le=300,
         description="自动清理间隔（秒）"
     )
 
     max_block_age: int = Field(
-        300,
+        600,
         ge=60,
         le=3600,
         description="内存块最大存活时间（秒）"
@@ -369,7 +369,7 @@ class MemoryConfig(BaseConfigModel):
     )
 
     dynamic_expand_block_count: int = Field(
-        20,
+        50,
         ge=1,
         le=1000,
         description="动态扩容时新增的内存块数量"

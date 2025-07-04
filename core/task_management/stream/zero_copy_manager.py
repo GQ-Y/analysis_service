@@ -18,6 +18,7 @@ from ...frame.frame_reference import FrameReference, FrameReferenceManager
 from ...memory.memory_pool import MemoryPool
 from .manager import StreamManager
 from .zero_copy_rtsp_stream import ZeroCopyRTSPStream
+from core.timeline_architecture.timeline_manager import TimelineManager # Added import
 
 # 使用项目现有的日志系统
 try:
@@ -48,6 +49,7 @@ class ZeroCopyStreamManager(StreamManager):
         self.memory_pool: Optional[MemoryPool] = None
         self.frame_ref_manager: Optional[FrameReferenceManager] = None
         self._zero_copy_initialized = False
+        self.timeline_manager: Optional[TimelineManager] = None # Added timeline_manager attribute
 
     def set_memory_pool(self, memory_pool: MemoryPool):
         """
@@ -61,8 +63,12 @@ class ZeroCopyStreamManager(StreamManager):
         self._zero_copy_initialized = True
         normal_logger.info("零拷贝流管理器内存池设置完成")
         
-        # 零拷贝流缓冲区
-        self._zero_copy_buffers: Dict[str, AsyncFrameReferenceQueue] = {}
+        # Initialize TimelineManager here
+        self.timeline_manager = TimelineManager()
+        normal_logger.info("零拷贝流管理器时间轴管理器初始化完成")
+        
+        # 零拷贝流缓冲区 (现在存储流和订阅者信息)
+        self._zero_copy_buffers: Dict[str, Dict[str, Any]] = {}
         self._zero_copy_configs: Dict[str, ZeroCopyStreamConfig] = {}
 
         # 零拷贝流实例管理
@@ -107,7 +113,7 @@ class ZeroCopyStreamManager(StreamManager):
                                        stream_id: str, 
                                        subscriber_id: str, 
                                        config: Dict[str, Any],
-                                       zero_copy_config: Optional[ZeroCopyStreamConfig] = None) -> Tuple[bool, Optional[AsyncFrameReferenceQueue]]:
+                                       zero_copy_config: Optional[ZeroCopyStreamConfig] = None) -> Tuple[bool, None]:
         """
         订阅视频流（零拷贝模式）
         
@@ -162,207 +168,82 @@ class ZeroCopyStreamManager(StreamManager):
                 normal_logger.error(f"无法为流 {stream_id} 设置内存池")
                 return False, None
             
-            # 创建零拷贝缓冲区（帧引用队列），并注册到流的订阅者列表中，便于拉流线程进行拥塞控制
-            buffer_key = f"{stream_id}_{subscriber_id}"
-            frame_queue = AsyncFrameReferenceQueue(maxsize=zero_copy_config.max_in_flight_frames)
-
             # 将队列注册到流内部，保证 _process_frame 能够正确统计 in_flight_frames
             try:
                 with stream.subscriber_lock:
-                    stream._subscribers[subscriber_id] = frame_queue  # noqa: SLF001  (内部属性，性能考虑)
+                    # No longer using AsyncFrameReferenceQueue directly for distribution
+                    # Instead, ZeroCopyRTSPStream will add frames directly to TimelineManager
+                    stream._subscribers[subscriber_id] = self.timeline_manager # Pass TimelineManager for direct frame addition
             except Exception as reg_err:
                 exception_logger.exception(
                     f"注册订阅者队列到流 {stream_id} 失败: {reg_err}"
                 )
 
             # 在管理器侧保存映射，方便后续取消订阅与监控
-            self._zero_copy_buffers[buffer_key] = frame_queue
+            # 创建缓冲区键
+            buffer_key = f"{stream_id}_{subscriber_id}"
+
+            # No longer storing AsyncFrameReferenceQueue directly
+            self._zero_copy_buffers[buffer_key] = {"stream": stream, "subscriber_id": subscriber_id}
             self._zero_copy_configs[buffer_key] = zero_copy_config
 
-            # 启动帧引用分发任务 —— 将队列中的帧提供给任务处理器
-            asyncio.create_task(
-                self._distribute_frame_references(
-                    stream, buffer_key, frame_queue, zero_copy_config
-                )
-            )
+            # No longer starting _distribute_frame_references task here
             
             normal_logger.info(f"零拷贝订阅成功: stream_id={stream_id}, subscriber_id={subscriber_id}")
-            return True, frame_queue
+            return True, None
             
         except Exception as e:
             exception_logger.exception(f"零拷贝订阅失败: {str(e)}")
             return False, None
     
-    async def _distribute_frame_references(self, 
-                                         stream: IZeroCopyVideoStream,
-                                         buffer_key: str,
-                                         frame_queue: AsyncFrameReferenceQueue,
-                                         config: ZeroCopyStreamConfig) -> None:
-        """
-        分发帧引用任务 - 增强版本，支持重试和降级机制
-        
-        Args:
-            stream: 零拷贝视频流
-            buffer_key: 缓冲区键
-            frame_queue: 帧引用队列
-            config: 零拷贝配置
-        """
-        normal_logger.info(f"启动帧引用分发任务: {buffer_key}")
-        
-        # 分发状态跟踪
-        consecutive_failures = 0
-        last_success_time = time.time()
-        total_distributed = 0
-        
-        try:
-            while buffer_key in self._zero_copy_buffers:
-                try:
-                    # 检查内存压力
-                    if config.enable_memory_monitoring and stream.is_memory_pressure_high():
-                        self._memory_stats["memory_pressure_events"] += 1
-                        
-                        if config.frame_drop_on_pressure:
-                            # 内存压力下丢帧
-                            normal_logger.warning(f"内存压力高，跳过帧获取: {buffer_key}")
-                            await asyncio.sleep(0.01)  # 短暂等待
-                            continue
-                    
-                    success = False
-                    frame_refs = []
-                    
-                    # 获取帧引用（支持重试）
-                    for retry_count in range(3):  # 最多重试3次
-                        if config.enable_batch_processing:
-                            # 批量获取
-                            success, frame_refs = await stream.get_frame_references_batch(config.batch_size)
-                            if success and frame_refs:
-                                # 批量分发成功
-                                for frame_ref in frame_refs:
-                                    if frame_queue.full():
-                                        # 队列满时丢弃最旧的帧
-                                        old_ref = await frame_queue.get_nowait()
-                                        if old_ref:
-                                            old_ref.release()
-                                        self._memory_stats["frames_dropped"] += 1
-                                    
-                                    await frame_queue.put(frame_ref)
-                                
-                                self._performance_stats["batch_operations"] += 1
-                                self._performance_stats["zero_copy_operations"] += len(frame_refs)
-                                total_distributed += len(frame_refs)
-                                break
-                            else:
-                                # 批量获取失败，尝试单帧获取作为降级
-                                if retry_count == 0:
-                                    analysis_logger.warning(f"[帧引用分发] 批量获取失败，尝试单帧降级: {buffer_key}")
-                        
-                        # 单帧获取（主要路径或降级路径）
-                        success, frame_ref = await stream.get_frame_reference()
-                        if success and frame_ref:
-                            if frame_queue.full():
-                                # 队列满时丢弃最旧的帧
-                                old_ref = await frame_queue.get_nowait()
-                                if old_ref:
-                                    old_ref.release()
-                                self._memory_stats["frames_dropped"] += 1
-                            
-                            await frame_queue.put(frame_ref)
-                            self._performance_stats["zero_copy_operations"] += 1
-                            total_distributed += 1
-                            break
-                        
-                        # 重试前等待
-                        if retry_count < 2:
-                            await asyncio.sleep(0.005)  # 5ms
-                    
-                    # 处理获取结果
-                    if success:
-                        # 成功重置失败计数
-                        if consecutive_failures > 0:
-                            analysis_logger.info(f"[帧引用分发] {buffer_key} 恢复正常，连续失败 {consecutive_failures} 次后成功")
-                            consecutive_failures = 0
-                        
-                        last_success_time = time.time()
-                        
-                        # 短暂等待避免CPU占用过高
-                        await asyncio.sleep(0.001)
-                    else:
-                        # 失败处理
-                        consecutive_failures += 1
-                        
-                        # 根据失败次数调整等待时间（指数退避）
-                        if consecutive_failures <= 10:
-                            wait_time = 0.01  # 10ms
-                        elif consecutive_failures <= 50:
-                            wait_time = 0.05  # 50ms
-                        else:
-                            wait_time = 0.1   # 100ms
-                        
-                        # 定期记录失败状态
-                        if consecutive_failures % 100 == 0:
-                            time_since_success = time.time() - last_success_time
-                            analysis_logger.warning(f"[帧引用分发] {buffer_key} 连续失败 {consecutive_failures} 次, "
-                                                   f"上次成功: {time_since_success:.1f}秒前, 总分发: {total_distributed}")
-                            
-                            # 检查流状态
-                            if hasattr(stream, 'get_status'):
-                                stream_status = stream.get_status()
-                                analysis_logger.info(f"[帧引用分发] 流状态: {buffer_key}, status={stream_status}")
-                            
-                            # 检查连接状态
-                            if hasattr(stream, 'is_connected'):
-                                is_connected = stream.is_connected
-                                analysis_logger.info(f"[帧引用分发] 连接状态: {buffer_key}, is_connected={is_connected}")
-                        
-                        await asyncio.sleep(wait_time)
-                        
-                except asyncio.CancelledError:
-                    # 任务被取消
-                    normal_logger.info(f"帧引用分发任务被取消: {buffer_key}")
-                    break
-                except Exception as e:
-                    consecutive_failures += 1
-                    exception_logger.exception(f"帧引用分发异常: {buffer_key}, {str(e)}")
-                    await asyncio.sleep(0.1)  # 异常后等待更长时间
-                    
-        except Exception as e:
-            exception_logger.exception(f"帧引用分发任务严重异常: {buffer_key}, {str(e)}")
-        finally:
-            normal_logger.info(f"帧引用分发任务结束: {buffer_key}, 总分发帧数: {total_distributed}, "
-                             f"最终连续失败: {consecutive_failures} 次")
+    
     
     async def unsubscribe_stream_zero_copy(self, stream_id: str, subscriber_id: str) -> bool:
         """
         取消订阅视频流（零拷贝模式）
-        
+
         Args:
             stream_id: 流ID
             subscriber_id: 订阅者ID
-            
+
         Returns:
             bool: 是否成功取消订阅
         """
         try:
             buffer_key = f"{stream_id}_{subscriber_id}"
-            
+
             # 清理零拷贝缓冲区
             if buffer_key in self._zero_copy_buffers:
-                frame_queue = self._zero_copy_buffers[buffer_key]
-                
-                # 释放队列中的所有帧引用
-                while not frame_queue.empty():
-                    frame_ref = await frame_queue.get_nowait()
-                    if frame_ref:
-                        frame_ref.release()
-                
+                # No longer managing AsyncFrameReferenceQueue directly here
                 del self._zero_copy_buffers[buffer_key]
                 del self._zero_copy_configs[buffer_key]
-                
+
                 normal_logger.info(f"零拷贝取消订阅成功: {buffer_key}")
-            
-            # 调用基类取消订阅
-            return await self.unsubscribe_stream(stream_id, subscriber_id)
-            
+
+            # 直接处理零拷贝流的停止，而不是调用基类方法
+            if stream_id in self.zero_copy_streams:
+                stream = self.zero_copy_streams[stream_id]
+
+                # 取消订阅者
+                unsubscribed_successfully = await stream.unsubscribe(subscriber_id)
+
+                if unsubscribed_successfully:
+                    normal_logger.info(f"零拷贝流取消订阅成功: stream_id={stream_id}, subscriber_id={subscriber_id}, 剩余订阅者: {stream.subscriber_count}")
+                else:
+                    normal_logger.warning(f"零拷贝流取消订阅失败或订阅者不存在: stream_id={stream_id}, subscriber_id={subscriber_id}")
+
+                # 如果没有其他订阅者，则停止并移除流
+                if stream.subscriber_count == 0:
+                    normal_logger.info(f"零拷贝流 {stream_id} 已无订阅者，准备停止并移除")
+                    await stream.stop()
+                    del self.zero_copy_streams[stream_id]
+                    normal_logger.info(f"零拷贝流 {stream_id} 已停止并移除")
+
+                return True
+            else:
+                normal_logger.warning(f"零拷贝流不存在: {stream_id}")
+                return False
+
         except Exception as e:
             exception_logger.exception(f"零拷贝取消订阅失败: {str(e)}")
             return False
@@ -380,26 +261,18 @@ class ZeroCopyStreamManager(StreamManager):
             "memory_pool": pool_stats,
             "manager_stats": self._memory_stats.copy(),
             "performance_stats": self._performance_stats.copy(),
-            "active_buffers": len(self._zero_copy_buffers),
-            "frame_ref_manager": self.frame_ref_manager.get_manager_stats(),
+            "timeline_manager_stats": self.timeline_manager.get_statistics() if self.timeline_manager else {},
         }
     
     def get_zero_copy_buffer_stats(self) -> Dict[str, Any]:
         """
-        获取零拷贝缓冲区统计信息
+        获取零拷贝缓冲区统计信息 (现在由 TimelineManager 管理)
         
         Returns:
             Dict[str, Any]: 缓冲区统计信息
         """
-        buffer_stats = {}
-        for buffer_key, frame_queue in self._zero_copy_buffers.items():
-            buffer_stats[buffer_key] = {
-                "queue_size": frame_queue.qsize(),
-                "queue_stats": frame_queue.get_stats(),
-                "config": self._zero_copy_configs[buffer_key].to_dict(),
-            }
-        
-        return buffer_stats
+        normal_logger.info("get_zero_copy_buffer_stats: 缓冲区统计信息现在由 TimelineManager 管理")
+        return {}
 
     async def check_zero_copy_system_health(self) -> Dict[str, Any]:
         """
@@ -421,19 +294,24 @@ class ZeroCopyStreamManager(StreamManager):
             # 检查每个流的状态
             for buffer_key, buffer_info in self._zero_copy_buffers.items():
                 stream = buffer_info.get("stream")
-                frame_queue = buffer_info.get("frame_queue")
+                subscriber_id = buffer_info.get("subscriber_id")
                 
                 stream_health = {
                     "stream_id": getattr(stream, '_stream_id', 'unknown'),
                     "is_running": getattr(stream, 'is_running', False),
                     "is_connected": getattr(stream, 'is_connected', False),
-                    "queue_size": frame_queue.qsize() if frame_queue else 0,
-                    "queue_maxsize": getattr(frame_queue, 'maxsize', 0),
                     "frame_count": getattr(stream, 'frame_count', 0),
                     "error_count": getattr(stream, 'error_count', 0),
                     "last_frame_time": getattr(stream, 'last_frame_time', 0),
                 }
                 
+                # Check TimelineManager status for this stream
+                if self.timeline_manager:
+                    timeline_stats = self.timeline_manager.get_statistics()
+                    stream_health["timeline_frames_pending"] = timeline_stats.get("timeline_length", 0)
+                    stream_health["timeline_frames_processed"] = timeline_stats.get("total_frames_processed", 0)
+                    stream_health["timeline_frames_dropped"] = timeline_stats.get("total_frames_dropped", 0)
+
                 # 检查流是否有问题
                 current_time = time.time()
                 time_since_last_frame = current_time - stream_health["last_frame_time"]
@@ -444,8 +322,6 @@ class ZeroCopyStreamManager(StreamManager):
                     health_report["issues"].append(f"流 {buffer_key} 未连接")
                 elif time_since_last_frame > 30 and stream_health["last_frame_time"] > 0:
                     health_report["issues"].append(f"流 {buffer_key} 超过30秒未收到帧")
-                elif stream_health["queue_size"] == 0:
-                    health_report["issues"].append(f"流 {buffer_key} 帧引用队列为空")
                 elif stream_health["error_count"] > 100:
                     health_report["issues"].append(f"流 {buffer_key} 错误计数过高: {stream_health['error_count']}")
                 
@@ -497,12 +373,13 @@ class ZeroCopyStreamManager(StreamManager):
         """
         try:
             # 简化的健康状态记录
-            active_streams = len(self._zero_copy_buffers)
-            total_operations = self._performance_stats.get("zero_copy_operations", 0)
-            total_dropped = self._memory_stats.get("frames_dropped", 0)
+            active_streams = len(self.zero_copy_streams) # Number of active RTSP streams
+            total_frames_added_to_timeline = self.timeline_manager.get_statistics().get("total_frames_added", 0) if self.timeline_manager else 0
+            total_frames_processed_by_timeline = self.timeline_manager.get_statistics().get("total_frames_processed", 0) if self.timeline_manager else 0
+            total_frames_dropped_by_timeline = self.timeline_manager.get_statistics().get("total_frames_dropped", 0) if self.timeline_manager else 0
             
             normal_logger.info(f"[零拷贝系统] 活跃流数: {active_streams}, "
-                             f"总操作数: {total_operations}, 总丢帧: {total_dropped}")
+                             f"TimelineManager: Added={total_frames_added_to_timeline}, Processed={total_frames_processed_by_timeline}, Dropped={total_frames_dropped_by_timeline}")
             
         except Exception as e:
             exception_logger.exception(f"记录系统健康摘要失败: {str(e)}")

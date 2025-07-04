@@ -40,26 +40,7 @@ class BaseAnalyzer(ABC):
         
         normal_logger.info(f"分析器设备自动选择结果: {self.device}")
         
-        # 加载模型（如果提供了模型代码）
-        if model_code:
-            import asyncio
-            try:
-                # 尝试获取现有事件循环
-                loop = asyncio.get_running_loop()
-            except RuntimeError:  # 如果没有正在运行的事件循环
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            
-            try:
-                if loop.is_running():
-                    asyncio.create_task(self.load_model(model_code))
-                    normal_logger.info(f"已为模型 {model_code} 创建异步加载任务。")
-                else:
-                    normal_logger.info(f"同步加载模型 {model_code}...")
-                    loop.run_until_complete(self.load_model(model_code))
-                    normal_logger.info(f"模型 {model_code} 同步加载完成。")
-            except Exception as e:
-                exception_logger.exception(f"在初始化过程中加载模型 {model_code} 失败: {e}")
+        
 
     @abstractmethod
     async def load_model(self, model_code: str) -> bool:

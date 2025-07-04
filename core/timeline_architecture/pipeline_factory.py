@@ -9,6 +9,17 @@ import psutil
 from typing import Dict, List, Optional, Any, Callable
 from dataclasses import dataclass
 
+try:
+    from shared.utils.logger import get_normal_logger, get_exception_logger, get_analysis_logger
+    normal_logger = get_normal_logger(__name__)
+    exception_logger = get_exception_logger(__name__)
+    analysis_logger = get_analysis_logger()
+except ImportError:
+    import logging
+    normal_logger = logging.getLogger(__name__)
+    exception_logger = logging.getLogger(__name__)
+    analysis_logger = logging.getLogger(__name__)
+
 # 导入各个模块
 from .timeline_manager import TimelineManager
 from .stream_module import StreamModule, StreamConfig, StreamProtocol
@@ -75,12 +86,12 @@ class TimelinePipelineFactory:
         # 外部回调
         self.status_callbacks: List[Callable] = []
         
-        print(f"[流水线工厂] 初始化完成 - CPU目标利用率: {config.target_cpu_utilization*100}%")
+        normal_logger.info(f"[流水线工厂] 初始化完成 - CPU目标利用率: {config.target_cpu_utilization*100}%")
     
     async def initialize(self):
         """初始化流水线"""
         try:
-            print("[流水线工厂] 开始初始化...")
+            normal_logger.info("[流水线工厂] 开始初始化...")
             
             # 1. 初始化时间轴管理器
             self.timeline_manager = TimelineManager(
@@ -118,10 +129,10 @@ class TimelinePipelineFactory:
             # 6. 配置模块间回调
             self._setup_module_callbacks()
             
-            print("[流水线工厂] 初始化完成")
+            normal_logger.info("[流水线工厂] 初始化完成")
             
         except Exception as e:
-            print(f"[流水线工厂] 初始化失败: {e}")
+            exception_logger.exception(f"[流水线工厂] 初始化失败: {str(e)}")
             raise
     
     def _setup_module_callbacks(self):
@@ -133,10 +144,10 @@ class TimelinePipelineFactory:
             # 结果模块状态回调
             self.result_module.add_result_callback(self._on_result_pushed)
             
-            print("[流水线工厂] 模块回调配置完成")
+            normal_logger.info("[流水线工厂] 模块回调配置完成")
             
         except Exception as e:
-            print(f"[流水线工厂] 模块回调配置失败: {e}")
+            exception_logger.exception(f"[流水线工厂] 模块回调配置失败: {str(e)}")
     
     def _on_processing_result(self, result):
         """处理结果回调"""
@@ -161,7 +172,7 @@ class TimelinePipelineFactory:
             self.pipeline_stats["total_frames_processed"] += 1
             
         except Exception as e:
-            print(f"[流水线工厂] 处理结果回调异常: {e}")
+            exception_logger.exception(f"[流水线工厂] 处理结果回调异常: {str(e)}")
     
     def _on_result_pushed(self, result_entry):
         """结果推送回调"""
@@ -171,7 +182,7 @@ class TimelinePipelineFactory:
             pass
             
         except Exception as e:
-            print(f"[流水线工厂] 结果推送回调异常: {e}")
+            exception_logger.exception(f"[流水线工厂] 结果推送回调异常: {str(e)}")
     
     async def start(self):
         """启动流水线"""
@@ -179,7 +190,7 @@ class TimelinePipelineFactory:
             return
         
         try:
-            print("[流水线工厂] 启动流水线...")
+            normal_logger.info("[流水线工厂] 启动流水线...")
             
             # 确保已初始化
             if not all([
@@ -202,17 +213,17 @@ class TimelinePipelineFactory:
             if self.config.enable_monitoring:
                 self.monitor_task = asyncio.create_task(self._monitoring_loop())
             
-            print("[流水线工厂] 流水线启动完成")
+            normal_logger.info("[流水线工厂] 流水线启动完成")
             
             # 通知状态回调
             for callback in self.status_callbacks:
                 try:
                     callback("started", self.get_pipeline_status())
                 except Exception as e:
-                    print(f"[流水线工厂] 状态回调异常: {e}")
+                    exception_logger.exception(f"[流水线工厂] 状态回调异常: {str(e)}")
             
         except Exception as e:
-            print(f"[流水线工厂] 启动失败: {e}")
+            exception_logger.exception(f"[流水线工厂] 启动失败: {str(e)}")
             self.running = False
             raise
     
@@ -222,7 +233,7 @@ class TimelinePipelineFactory:
             return
         
         try:
-            print("[流水线工厂] 停止流水线...")
+            normal_logger.info("[流水线工厂] 停止流水线...")
             
             self.running = False
             
@@ -250,37 +261,37 @@ class TimelinePipelineFactory:
             if self.timeline_manager:
                 await self.timeline_manager.stop()
             
-            print("[流水线工厂] 流水线停止完成")
+            normal_logger.info("[流水线工厂] 流水线停止完成")
             
             # 通知状态回调
             for callback in self.status_callbacks:
                 try:
                     callback("stopped", self.get_pipeline_status())
                 except Exception as e:
-                    print(f"[流水线工厂] 状态回调异常: {e}")
+                    exception_logger.exception(f"[流水线工厂] 状态回调异常: {str(e)}")
             
         except Exception as e:
-            print(f"[流水线工厂] 停止异常: {e}")
+            exception_logger.exception(f"[流水线工厂] 停止异常: {str(e)}")
     
     async def add_stream(self, stream_config: StreamConfig) -> bool:
         """添加视频流"""
         try:
             if not self.stream_module or not self.running:
-                print(f"[流水线工厂] 流水线未运行，无法添加流: {stream_config.stream_id}")
+                normal_logger.warning(f"[流水线工厂] 流水线未运行，无法添加流: {stream_config.stream_id}")
                 return False
             
             success = await self.stream_module.add_stream(stream_config)
             
             if success:
                 self.pipeline_stats["total_streams"] += 1
-                print(f"[流水线工厂] 成功添加流: {stream_config.stream_id}")
+                normal_logger.info(f"[流水线工厂] 成功添加流: {stream_config.stream_id}")
             else:
-                print(f"[流水线工厂] 添加流失败: {stream_config.stream_id}")
+                normal_logger.warning(f"[流水线工厂] 添加流失败: {stream_config.stream_id}")
             
             return success
             
         except Exception as e:
-            print(f"[流水线工厂] 添加流异常: {stream_config.stream_id}, {e}")
+            exception_logger.exception(f"[流水线工厂] 添加流异常: {stream_config.stream_id}, {str(e)}")
             return False
     
     async def remove_stream(self, stream_id: str) -> bool:
@@ -293,14 +304,14 @@ class TimelinePipelineFactory:
             
             if success:
                 self.pipeline_stats["total_streams"] -= 1
-                print(f"[流水线工厂] 成功移除流: {stream_id}")
+                normal_logger.info(f"[流水线工厂] 成功移除流: {stream_id}")
             else:
-                print(f"[流水线工厂] 移除流失败: {stream_id}")
+                normal_logger.warning(f"[流水线工厂] 移除流失败: {stream_id}")
             
             return success
             
         except Exception as e:
-            print(f"[流水线工厂] 移除流异常: {stream_id}, {e}")
+            exception_logger.exception(f"[流水线工厂] 移除流异常: {stream_id}, {str(e)}")
             return False
     
     async def _monitoring_loop(self):
@@ -326,10 +337,10 @@ class TimelinePipelineFactory:
                     try:
                         callback("monitoring", self.get_pipeline_status())
                     except Exception as e:
-                        print(f"[流水线工厂] 监控回调异常: {e}")
+                        exception_logger.exception(f"[流水线工厂] 监控回调异常: {str(e)}")
                 
             except Exception as e:
-                print(f"[流水线工厂] 监控异常: {e}")
+                exception_logger.exception(f"[流水线工厂] 监控异常: {str(e)}")
                 await asyncio.sleep(5.0)
     
     def _calculate_pipeline_efficiency(self):
@@ -353,7 +364,7 @@ class TimelinePipelineFactory:
             )
             
         except Exception as e:
-            print(f"[流水线工厂] 效率计算异常: {e}")
+            exception_logger.exception(f"[流水线工厂] 效率计算异常: {str(e)}")
             self.pipeline_stats["pipeline_efficiency"] = 0.0
     
     def _print_monitoring_info(self):
@@ -361,38 +372,38 @@ class TimelinePipelineFactory:
         try:
             uptime = time.time() - self.pipeline_stats["start_time"]
             
-            print(f"\n[流水线监控] "
+            normal_logger.info(f"\n[流水线监控] "
                   f"运行时间: {uptime:.1f}s, "
                   f"处理帧数: {self.pipeline_stats['total_frames_processed']}, "
                   f"活跃流数: {self.pipeline_stats['total_streams']}")
             
-            print(f"[系统资源] "
+            normal_logger.info(f"[系统资源] "
                   f"CPU: {self.pipeline_stats['system_cpu_usage']:.1f}%, "
                   f"内存: {self.pipeline_stats['system_memory_usage']:.1f}%")
             
-            print(f"[流水线效率] {self.pipeline_stats['pipeline_efficiency']:.1f}%")
+            normal_logger.info(f"[流水线效率] {self.pipeline_stats['pipeline_efficiency']:.1f}%")
             
             # 各模块详细统计
             if self.processor_module:
                 proc_stats = self.processor_module.get_processor_statistics()
-                print(f"[处理器] 数量: {proc_stats['processor_count']}, "
+                normal_logger.info(f"[处理器] 数量: {proc_stats['processor_count']}, "
                       f"总处理: {proc_stats['global_stats'].get('total_frames_processed', 0)}")
             
             if self.memory_module:
                 mem_stats = self.memory_module.get_memory_statistics()
-                print(f"[内存] 使用: {mem_stats['memory_usage_mb']}MB "
+                normal_logger.info(f"[内存] 使用: {mem_stats['memory_usage_mb']}MB "
                       f"({mem_stats['usage_percent']:.1f}%), "
                       f"活跃块: {mem_stats['active_blocks']}")
             
             if self.result_module:
                 result_stats = self.result_module.get_result_statistics()
-                print(f"[结果] 已推送: {result_stats['global_stats'].get('total_results_pushed', 0)}, "
+                normal_logger.info(f"[结果] 已推送: {result_stats['global_stats'].get('total_results_pushed', 0)}, "
                       f"活跃流: {result_stats['global_stats'].get('active_streams', 0)}")
             
-            print("-" * 80)
+            normal_logger.info("-" * 80)
             
         except Exception as e:
-            print(f"[流水线工厂] 监控信息打印异常: {e}")
+            exception_logger.exception(f"[流水线工厂] 监控信息打印异常: {str(e)}")
     
     def get_pipeline_status(self) -> Dict[str, Any]:
         """获取流水线状态"""

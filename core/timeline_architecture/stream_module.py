@@ -12,6 +12,17 @@ from enum import Enum
 import cv2
 import numpy as np
 
+try:
+    from shared.utils.logger import get_normal_logger, get_exception_logger, get_analysis_logger
+    normal_logger = get_normal_logger(__name__)
+    exception_logger = get_exception_logger(__name__)
+    analysis_logger = get_analysis_logger()
+except ImportError:
+    import logging
+    normal_logger = logging.getLogger(__name__)
+    exception_logger = logging.getLogger(__name__)
+    analysis_logger = logging.getLogger(__name__)
+
 class StreamProtocol(Enum):
     """流协议类型"""
     RTSP = "rtsp"
@@ -76,7 +87,7 @@ class StreamPuller:
         
         self.running = True
         self.pull_task = asyncio.create_task(self._pull_frames())
-        print(f"[拉流模块] 启动流: {self.config.stream_id} -> {self.config.url}")
+        normal_logger.info(f"[拉流模块] 启动流: {self.config.stream_id} -> {self.config.url}")
     
     async def stop(self):
         """停止拉流"""
@@ -96,7 +107,7 @@ class StreamPuller:
             self.cap.release()
             self.cap = None
         
-        print(f"[拉流模块] 停止流: {self.config.stream_id}")
+        normal_logger.info(f"[拉流模块] 停止流: {self.config.stream_id}")
     
     def _initialize_capture(self) -> bool:
         """初始化视频捕获"""
@@ -116,15 +127,15 @@ class StreamPuller:
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
             
             if not self.cap.isOpened():
-                print(f"[拉流模块] 无法打开流: {self.config.url}")
+                normal_logger.warning(f"[拉流模块] 无法打开流: {self.config.url}")
                 return False
             
-            print(f"[拉流模块] 成功连接流: {self.config.stream_id}")
+            normal_logger.info(f"[拉流模块] 成功连接流: {self.config.stream_id}")
             self.error_count = 0
             return True
             
         except Exception as e:
-            print(f"[拉流模块] 初始化捕获失败: {self.config.stream_id}, {e}")
+            exception_logger.exception(f"[拉流模块] 初始化捕获失败: {self.config.stream_id}, {str(e)}")
             self.stats["last_error"] = str(e)
             return False
     
@@ -138,7 +149,7 @@ class StreamPuller:
                 if not self._initialize_capture():
                     reconnect_attempts += 1
                     if reconnect_attempts >= self.config.reconnect_attempts:
-                        print(f"[拉流模块] 重连次数超限，停止拉流: {self.config.stream_id}")
+                        normal_logger.warning(f"[拉流模块] 重连次数超限，停止拉流: {self.config.stream_id}")
                         break
                     
                     await asyncio.sleep(self.config.reconnect_delay)
@@ -151,7 +162,8 @@ class StreamPuller:
                     ret, frame = self.cap.read()
                     
                     if not ret:
-                        print(f"[拉流模块] 读取帧失败: {self.config.stream_id}")
+                        # 使用analysis_logger记录频繁的读取失败日志，避免控制台刷屏
+                        analysis_logger.info(f"[拉流模块] 读取帧失败: {self.config.stream_id}")
                         break
                     
                     current_time = time.time()
@@ -190,14 +202,15 @@ class StreamPuller:
                             self.stats["avg_fps"] = 1.0 / elapsed if elapsed > 0 else 0.0
                         
                     except Exception as e:
-                        print(f"[拉流模块] 帧回调异常: {self.config.stream_id}, {e}")
+                        # 使用analysis_logger记录频繁的帧回调异常，避免控制台刷屏
+                        analysis_logger.info(f"[拉流模块] 帧回调异常: {self.config.stream_id}, {str(e)}")
                         self.stats["dropped_frames"] += 1
                     
                     # 避免过度消耗CPU
                     await asyncio.sleep(0.001)
                 
             except Exception as e:
-                print(f"[拉流模块] 拉流异常: {self.config.stream_id}, {e}")
+                exception_logger.exception(f"[拉流模块] 拉流异常: {self.config.stream_id}, {str(e)}")
                 self.error_count += 1
                 self.stats["error_count"] = self.error_count
                 self.stats["last_error"] = str(e)
@@ -245,7 +258,7 @@ class StreamModule:
             return
         
         self.running = True
-        print("[拉流模块] 启动完成")
+        normal_logger.info("[拉流模块] 启动完成")
     
     async def stop(self):
         """停止拉流模块"""
@@ -263,7 +276,7 @@ class StreamModule:
             await asyncio.gather(*tasks, return_exceptions=True)
         
         self.stream_pullers.clear()
-        print("[拉流模块] 停止完成")
+        normal_logger.info("[拉流模块] 停止完成")
     
     async def add_stream(self, config: StreamConfig) -> bool:
         """
@@ -277,8 +290,8 @@ class StreamModule:
         """
         try:
             if config.stream_id in self.stream_pullers:
-                print(f"[拉流模块] 流已存在: {config.stream_id}")
-                return False
+                            normal_logger.warning(f"[拉流模块] 流已存在: {config.stream_id}")
+            return False
             
             # 创建拉流器
             puller = StreamPuller(config, self._on_frame_received)
@@ -291,11 +304,11 @@ class StreamModule:
             self.global_stats["total_streams"] += 1
             self.global_stats["active_streams"] = len(self.stream_pullers)
             
-            print(f"[拉流模块] 成功添加流: {config.stream_id}")
+            normal_logger.info(f"[拉流模块] 成功添加流: {config.stream_id}")
             return True
             
         except Exception as e:
-            print(f"[拉流模块] 添加流失败: {config.stream_id}, {e}")
+            exception_logger.exception(f"[拉流模块] 添加流失败: {config.stream_id}, {str(e)}")
             return False
     
     async def remove_stream(self, stream_id: str) -> bool:
@@ -318,11 +331,11 @@ class StreamModule:
             del self.stream_pullers[stream_id]
             self.global_stats["active_streams"] = len(self.stream_pullers)
             
-            print(f"[拉流模块] 成功移除流: {stream_id}")
+            normal_logger.info(f"[拉流模块] 成功移除流: {stream_id}")
             return True
             
         except Exception as e:
-            print(f"[拉流模块] 移除流失败: {stream_id}, {e}")
+            exception_logger.exception(f"[拉流模块] 移除流失败: {stream_id}, {str(e)}")
             return False
     
     def _on_frame_received(self, frame_data: FrameData):
@@ -351,20 +364,21 @@ class StreamModule:
                     
                     self.global_stats["total_frames_delivered"] += 1
                 else:
-                    print(f"[拉流模块] 存储帧失败: {frame_data.frame_id}")
+                    # 使用analysis_logger记录频繁的存储失败日志，避免控制台刷屏
+                    analysis_logger.info(f"[拉流模块] 存储帧失败: {frame_data.frame_id}")
                     self.global_stats["total_frames_failed"] += 1
             else:
-                print(f"[拉流模块] 内存模块未初始化")
+                normal_logger.warning(f"[拉流模块] 内存模块未初始化")
                 self.global_stats["total_frames_failed"] += 1
                 
         except Exception as e:
-            print(f"[拉流模块] 处理帧异常: {frame_data.frame_id}, {e}")
+            exception_logger.exception(f"[拉流模块] 处理帧异常: {frame_data.frame_id}, {str(e)}")
             self.global_stats["total_frames_failed"] += 1
     
     def set_memory_module(self, memory_module):
         """设置内存管理模块"""
         self.memory_module = memory_module
-        print("[拉流模块] 内存管理模块已连接")
+        normal_logger.info("[拉流模块] 内存管理模块已连接")
     
     def get_stream_list(self) -> List[str]:
         """获取流列表"""
@@ -406,5 +420,5 @@ class StreamModule:
             return await self.add_stream(new_config)
             
         except Exception as e:
-            print(f"[拉流模块] 更新流配置失败: {stream_id}, {e}")
+            exception_logger.exception(f"[拉流模块] 更新流配置失败: {stream_id}, {str(e)}")
             return False 

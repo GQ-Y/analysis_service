@@ -5,7 +5,7 @@
 import time
 import threading
 import ctypes
-from typing import Optional, Tuple, Any, Dict
+from typing import Optional, Any, Dict
 from enum import Enum
 import numpy as np
 
@@ -35,7 +35,7 @@ class MemoryBlock:
     def __init__(self, block_id: int, ptr: ctypes.c_void_p, size: int,
                  width: int, height: int, channels: int = 3, manager=None):
         """
-        初始化内存块
+        初始化内存块 - 参考timelinetool的FrameBuffer设计
 
         Args:
             block_id: 内存块唯一ID
@@ -53,30 +53,38 @@ class MemoryBlock:
         self.height = height
         self.channels = channels
         self.manager = manager
-        
-        # 引用计数（原子操作）
+
+        # 引用计数（原子操作）- 参考timelinetool的ref_count
         self._ref_count = 0
         self._ref_lock = threading.RLock()
-        
+
         # 状态管理
         self.status = MemoryBlockStatus.FREE
         self._status_lock = threading.RLock()
-        
+
         # 时间戳
         self.created_time = time.time()
         self.last_access_time = time.time()
         self.allocated_time = None
         self.freed_time = None
-        
+
         # 元数据
         self.metadata = {}
-        
+
+        # 回收回调机制（参考timelinetool的_pool引用）
+        self._pool_ref = None
+        self._recycle_callback = None
+
+        # 统计信息
+        self.total_allocations = 0
+        self.total_releases = 0
+
         logger.debug(f"创建内存块 {block_id}: {width}x{height}x{channels}, {size}字节")
     
     def acquire(self) -> bool:
         """
-        获取内存块引用（增加引用计数）
-        
+        获取内存块引用（增加引用计数）- 参考timelinetool的add_ref
+
         Returns:
             bool: 是否成功获取引用
         """
@@ -87,25 +95,32 @@ class MemoryBlock:
                     if self.status == MemoryBlockStatus.FREE:
                         self.status = MemoryBlockStatus.ALLOCATED
                         self.allocated_time = time.time()
-            
+
             if self.status in [MemoryBlockStatus.ALLOCATED, MemoryBlockStatus.IN_USE]:
                 self._ref_count += 1
+                self.total_allocations += 1
                 self.last_access_time = time.time()
-                
+
                 # 如果是第一次引用，状态转为使用中
                 if self._ref_count == 1 and self.status == MemoryBlockStatus.ALLOCATED:
                     with self._status_lock:
                         self.status = MemoryBlockStatus.IN_USE
-                
-                logger.debug(f"内存块 {self.block_id} 引用计数: {self._ref_count}")
+
+                logger.debug(f"内存块 {self.block_id} 引用+1: {self._ref_count}")
                 return True
             else:
                 logger.warning(f"内存块 {self.block_id} 状态 {self.status} 不允许获取引用")
                 return False
+
+    def add_ref(self) -> bool:
+        """
+        增加引用计数 - 兼容timelinetool的add_ref接口
+        """
+        return self.acquire()
     
     def release(self) -> bool:
         """
-        释放内存块引用（减少引用计数）
+        释放内存块引用（减少引用计数）- 参考timelinetool的release
         当引用计数为0时自动回收到内存池
 
         Returns:
@@ -114,32 +129,75 @@ class MemoryBlock:
         with self._ref_lock:
             if self._ref_count > 0:
                 self._ref_count -= 1
+                self.total_releases += 1
                 self.last_access_time = time.time()
 
-                logger.debug(f"内存块 {self.block_id} 引用计数: {self._ref_count}")
+                logger.debug(f"内存块 {self.block_id} 引用-1: {self._ref_count}")
 
-                # 如果引用计数为0，自动回收到内存池
+                # 如果引用计数为0，自动回收（参考timelinetool的自动回收机制）
                 if self._ref_count == 0:
                     with self._status_lock:
                         self.status = MemoryBlockStatus.PENDING_FREE
                         self.freed_time = time.time()
 
-                    # 自动回收到内存池
-                    if self.manager:
+                    # 优先使用回收回调（参考timelinetool的_pool回收）
+                    if self._recycle_callback:
                         try:
-                            success = self.manager.return_block(self)
-                            if success:
-                                logger.debug(f"内存块 {self.block_id} 自动回收到内存池")
-                            else:
-                                logger.warning(f"内存块 {self.block_id} 自动回收失败")
+                            self._recycle_callback(self)
+                            logger.debug(f"内存块 {self.block_id} 通过回调自动回收")
                         except Exception as e:
-                            logger.error(f"内存块 {self.block_id} 自动回收异常: {str(e)}")
+                            logger.error(f"内存块 {self.block_id} 回调回收异常: {str(e)}")
+                            # 回调失败时使用传统方式
+                            self._fallback_recycle()
+                    else:
+                        # 使用传统的manager回收方式
+                        self._fallback_recycle()
 
                 return True
             else:
                 logger.warning(f"内存块 {self.block_id} 引用计数已为0，无法继续释放")
                 return False
-    
+
+    def _fallback_recycle(self):
+        """传统的manager回收方式"""
+        if self.manager:
+            try:
+                success = self.manager.return_block(self)
+                if success:
+                    logger.debug(f"内存块 {self.block_id} 自动回收到内存池")
+                else:
+                    logger.warning(f"内存块 {self.block_id} 自动回收失败")
+            except Exception as e:
+                logger.error(f"内存块 {self.block_id} 自动回收异常: {str(e)}")
+
+    def set_pool_reference(self, pool_ref: Any, recycle_callback: callable):
+        """
+        设置内存池引用和回收回调 - 参考timelinetool的_pool引用
+
+        Args:
+            pool_ref: 内存池引用
+            recycle_callback: 回收回调函数
+        """
+        self._pool_ref = pool_ref
+        self._recycle_callback = recycle_callback
+
+    def reset(self):
+        """
+        重置内存块状态 - 用于回收时清理
+        """
+        with self._ref_lock, self._status_lock:
+            if self._ref_count > 0:
+                logger.warning(f"内存块 {self.block_id} 仍有引用，强制重置")
+
+            self._ref_count = 0
+            self.status = MemoryBlockStatus.FREE
+            self.last_access_time = time.time()
+            self.allocated_time = None
+            self.freed_time = None
+
+            # 清理元数据
+            self.metadata.clear()
+
     def force_free(self) -> bool:
         """
         强制释放内存块（忽略引用计数）
@@ -239,8 +297,8 @@ class MemoryBlock:
     
     def get_info(self) -> Dict[str, Any]:
         """
-        获取内存块详细信息
-        
+        获取内存块详细信息 - 参考timelinetool的统计信息
+
         Returns:
             Dict[str, Any]: 内存块信息
         """
@@ -259,6 +317,9 @@ class MemoryBlock:
                 "freed_time": self.freed_time,
                 "age_seconds": self.get_age(),
                 "idle_seconds": self.get_idle_time(),
+                "total_allocations": self.total_allocations,
+                "total_releases": self.total_releases,
+                "has_pool_callback": self._recycle_callback is not None,
                 "metadata": self.metadata.copy(),
             }
     
@@ -432,6 +493,12 @@ class MemoryBlockManager:
         resolution_key = f"{block.width}x{block.height}"
         
         with self.lock:
+            # 检查内存块是否已经在空闲列表中，避免重复归还
+            if resolution_key in self.free_blocks:
+                if block in self.free_blocks[resolution_key]:
+                    logger.debug(f"内存块 {block.block_id} 已在空闲列表中，跳过归还")
+                    return True
+
             if block.status == MemoryBlockStatus.PENDING_FREE:
                 # 强制释放并标记为空闲
                 block.force_free()
@@ -446,6 +513,18 @@ class MemoryBlockManager:
                     self.free_blocks[resolution_key] = [block]
                     logger.debug(f"创建新的空闲列表并归还内存块 {block.block_id}")
                     return True
+            elif block.status == MemoryBlockStatus.FREE:
+                # 内存块已经是空闲状态，检查是否在空闲列表中
+                if resolution_key in self.free_blocks:
+                    if block not in self.free_blocks[resolution_key]:
+                        self.free_blocks[resolution_key].append(block)
+                        logger.debug(f"内存块 {block.block_id} 已是空闲状态，添加到空闲列表")
+                    else:
+                        logger.debug(f"内存块 {block.block_id} 已在空闲列表中")
+                else:
+                    self.free_blocks[resolution_key] = [block]
+                    logger.debug(f"创建新的空闲列表并添加内存块 {block.block_id}")
+                return True
 
             logger.warning(f"内存块 {block.block_id} 状态 {block.status} 不允许归还")
             return False
