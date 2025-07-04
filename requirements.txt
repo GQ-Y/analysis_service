@@ -16,6 +16,7 @@ loguru>=0.7.0
 scipy>=1.11.0
 httpx>=0.24.0
 python-dotenv>=1.0.0
+sortedcontainers>=2.4.0
 # git+https://github.com/ultralytics/CLIP.git
 # ONVIF device discovery support
 onvif-zeep>=0.2.12

@@ -6,396 +6,560 @@
 作者: Yanli
 邮箱: 1959595510@qq.com
 创建日期: 2025-01-04
-描述: 任务服务
+描述: 任务管理服务
 
-处理视频分析任务的业务逻辑，包括任务创建、启动、停止、查询等功能。
+实现任务管理的5个核心功能：
+1. 创建任务
+2. 停止任务  
+3. 查看任务详情
+4. 删除任务
+5. 重启任务
 
 本文件是分析服务项目的一部分。
 """
 
-import uuid
+import asyncio
 import time
-from typing import Dict, Any, List, Optional
 from datetime import datetime
+from typing import Dict, List, Optional, Any
+from dataclasses import dataclass, asdict
 
-from .base_service import CacheableService
-from app.exceptions.business_exception import BusinessException
+from app.services.base_service import BaseService
 
 
-class TaskService(CacheableService):
-    """任务服务"""
+@dataclass
+class TaskInfo:
+    """任务信息数据类"""
+    id: int
+    name: str
+    description: Optional[str]
+    analysis_type: int  # 1-图片分析, 2-视频分析, 3-流分析
+    status: int  # 0-未启动, 1-运行中, 2-已停止, 3-错误, 4-已完成
+    progress: float
+    created_at: str
+    updated_at: str
+    model_codes: List[str]
+    stream_urls: List[str]
+    result_count: int
+
+
+class TaskService(BaseService):
+    """任务管理服务"""
     
     def __init__(self):
-        """初始化任务服务"""
-        super().__init__(cache_ttl=600)  # 10分钟缓存
-        self.task_repository = None
-        self.analyzer_factory = None
-        self.memory_manager = None
+        super().__init__()
+        self.tasks: Dict[int, Dict[str, Any]] = {}  # 内存存储任务
+        self.task_counter = 1
+        self.running_tasks: Dict[int, asyncio.Task] = {}  # 运行中的异步任务
     
-    async def _initialize_service(self):
-        """初始化服务依赖"""
-        self.task_repository = self.get_dependency('task_repository')
-        self.analyzer_factory = self.get_dependency('analyzer_factory')
-        self.memory_manager = self.get_dependency('memory_manager')
+    async def create_task(
+        self,
+        name: str,
+        description: Optional[str],
+        analysis_type: int,
+        model_codes: List[str],
+        stream_urls: Optional[List[str]] = None,
+        video_path: Optional[str] = None,
+        image_paths: Optional[List[str]] = None,
+        config: Dict[str, Any] = None,
+        enable_video_player: bool = False
+    ) -> TaskInfo:
+        """创建任务
+        
+        Args:
+            name: 任务名称
+            description: 任务描述
+            analysis_type: 分析类型 (1-图片, 2-视频, 3-流)
+            model_codes: 模型代码列表
+            stream_urls: 流URL列表
+            video_path: 视频文件路径
+            image_paths: 图片路径列表
+            config: 任务配置
+            enable_video_player: 是否启用视频播放器
+
+        Returns:
+            TaskInfo: 创建的任务信息
+        """
+        # 参数验证
+        if not name:
+            raise ValueError("任务名称不能为空")
+        
+        if not model_codes:
+            raise ValueError("必须指定至少一个模型")
+        
+        if analysis_type == 1 and not image_paths:
+            raise ValueError("图片分析任务必须提供图片路径")
+        elif analysis_type == 2 and not video_path:
+            raise ValueError("视频分析任务必须提供视频路径")
+        elif analysis_type == 3 and not stream_urls:
+            raise ValueError("流分析任务必须提供流URL")
+        
+        # 创建任务
+        task_id = self.task_counter
+        self.task_counter += 1
+        
+        now = datetime.now()
+        task_data = {
+            "id": task_id,
+            "name": name,
+            "description": description,
+            "analysis_type": analysis_type,
+            "model_codes": model_codes,
+            "stream_urls": stream_urls or [],
+            "video_path": video_path,
+            "image_paths": image_paths or [],
+            "config": config or {},
+            "enable_video_player": enable_video_player,
+            "status": 0,  # 未启动
+            "progress": 0.0,
+            "created_at": now,
+            "updated_at": now,
+            "results": []
+        }
+        
+        self.tasks[task_id] = task_data
+        
+        self.logger.info(f"✅ 任务创建成功: ID={task_id}, 名称={name}, 类型={analysis_type}")
+        
+        return self._to_task_info(task_data)
     
-    async def get_tasks(
+    async def start_task(self, task_id: int) -> Dict[str, Any]:
+        """启动任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Dict[str, Any]: 启动结果
+        """
+        if task_id not in self.tasks:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        task_data = self.tasks[task_id]
+        
+        if task_data["status"] == 1:
+            raise ValueError(f"任务 {task_id} 已经在运行中")
+        
+        # 更新任务状态
+        task_data["status"] = 1  # 运行中
+        task_data["updated_at"] = datetime.now()
+        
+        # 启动异步任务执行
+        task_coroutine = self._execute_task(task_id)
+        self.running_tasks[task_id] = asyncio.create_task(task_coroutine)
+        
+        self.logger.info(f"🚀 任务启动成功: ID={task_id}")
+        
+        return {
+            "task_id": task_id,
+            "status": "started",
+            "message": "任务已启动"
+        }
+    
+    async def stop_task(self, task_id: int) -> Dict[str, Any]:
+        """停止任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Dict[str, Any]: 停止结果
+        """
+        if task_id not in self.tasks:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        task_data = self.tasks[task_id]
+        
+        if task_data["status"] != 1:
+            raise ValueError(f"任务 {task_id} 未在运行中")
+        
+        # 取消运行中的异步任务
+        if task_id in self.running_tasks:
+            self.running_tasks[task_id].cancel()
+            del self.running_tasks[task_id]
+        
+        # 更新任务状态
+        task_data["status"] = 2  # 已停止
+        task_data["updated_at"] = datetime.now()
+        
+        self.logger.info(f"⏹️ 任务停止成功: ID={task_id}")
+        
+        return {
+            "task_id": task_id,
+            "status": "stopped",
+            "message": "任务已停止"
+        }
+    
+    async def get_task_detail(self, task_id: int) -> Optional[TaskInfo]:
+        """查看任务详情
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Optional[TaskInfo]: 任务详情，不存在返回None
+        """
+        if task_id not in self.tasks:
+            return None
+        
+        task_data = self.tasks[task_id]
+        return self._to_task_info(task_data)
+    
+    async def delete_task(self, task_id: int) -> Dict[str, Any]:
+        """删除任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Dict[str, Any]: 删除结果
+        """
+        if task_id not in self.tasks:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        task_data = self.tasks[task_id]
+        
+        # 如果任务正在运行，先停止
+        if task_data["status"] == 1:
+            await self.stop_task(task_id)
+        
+        # 删除任务
+        del self.tasks[task_id]
+        
+        self.logger.info(f"🗑️ 任务删除成功: ID={task_id}")
+        
+        return {
+            "task_id": task_id,
+            "message": "任务已删除"
+        }
+    
+    async def restart_task(self, task_id: int) -> Dict[str, Any]:
+        """重启任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            Dict[str, Any]: 重启结果
+        """
+        if task_id not in self.tasks:
+            raise ValueError(f"任务 {task_id} 不存在")
+        
+        task_data = self.tasks[task_id]
+        
+        # 如果任务正在运行，先停止
+        if task_data["status"] == 1:
+            await self.stop_task(task_id)
+            # 等待一下确保任务完全停止
+            await asyncio.sleep(1)
+        
+        # 重置任务状态
+        task_data["progress"] = 0.0
+        task_data["results"] = []
+        task_data["updated_at"] = datetime.now()
+        
+        # 重新启动任务
+        result = await self.start_task(task_id)
+        
+        self.logger.info(f"🔄 任务重启成功: ID={task_id}")
+        
+        return {
+            "task_id": task_id,
+            "status": "restarted",
+            "message": "任务已重启"
+        }
+    
+    async def list_tasks(
         self,
         page: int = 1,
         page_size: int = 20,
-        filters: Dict[str, Any] = None
+        status: Optional[int] = None
     ) -> Dict[str, Any]:
         """获取任务列表
         
         Args:
             page: 页码
             page_size: 每页大小
-            filters: 筛选条件
+            status: 状态筛选
             
         Returns:
             Dict[str, Any]: 任务列表和分页信息
         """
+        # 筛选任务
+        filtered_tasks = []
+        for task_data in self.tasks.values():
+            if status is not None and task_data["status"] != status:
+                continue
+            filtered_tasks.append(task_data)
+        
+        # 排序（按创建时间倒序）
+        filtered_tasks.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        # 分页
+        total = len(filtered_tasks)
+        start = (page - 1) * page_size
+        end = start + page_size
+        page_tasks = filtered_tasks[start:end]
+        
+        # 转换为TaskInfo
+        task_infos = [self._to_task_info(task_data) for task_data in page_tasks]
+        
+        return {
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total + page_size - 1) // page_size,
+            "items": [asdict(task_info) for task_info in task_infos]
+        }
+    
+    async def _execute_task(self, task_id: int):
+        """执行任务（零拷贝AI分析）"""
+        task_data = self.tasks[task_id]
+
         try:
-            # 验证分页参数
-            page, page_size = self.validate_pagination(page, page_size)
-            
-            # 构建缓存键
-            cache_key = self.generate_cache_key(
-                'tasks_list',
-                page=page,
-                page_size=page_size,
-                **filters or {}
+            self.logger.info(f"🚀 开始执行零拷贝AI分析任务: ID={task_id}")
+
+            # 导入零拷贝组件
+            from app.core.zero_copy import (
+                MemoryPool, TimeAxis, StreamCapture, MultiStreamCapture,
+                MockAnalyzer, AnalysisWorker, AnalysisEngine, ResultProcessor,
+                VideoPlayer
             )
-            
-            # 尝试从缓存获取
-            cached_result = await self.get_cached_data(cache_key)
-            if cached_result:
-                self.log_info("从缓存获取任务列表", cache_key=cache_key)
-                return cached_result
-            
-            # 从数据库获取
-            total = await self.task_repository.count_tasks(filters)
-            tasks = await self.task_repository.get_tasks(page, page_size, filters)
-            
-            # 构建结果
-            result = {
-                'items': tasks,
-                'pagination': self.calculate_pagination(total, page, page_size)
-            }
-            
-            # 缓存结果
-            await self.set_cached_data(cache_key, result, ttl=300)  # 5分钟缓存
-            
-            self.log_info(f"获取任务列表成功，共{total}条记录")
-            return result
-            
-        except Exception as e:
-            self.log_error("获取任务列表失败", e)
-            raise BusinessException(f"获取任务列表失败: {str(e)}")
-    
-    async def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
-        """获取任务详情
-        
-        Args:
-            task_id: 任务ID
-            
-        Returns:
-            Optional[Dict[str, Any]]: 任务详情
-        """
-        try:
-            if not task_id:
-                raise BusinessException("任务ID不能为空")
-            
-            # 构建缓存键
-            cache_key = self.generate_cache_key('task_detail', task_id)
-            
-            # 尝试从缓存获取
-            cached_task = await self.get_cached_data(cache_key)
-            if cached_task:
-                self.log_info("从缓存获取任务详情", task_id=task_id)
-                return cached_task
-            
-            # 从数据库获取
-            task = await self.task_repository.get_task(task_id)
-            if not task:
-                return None
-            
-            # 缓存结果
-            await self.set_cached_data(cache_key, task, ttl=600)  # 10分钟缓存
-            
-            self.log_info("获取任务详情成功", task_id=task_id)
-            return task
-            
-        except Exception as e:
-            self.log_error("获取任务详情失败", e, task_id=task_id)
-            raise BusinessException(f"获取任务详情失败: {str(e)}")
-    
-    async def start_task(self, task_data: Dict[str, Any]) -> Dict[str, Any]:
-        """启动分析任务
-        
-        Args:
-            task_data: 任务数据
-            
-        Returns:
-            Dict[str, Any]: 创建的任务信息
-        """
-        try:
-            # 验证必需参数
-            required_fields = ['task_name', 'stream_url', 'analysis_type', 'model_code']
-            self.validate_required_params(task_data, required_fields)
-            
-            # 生成任务ID
-            task_id = str(uuid.uuid4())
-            
-            # 准备任务数据
-            task_info = {
-                'task_id': task_id,
-                'task_name': task_data['task_name'],
-                'stream_url': task_data['stream_url'],
-                'analysis_type': task_data['analysis_type'],
-                'model_code': task_data['model_code'],
-                'user_id': task_data.get('user_id'),
-                'created_by': task_data.get('created_by'),
-                'status': 'starting',
-                'created_at': datetime.now().isoformat(),
-                'updated_at': datetime.now().isoformat(),
-                'config': task_data.get('config', {}),
-                'roi_config': task_data.get('roi_config', {}),
-                'callback_url': task_data.get('callback_url'),
-            }
-            
-            # 验证流URL
-            await self._validate_stream_url(task_info['stream_url'])
-            
-            # 创建分析器
-            analyzer = await self._create_analyzer(
-                task_info['analysis_type'],
-                task_info['model_code']
+
+            # 1. 内存预分配
+            self.logger.info(f"🔧 任务 {task_id}: 预分配内存池...")
+            memory_pool = MemoryPool(
+                pool_size=50,  # 50个缓冲区
+                height=1080,
+                width=1920,
+                logger=self.logger
             )
-            
-            # 保存任务到数据库
-            await self.task_repository.create_task(task_info)
-            
-            # 启动任务处理
-            await self._start_task_processing(task_id, analyzer, task_info)
-            
-            # 更新任务状态
-            await self.task_repository.update_task_status(task_id, 'running')
-            task_info['status'] = 'running'
-            
-            # 清除相关缓存
-            await self._clear_task_caches(task_id)
-            
-            self.log_info("任务启动成功", task_id=task_id, task_name=task_info['task_name'])
-            return task_info
-            
+
+            # 2. 构建时间轴
+            self.logger.info(f"⏰ 任务 {task_id}: 构建时间轴...")
+            time_axis = TimeAxis(
+                timeout_seconds=2.0,
+                max_frames=200,
+                logger=self.logger
+            )
+
+            # 3. 创建视频播放器（如果启用）
+            video_player = None
+            if task_data.get("enable_video_player", False):
+                self.logger.info(f"🎬 任务 {task_id}: 创建视频播放器...")
+                video_player = VideoPlayer(
+                    window_name=f"任务{task_id} - {task_data['name']}",
+                    show_fps=True,
+                    show_info=True,
+                    logger=self.logger
+                )
+                video_player.start()
+
+            # 4. 创建结果处理器
+            self.logger.info(f"💾 任务 {task_id}: 创建结果处理器...")
+            result_processor = ResultProcessor(
+                output_dir=f"results/task_{task_id}",
+                save_images=True,
+                save_metadata=True,
+                draw_boxes=True,
+                logger=self.logger
+            )
+            result_processor.start()
+
+            # 4. 创建分析引擎
+            self.logger.info(f"🤖 任务 {task_id}: 创建AI分析引擎...")
+            analysis_engine = AnalysisEngine(self.logger)
+
+            # 为每个模型创建分析器
+            for model_code in task_data["model_codes"]:
+                analyzer = MockAnalyzer(
+                    name=f"{model_code}_analyzer",
+                    process_time=0.05,  # 50ms模拟处理时间
+                    logger=self.logger
+                )
+
+                # 添加分析工作器
+                worker = analysis_engine.add_worker(
+                    name=f"worker_{model_code}",
+                    analyzer=analyzer,
+                    time_axis=time_axis,
+                    batch_size=4,  # 批处理4帧
+                    timeout=0.1
+                )
+
+                # 添加结果回调
+                worker.add_result_callback(
+                    lambda frames, results: self._on_analysis_result(task_id, frames, results, result_processor, video_player)
+                )
+
+            # 4. 创建流捕获器（双管道处理）
+            captures = []
+            if task_data["analysis_type"] == 3:  # 流分析
+                self.logger.info(f"📡 任务 {task_id}: 创建流捕获器...")
+                multi_capture = MultiStreamCapture(memory_pool, time_axis, self.logger)
+
+                for i, stream_url in enumerate(task_data["stream_urls"]):
+                    stream_id = f"stream_{i+1}"
+                    capture = multi_capture.add_stream(stream_id, stream_url)
+                    # 为第一个流设置视频播放器
+                    if i == 0 and video_player:
+                        capture.video_player = video_player
+                    captures.append(capture)
+
+            elif task_data["analysis_type"] == 2:  # 视频分析
+                self.logger.info(f"🎥 任务 {task_id}: 创建视频捕获器...")
+                capture = StreamCapture(
+                    stream_url=task_data["video_path"],
+                    memory_pool=memory_pool,
+                    time_axis=time_axis,
+                    stream_id="video_stream",
+                    video_player=video_player,
+                    logger=self.logger
+                )
+                captures.append(capture)
+
+            # 5. 启动双管道处理
+            self.logger.info(f"🔄 任务 {task_id}: 启动双管道处理...")
+
+            # 启动分析引擎（分析管道）
+            analysis_engine.start_all()
+
+            # 启动流捕获（拉流管道）
+            for capture in captures:
+                capture.start()
+
+            # 6. 监控任务执行
+            start_time = time.time()
+            last_progress_time = start_time
+
+            while task_data["status"] == 1:  # 运行中
+                current_time = time.time()
+                runtime = current_time - start_time
+
+                # 更新进度（基于运行时间）
+                if current_time - last_progress_time >= 2.0:  # 每2秒更新一次
+                    # 获取统计信息
+                    memory_stats = memory_pool.get_stats()
+                    time_axis_stats = time_axis.get_stats()
+                    analysis_stats = analysis_engine.get_all_stats()
+
+                    # 计算进度（基于处理的帧数）
+                    total_processed = sum(stats.get("total_processed", 0) for stats in analysis_stats.values())
+                    progress = min(95.0, (total_processed / 100.0) * 100)  # 最多95%，完成时设为100%
+
+                    task_data["progress"] = progress
+                    task_data["updated_at"] = datetime.now()
+
+                    self.logger.info(f"📊 任务 {task_id} 进度: {progress:.1f}% | "
+                                   f"内存使用: {memory_stats['current_usage']}/{memory_stats['pool_size']} | "
+                                   f"时间轴: {time_axis_stats['current_size']} 帧 | "
+                                   f"已处理: {total_processed} 帧")
+
+                    last_progress_time = current_time
+
+                await asyncio.sleep(1)  # 每秒检查一次
+
+            # 7. 清理资源
+            self.logger.info(f"🧹 任务 {task_id}: 清理资源...")
+
+            # 停止捕获器
+            for capture in captures:
+                capture.stop()
+
+            # 停止分析引擎
+            analysis_engine.stop_all()
+
+            # 停止结果处理器
+            result_processor.stop()
+
+            # 停止视频播放器
+            if video_player:
+                video_player.stop()
+
+            # 清理内存池
+            memory_pool.cleanup()
+
+            # 任务完成
+            if task_data["status"] == 1:
+                task_data["status"] = 4  # 已完成
+                task_data["progress"] = 100.0
+                task_data["updated_at"] = datetime.now()
+
+                self.logger.info(f"✅ 零拷贝AI分析任务完成: ID={task_id}")
+
+        except asyncio.CancelledError:
+            self.logger.info(f"⏹️ 任务被取消: ID={task_id}")
         except Exception as e:
-            self.log_error("任务启动失败", e, task_data=task_data)
-            raise BusinessException(f"任务启动失败: {str(e)}")
-    
-    async def stop_task(self, task_id: str, user_id: str = None) -> Dict[str, Any]:
-        """停止分析任务
-        
-        Args:
-            task_id: 任务ID
-            user_id: 用户ID
-            
-        Returns:
-            Dict[str, Any]: 停止结果
-        """
-        try:
-            if not task_id:
-                raise BusinessException("任务ID不能为空")
-            
-            # 获取任务信息
-            task = await self.get_task(task_id)
-            if not task:
-                raise BusinessException("任务不存在")
-            
-            # 检查权限
-            if user_id and task.get('user_id') != user_id:
-                raise BusinessException("无权限操作此任务")
-            
-            # 检查任务状态
-            if task['status'] not in ['running', 'starting']:
-                raise BusinessException(f"任务状态为{task['status']}，无法停止")
-            
-            # 停止任务处理
-            await self._stop_task_processing(task_id)
-            
-            # 更新任务状态
-            await self.task_repository.update_task_status(task_id, 'stopped')
-            
-            # 清除相关缓存
-            await self._clear_task_caches(task_id)
-            
-            result = {
-                'task_id': task_id,
-                'status': 'stopped',
-                'stopped_at': datetime.now().isoformat()
+            self.logger.error(f"❌ 任务执行失败: ID={task_id}, 错误={str(e)}")
+            task_data["status"] = 3  # 错误
+            task_data["updated_at"] = datetime.now()
+        finally:
+            # 清理运行中的任务记录
+            if task_id in self.running_tasks:
+                del self.running_tasks[task_id]
+
+    def _on_analysis_result(self, task_id: int, frame_buffers: list, results: list, result_processor=None, video_player=None):
+        """分析结果回调"""
+        if task_id not in self.tasks:
+            return
+
+        task_data = self.tasks[task_id]
+
+        # 存储分析结果并保存图片
+        for frame_buffer, result in zip(frame_buffers, results):
+            # 存储到任务结果
+            analysis_result = {
+                "id": len(task_data["results"]) + 1,
+                "frame_id": frame_buffer.frame_id,
+                "timestamp": frame_buffer.timestamp,
+                "stream_id": frame_buffer.stream_id,
+                "detections": result.get("detections", []),
+                "analyzer": result.get("analyzer", "unknown"),
+                "confidence": result.get("confidence", 0.0),
+                "processing_time": result.get("processing_time", 0.0)
             }
-            
-            self.log_info("任务停止成功", task_id=task_id)
-            return result
-            
-        except Exception as e:
-            self.log_error("任务停止失败", e, task_id=task_id)
-            raise BusinessException(f"任务停止失败: {str(e)}")
+            task_data["results"].append(analysis_result)
+
+            # 发送给结果处理器保存图片
+            if result_processor:
+                result_processor.process_result(frame_buffer, task_id)
+
+            # 发送分析结果给视频播放器
+            if video_player:
+                # 构建播放器需要的结果格式
+                player_results = {
+                    result.get("analyzer", "unknown"): result
+                }
+                video_player.add_analysis_result(frame_buffer.frame_id, player_results)
+
+        # 限制结果数量（避免内存过多）
+        if len(task_data["results"]) > 1000:
+            task_data["results"] = task_data["results"][-1000:]  # 保留最新1000个结果
     
-    async def delete_task(self, task_id: str, user_id: str = None) -> bool:
-        """删除任务
-        
-        Args:
-            task_id: 任务ID
-            user_id: 用户ID
-            
-        Returns:
-            bool: 是否删除成功
-        """
-        try:
-            if not task_id:
-                raise BusinessException("任务ID不能为空")
-            
-            # 获取任务信息
-            task = await self.get_task(task_id)
-            if not task:
-                raise BusinessException("任务不存在")
-            
-            # 检查权限
-            if user_id and task.get('user_id') != user_id:
-                raise BusinessException("无权限操作此任务")
-            
-            # 检查任务状态
-            if task['status'] == 'running':
-                raise BusinessException("运行中的任务无法删除，请先停止任务")
-            
-            # 删除任务
-            await self.task_repository.delete_task(task_id)
-            
-            # 清除相关缓存
-            await self._clear_task_caches(task_id)
-            
-            self.log_info("任务删除成功", task_id=task_id)
-            return True
-            
-        except Exception as e:
-            self.log_error("任务删除失败", e, task_id=task_id)
-            raise BusinessException(f"任务删除失败: {str(e)}")
-    
-    async def batch_start_tasks(self, batch_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """批量启动任务
-        
-        Args:
-            batch_data: 批量任务数据
-            
-        Returns:
-            List[Dict[str, Any]]: 批量任务结果
-        """
-        try:
-            tasks_data = batch_data.get('tasks', [])
-            if not tasks_data:
-                raise BusinessException("批量任务数据不能为空")
-            
-            if len(tasks_data) > 10:  # 限制批量数量
-                raise BusinessException("批量任务数量不能超过10个")
-            
-            results = []
-            success_count = 0
-            
-            for i, task_data in enumerate(tasks_data):
-                try:
-                    # 添加批量任务的公共信息
-                    task_data.update({
-                        'user_id': batch_data.get('user_id'),
-                        'created_by': batch_data.get('created_by'),
-                        'batch_id': batch_data.get('batch_id', str(uuid.uuid4())),
-                        'batch_index': i
-                    })
-                    
-                    # 启动单个任务
-                    task_result = await self.start_task(task_data)
-                    results.append({
-                        'index': i,
-                        'success': True,
-                        'task': task_result
-                    })
-                    success_count += 1
-                    
-                except Exception as e:
-                    results.append({
-                        'index': i,
-                        'success': False,
-                        'error': str(e),
-                        'task_data': task_data
-                    })
-            
-            self.log_info(f"批量任务启动完成，成功{success_count}个，失败{len(tasks_data) - success_count}个")
-            return results
-            
-        except Exception as e:
-            self.log_error("批量任务启动失败", e)
-            raise BusinessException(f"批量任务启动失败: {str(e)}")
-    
-    async def _validate_stream_url(self, stream_url: str):
-        """验证流URL
-        
-        Args:
-            stream_url: 流URL
-            
-        Raises:
-            BusinessException: URL无效
-        """
-        # 这里可以添加流URL验证逻辑
-        if not stream_url or not stream_url.startswith(('rtsp://', 'http://', 'https://')):
-            raise BusinessException("无效的流URL格式")
-    
-    async def _create_analyzer(self, analysis_type: str, model_code: str):
-        """创建分析器
-        
-        Args:
-            analysis_type: 分析类型
-            model_code: 模型代码
-            
-        Returns:
-            分析器实例
-        """
-        try:
-            analyzer = await self.analyzer_factory.create_analyzer(analysis_type, model_code)
-            return analyzer
-        except Exception as e:
-            raise BusinessException(f"创建分析器失败: {str(e)}")
-    
-    async def _start_task_processing(self, task_id: str, analyzer, task_info: Dict[str, Any]):
-        """启动任务处理
-        
-        Args:
-            task_id: 任务ID
-            analyzer: 分析器实例
-            task_info: 任务信息
-        """
-        # 这里应该启动实际的任务处理逻辑
-        # 暂时只是模拟
-        self.log_info("启动任务处理", task_id=task_id)
-    
-    async def _stop_task_processing(self, task_id: str):
-        """停止任务处理
-        
-        Args:
-            task_id: 任务ID
-        """
-        # 这里应该停止实际的任务处理逻辑
-        # 暂时只是模拟
-        self.log_info("停止任务处理", task_id=task_id)
-    
-    async def _clear_task_caches(self, task_id: str):
-        """清除任务相关缓存
-        
-        Args:
-            task_id: 任务ID
-        """
-        cache_keys = [
-            self.generate_cache_key('task_detail', task_id),
-            'tasks_list:*'  # 清除所有任务列表缓存
-        ]
-        
-        for cache_key in cache_keys:
-            await self.delete_cached_data(cache_key)
+    def _to_task_info(self, task_data: Dict[str, Any]) -> TaskInfo:
+        """将任务数据转换为TaskInfo"""
+        return TaskInfo(
+            id=task_data["id"],
+            name=task_data["name"],
+            description=task_data["description"],
+            analysis_type=task_data["analysis_type"],
+            status=task_data["status"],
+            progress=task_data["progress"],
+            created_at=task_data["created_at"].isoformat(),
+            updated_at=task_data["updated_at"].isoformat(),
+            model_codes=task_data["model_codes"],
+            stream_urls=task_data["stream_urls"],
+            result_count=len(task_data.get("results", []))
+        )
+
+
+# 全局任务服务实例
+_task_service = None
+
+
+def get_task_service() -> TaskService:
+    """获取任务服务实例"""
+    global _task_service
+    if _task_service is None:
+        _task_service = TaskService()
+    return _task_service

@@ -15,11 +15,13 @@
 
 from fastapi import APIRouter
 from .storage import router as storage_router
+from .tasks import router as tasks_router
 
 # 创建v1 API路由器
 api_router = APIRouter()
 
 # 注册各个模块的路由
 api_router.include_router(storage_router)
+api_router.include_router(tasks_router)
 
 __all__ = ["api_router"]
