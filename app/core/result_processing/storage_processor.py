@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 
 from app.core.zero_copy.frame_buffer import FrameBuffer
 from .base_processor import BaseResultProcessor
@@ -33,15 +35,16 @@ class StorageProcessor(BaseResultProcessor):
         Args:
             save_images: 是否保存图片
             save_metadata: 是否保存元数据
-            draw_boxes: 是否在图片上绘制检测框
-            image_quality: 图片质量 (1-100)
-            logger: 日志记录器
+            draw_boxes: 是否绘制检测框
+            image_quality: JPEG图片质量 (1-100)
+            logger: 可选的日志记录器
         """
         super().__init__(logger)
+        
         self.save_images = save_images
         self.save_metadata = save_metadata
         self.draw_boxes = draw_boxes
-        self.image_quality = image_quality
+        self.image_quality = max(1, min(100, image_quality))
         
         # 统计信息
         self.total_processed = 0
@@ -49,15 +52,47 @@ class StorageProcessor(BaseResultProcessor):
         self.metadata_saved = 0
         self.errors = 0
         
-        # 设置文件日志记录器
+        # 文件日志
         self._setup_file_logger()
         
-        self.file_logger.info("💾 存储处理器初始化完成")
+        # 【新增】字体设置
+        self.font = None
+        self.font_scale = 0.7
+        self.font_thickness = 2
+        self._setup_font()
+        
+        self.file_logger.info("✅ 存储处理器初始化完成")
         self.file_logger.info(f"   配置: save_images={save_images}, save_metadata={save_metadata}")
-        self.file_logger.info(f"   参数: draw_boxes={draw_boxes}, image_quality={image_quality}")
+        self.file_logger.info(f"   绘制设置: draw_boxes={draw_boxes}, quality={image_quality}")
+    
+    def _setup_font(self):
+        """设置中文字体"""
+        try:
+            # 尝试加载中文字体（按优先级）
+            font_paths = [
+                "/System/Library/Fonts/PingFang.ttc",  # macOS 苹方字体
+                "/System/Library/Fonts/STHeiti Light.ttc",  # macOS 黑体
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",  # Linux
+                "/Windows/Fonts/msyh.ttc",  # Windows 微软雅黑
+                "/Windows/Fonts/simhei.ttf",  # Windows 黑体
+            ]
+            
+            for font_path in font_paths:
+                if os.path.exists(font_path):
+                    self.font = ImageFont.truetype(font_path, 24)
+                    self.file_logger.info(f"✅ 加载字体: {font_path}")
+                    return
+            
+            # 如果没有找到字体，使用默认字体
+            self.font = ImageFont.load_default()
+            self.file_logger.warning("⚠️ 未找到中文字体，使用默认字体")
+            
+        except Exception as e:
+            self.font = ImageFont.load_default()
+            self.file_logger.warning(f"⚠️ 字体加载失败，使用默认字体: {e}")
     
     def _setup_file_logger(self):
-        """设置存储处理器专用的文件日志记录器"""
+        """设置文件日志记录器"""
         try:
             # 使用原有logger作为基础
             if hasattr(self.logger, 'name') and 'result_pipeline_task_' in self.logger.name:
@@ -427,28 +462,74 @@ class StorageProcessor(BaseResultProcessor):
             else:
                 x1, y1, x2, y2 = bbox[:4] if len(bbox) >= 4 else [0, 0, 0, 0]
             
-            # 绘制矩形框
-            cv2.rectangle(image, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
             
-            # 绘制标签
+            # 绘制矩形框（使用OpenCV）
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            
+            # 【修复】使用PIL绘制中文标签
             class_name = detection.get("class_name", "unknown")
             confidence = detection.get("confidence", 0.0)
             label = f"{class_name} {confidence:.2f}"
             
-            # 计算文本位置
-            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-            label_y = max(int(y1) - 10, label_size[1])
+            # 将OpenCV图像转换为PIL图像（用于绘制文字）
+            image_pil = Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(image_pil)
             
-            # 绘制标签背景
-            cv2.rectangle(image, (int(x1), label_y - label_size[1] - 5), 
-                         (int(x1) + label_size[0], label_y + 5), (0, 255, 0), -1)
+            # 计算文本大小
+            if hasattr(self.font, 'getbbox'):
+                # PIL 8.0.0+ 使用getbbox
+                bbox_text = draw.textbbox((0, 0), label, font=self.font)
+                text_width = bbox_text[2] - bbox_text[0]
+                text_height = bbox_text[3] - bbox_text[1]
+            else:
+                # 旧版本PIL使用textsize
+                text_width, text_height = draw.textsize(label, font=self.font)
             
-            # 绘制标签文本
-            cv2.putText(image, label, (int(x1), label_y), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+            # 计算标签位置
+            label_y = max(y1 - text_height - 10, 0)
+            label_x = x1
+            
+            # 绘制标签背景（绿色背景）
+            background_coords = [
+                (label_x, label_y),
+                (label_x + text_width + 8, label_y + text_height + 8)
+            ]
+            draw.rectangle(background_coords, fill=(0, 255, 0), outline=None)
+            
+            # 绘制文字（黑色文字）
+            draw.text((label_x + 4, label_y + 4), label, fill=(0, 0, 0), font=self.font)
+            
+            # 将PIL图像转换回OpenCV格式
+            image_cv = cv2.cvtColor(np.array(image_pil), cv2.COLOR_RGB2BGR)
+            
+            # 将修改后的图像复制回原图像
+            image[:] = image_cv
             
         except Exception as e:
             self.file_logger.error(f"❌ 绘制检测框失败: {e}")
+            # 如果PIL绘制失败，回退到OpenCV绘制（可能中文显示异常）
+            try:
+                class_name = detection.get("class_name", "unknown")
+                confidence = detection.get("confidence", 0.0)
+                label = f"{class_name} {confidence:.2f}"
+                
+                # 使用OpenCV绘制（中文可能显示为方框）
+                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+                label_y = max(y1 - 10, label_size[1])
+                
+                # 绘制标签背景
+                cv2.rectangle(image, (x1, label_y - label_size[1] - 5), 
+                             (x1 + label_size[0], label_y + 5), (0, 255, 0), -1)
+                
+                # 绘制标签文本
+                cv2.putText(image, label, (x1, label_y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+                
+                self.file_logger.warning(f"   使用OpenCV绘制标签（可能中文显示异常）: {label}")
+                
+            except Exception as e2:
+                self.file_logger.error(f"❌ OpenCV绘制也失败: {e2}")
     
     def _build_metadata(self, frame_buffer: FrameBuffer) -> Dict[str, Any]:
         """构建元数据"""
