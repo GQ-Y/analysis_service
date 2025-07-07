@@ -19,6 +19,8 @@ import threading
 import logging
 import os
 import glob
+import requests
+import numpy as np
 from typing import List, Optional, Callable, Union
 from pathlib import Path
 
@@ -112,37 +114,64 @@ class ImageProcessor:
     
     def _prepare_image_list(self, image_path: Union[str, List[str]]):
         """
-        准备图片列表
+        准备图片列表，支持本地文件、文件夹和URL
         
         Args:
-            image_path: 图片路径（单张、文件夹或列表）
+            image_path: 图片路径（单张、文件夹、URL或列表）
         """
         if isinstance(image_path, list):
             # 图片路径列表
             for path in image_path:
-                if os.path.isfile(path) and self._is_supported_format(path):
+                if not path or path.strip() == "":
+                    continue
+                    
+                path = path.strip()
+                if self._is_url(path):
+                    # URL图片
+                    if self._is_supported_url_format(path):
+                        self.image_paths.append(path)
+                        self.logger.info(f"🌐 添加URL图片: {path}")
+                    else:
+                        self.logger.warning(f"⚠️ 不支持的URL图片格式: {path}")
+                elif os.path.isfile(path) and self._is_supported_format(path):
+                    # 本地文件
                     self.image_paths.append(path)
                     
-        elif os.path.isfile(image_path):
-            # 单张图片
-            if self._is_supported_format(image_path):
-                self.image_paths.append(image_path)
-            else:
-                self.logger.warning(f"⚠️ 不支持的图片格式: {image_path}")
+        elif isinstance(image_path, str):
+            if not image_path or image_path.strip() == "":
+                self.logger.warning(f"⚠️ 图片路径为空")
+                return
                 
-        elif os.path.isdir(image_path):
-            # 图片文件夹
-            for ext in self.supported_formats:
-                pattern = os.path.join(image_path, f"*{ext}")
-                self.image_paths.extend(glob.glob(pattern))
-                pattern = os.path.join(image_path, f"*{ext.upper()}")
-                self.image_paths.extend(glob.glob(pattern))
+            image_path = image_path.strip()
             
-            # 去重并排序
-            self.image_paths = sorted(list(set(self.image_paths)))
-            
-        else:
-            self.logger.error(f"❌ 无效的图片路径: {image_path}")
+            if self._is_url(image_path):
+                # URL图片
+                if self._is_supported_url_format(image_path):
+                    self.image_paths.append(image_path)
+                    self.logger.info(f"🌐 添加URL图片: {image_path}")
+                else:
+                    self.logger.warning(f"⚠️ 不支持的URL图片格式: {image_path}")
+                    
+            elif os.path.isfile(image_path):
+                # 单张本地图片
+                if self._is_supported_format(image_path):
+                    self.image_paths.append(image_path)
+                else:
+                    self.logger.warning(f"⚠️ 不支持的图片格式: {image_path}")
+                    
+            elif os.path.isdir(image_path):
+                # 图片文件夹
+                for ext in self.supported_formats:
+                    pattern = os.path.join(image_path, f"*{ext}")
+                    self.image_paths.extend(glob.glob(pattern))
+                    pattern = os.path.join(image_path, f"*{ext.upper()}")
+                    self.image_paths.extend(glob.glob(pattern))
+                
+                # 去重并排序
+                self.image_paths = sorted(list(set(self.image_paths)))
+                
+            else:
+                self.logger.error(f"❌ 无效的图片路径: {image_path}")
         
         self.logger.info(f"📂 找到 {len(self.image_paths)} 张支持的图片")
     
@@ -158,6 +187,42 @@ class ImageProcessor:
         """
         ext = Path(file_path).suffix.lower()
         return ext in self.supported_formats
+    
+    def _is_url(self, path: str) -> bool:
+        """
+        检查是否为URL
+        
+        Args:
+            path: 路径字符串
+            
+        Returns:
+            bool: 是否为URL
+        """
+        return path.startswith(('http://', 'https://'))
+    
+    def _is_supported_url_format(self, url: str) -> bool:
+        """
+        检查URL是否为支持的图片格式
+        
+        Args:
+            url: URL路径
+            
+        Returns:
+            bool: 是否支持
+        """
+        # 从URL中提取文件扩展名
+        from urllib.parse import urlparse, parse_qs
+        parsed = urlparse(url)
+        path = parsed.path.lower()
+        
+        # 检查路径中是否包含图片扩展名
+        for ext in self.supported_formats:
+            if ext in path:
+                return True
+        
+        # 如果没有明确的扩展名，尝试通过常见的图片URL模式判断
+        # 例如：一些图片服务可能没有明显的扩展名
+        return any(keyword in url.lower() for keyword in ['image', 'img', 'pic', 'photo', '.jpg', '.jpeg', '.png', '.bmp', '.webp'])
     
     def start(self) -> bool:
         """
@@ -267,10 +332,10 @@ class ImageProcessor:
     
     def _process_single_image(self, image_path: str, frame_id: int) -> bool:
         """
-        处理单张图片
+        处理单张图片，支持本地文件和URL
         
         Args:
-            image_path: 图片路径
+            image_path: 图片路径或URL
             frame_id: 帧ID
             
         Returns:
@@ -278,17 +343,27 @@ class ImageProcessor:
         """
         try:
             # 读取图片
-            image = cv2.imread(image_path)
-            if image is None:
-                self.logger.error(f"❌ 无法读取图片: {image_path}")
-                return False
+            image = None
+            file_size = 0
+            
+            if self._is_url(image_path):
+                # 从URL下载图片
+                image, file_size = self._download_image_from_url(image_path)
+                if image is None:
+                    return False
+            else:
+                # 读取本地图片
+                image = cv2.imread(image_path)
+                if image is None:
+                    self.logger.error(f"❌ 无法读取本地图片: {image_path}")
+                    return False
+                file_size = os.path.getsize(image_path)
             
             # 获取图片信息
             height, width = image.shape[:2]
-            file_size = os.path.getsize(image_path)
             
-            self.logger.debug(f"📷 处理图片: {os.path.basename(image_path)} "
-                            f"({width}x{height}, {file_size/1024:.1f}KB)")
+            display_name = os.path.basename(image_path) if not self._is_url(image_path) else image_path[:50] + "..."
+            self.logger.info(f"📷 处理图片: {display_name} ({width}x{height}, {file_size/1024:.1f}KB)")
             
             # 存储到内存池
             timestamp = time.time()
@@ -304,7 +379,8 @@ class ImageProcessor:
                         'width': width,
                         'height': height,
                         'file_size': file_size,
-                        'format': Path(image_path).suffix.lower()
+                        'format': self._get_image_format(image_path),
+                        'is_url': self._is_url(image_path)
                     }
                 
                 # 添加到时间轴
@@ -320,6 +396,77 @@ class ImageProcessor:
         except Exception as e:
             self.logger.error(f"❌ 处理图片失败 {image_path}: {e}")
             return False
+    
+    def _download_image_from_url(self, url: str, timeout: int = 10) -> tuple:
+        """
+        从URL下载图片
+        
+        Args:
+            url: 图片URL
+            timeout: 超时时间（秒）
+            
+        Returns:
+            tuple: (图片数组, 文件大小) 或 (None, 0)
+        """
+        try:
+            self.logger.info(f"🌐 正在下载图片: {url}")
+            
+            # 设置请求头，模拟浏览器访问
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            # 下载图片
+            response = requests.get(url, headers=headers, timeout=timeout)
+            response.raise_for_status()
+            
+            # 获取内容大小
+            file_size = len(response.content)
+            
+            # 将字节数据转换为numpy数组
+            image_array = np.frombuffer(response.content, np.uint8)
+            
+            # 使用cv2解码图片
+            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+            
+            if image is None:
+                self.logger.error(f"❌ 无法解码URL图片: {url}")
+                return None, 0
+            
+            self.logger.info(f"✅ URL图片下载成功: {url} ({file_size/1024:.1f}KB)")
+            return image, file_size
+            
+        except requests.exceptions.Timeout:
+            self.logger.error(f"❌ URL图片下载超时: {url}")
+            return None, 0
+        except requests.exceptions.RequestException as e:
+            self.logger.error(f"❌ URL图片下载失败: {url}, 错误: {e}")
+            return None, 0
+        except Exception as e:
+            self.logger.error(f"❌ URL图片处理异常: {url}, 错误: {e}")
+            return None, 0
+    
+    def _get_image_format(self, image_path: str) -> str:
+        """
+        获取图片格式
+        
+        Args:
+            image_path: 图片路径或URL
+            
+        Returns:
+            str: 图片格式
+        """
+        if self._is_url(image_path):
+            # 从URL中提取格式
+            from urllib.parse import urlparse
+            parsed = urlparse(image_path)
+            path = parsed.path.lower()
+            for ext in self.supported_formats:
+                if ext in path:
+                    return ext
+            return '.jpg'  # 默认格式
+        else:
+            return Path(image_path).suffix.lower()
     
     def get_image_list(self) -> List[str]:
         """

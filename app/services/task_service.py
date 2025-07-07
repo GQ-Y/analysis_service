@@ -186,6 +186,14 @@ class TaskService(BaseService):
         
         self.logger.info(f"⏹️ 开始停止任务: ID={task_id}")
         
+        # 记录当前任务状态
+        self.logger.info(f"📊 任务 {task_id} 停止前状态:")
+        self.logger.info(f"   - 是否有组件: {task_id in self.task_components}")
+        self.logger.info(f"   - 是否有异步任务: {task_id in self.running_tasks}")
+        if task_id in self.running_tasks:
+            async_task = self.running_tasks[task_id]
+            self.logger.info(f"   - 异步任务状态: done={async_task.done()}, cancelled={async_task.cancelled()}")
+        
         # 记录停止过程中的错误，但不让这些错误阻止停止流程
         stop_errors = []
         
@@ -193,15 +201,20 @@ class TaskService(BaseService):
             # 1. 首先停止底层组件（关键修复）
             await self._stop_task_components(task_id)
         except Exception as e:
-            error_msg = f"停止组件时出现错误: {e}"
+            import traceback
+            error_msg = f"停止组件时出现错误: {type(e).__name__}: {e}"
             self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"❌ 停止组件异常堆栈:\n{traceback.format_exc()}")
             stop_errors.append(error_msg)
         
         try:
             # 2. 然后取消运行中的异步任务
             if task_id in self.running_tasks:
                 task = self.running_tasks[task_id]
+                self.logger.info(f"🔍 找到异步任务 {task_id}: done={task.done()}, cancelled={task.cancelled()}")
+                
                 if not task.done():
+                    self.logger.info(f"⏹️ 开始取消异步任务 {task_id}")
                     task.cancel()
                     try:
                         # 等待任务完全取消
@@ -216,20 +229,47 @@ class TaskService(BaseService):
                         # 任务状态异常，可能已经完成或被取消
                         self.logger.info(f"ℹ️ 任务 {task_id} 异步任务状态已改变")
                     except Exception as cancel_e:
+                        import traceback
                         # 检查是否是事件循环相关的异常
                         if "attached to a different loop" in str(cancel_e):
                             self.logger.warning(f"⚠️ 任务 {task_id} 异步任务在不同事件循环中，将强制清理")
                         else:
-                            self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消时出现异常: {cancel_e}")
+                            self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消时出现异常: {type(cancel_e).__name__}: {cancel_e}")
+                            self.logger.warning(f"⚠️ 详细异常堆栈:\n{traceback.format_exc()}")
+                            
+                            # 记录任务的详细状态
+                            self.logger.warning(f"⚠️ 任务详细信息: done={task.done()}, cancelled={task.cancelled()}")
+                            if hasattr(task, '_exception'):
+                                self.logger.warning(f"⚠️ 任务内部异常: {task._exception}")
+                            if hasattr(task, '_result'):
+                                self.logger.warning(f"⚠️ 任务结果: {task._result}")
                 else:
                     self.logger.info(f"ℹ️ 任务 {task_id} 异步任务已完成，无需取消")
                 
-                # 无论如何都要清理任务引用
-                del self.running_tasks[task_id]
-                self.logger.info(f"🧹 任务 {task_id} 异步任务引用已清理")
+                # 等待一小段时间，让异步任务的finally块执行完毕
+                await asyncio.sleep(0.1)
+                
+                # 再次检查并清理任务引用（可能已经被finally块清理了）
+                if task_id in self.running_tasks:
+                    del self.running_tasks[task_id]
+                    self.logger.info(f"🧹 任务 {task_id} 异步任务引用已清理")
+                else:
+                    self.logger.info(f"ℹ️ 任务 {task_id} 异步任务引用已被finally块清理")
+            else:
+                self.logger.info(f"ℹ️ 任务 {task_id} 没有异步任务需要取消")
         except Exception as e:
-            error_msg = f"取消异步任务时出现错误: {e}"
+            import traceback
+            error_msg = f"取消异步任务时出现错误: {type(e).__name__}: {e}"
             self.logger.error(f"❌ {error_msg}")
+            self.logger.error(f"❌ 异步任务取消异常堆栈:\n{traceback.format_exc()}")
+            
+            # 记录更详细的任务状态信息
+            if task_id in self.running_tasks:
+                task = self.running_tasks[task_id]
+                self.logger.error(f"❌ 异步任务状态: done={task.done()}, cancelled={task.cancelled()}")
+            else:
+                self.logger.error(f"❌ 异步任务不在running_tasks中")
+            
             stop_errors.append(error_msg)
         
         try:
