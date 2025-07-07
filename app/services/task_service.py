@@ -26,6 +26,9 @@ from dataclasses import dataclass, asdict
 
 from app.services.base_service import BaseService
 from config.settings import get_settings
+from app.core.storage.model_manager import ModelManager
+from app.core.analyzer.analyzer_factory import AnalyzerFactory
+from app.core.analyzer.analysis_processor import ImageAnalysisProcessor, VideoAnalysisProcessor, StreamAnalysisProcessor
 
 
 @dataclass
@@ -53,6 +56,10 @@ class TaskService(BaseService):
         self.task_counter = 1
         self.running_tasks: Dict[int, asyncio.Task] = {}  # 运行中的异步任务
         self.task_components: Dict[int, Dict[str, Any]] = {}  # 任务组件引用（用于停止时清理）
+        
+        # 初始化模型管理器和分析器工厂
+        self.model_manager = ModelManager()
+        self.analyzer_factory = AnalyzerFactory(self.model_manager)
     
     async def create_task(
         self,
@@ -64,8 +71,12 @@ class TaskService(BaseService):
         video_path: Optional[str] = None,
         image_paths: Optional[List[str]] = None,
         config: Dict[str, Any] = None,
-        enable_video_player: bool = False
-    ) -> TaskInfo:
+        enable_video_player: bool = False,
+        confidence_threshold: float = 0.5,
+        iou_threshold: float = 0.45,
+        save_result: bool = True,
+        save_images: bool = False
+        ) -> TaskInfo:
         """创建任务
         
         Args:
@@ -78,6 +89,10 @@ class TaskService(BaseService):
             image_paths: 图片路径列表
             config: 任务配置
             enable_video_player: 是否启用视频播放器
+            confidence_threshold: 检测置信度阈值 (0.0-1.0)
+            iou_threshold: 非极大值抑制IoU阈值 (0.0-1.0)
+            save_result: 是否保存分析结果
+            save_images: 是否保存检测图片
 
         Returns:
             TaskInfo: 创建的任务信息
@@ -112,6 +127,10 @@ class TaskService(BaseService):
             "image_paths": image_paths or [],
             "config": config or {},
             "enable_video_player": enable_video_player,
+            "confidence_threshold": confidence_threshold,
+            "iou_threshold": iou_threshold,
+            "save_result": save_result,
+            "save_images": save_images,
             "status": 0,  # 未启动
             "progress": 0.0,
             "created_at": now,
@@ -563,7 +582,7 @@ class TaskService(BaseService):
                 timeout = 5.0
             elif task_data["analysis_type"] == 3:  # 流分析
                 max_frames = 200  # 流分析中等缓冲
-                timeout = 2.0
+                timeout = 0.2     # 关键修复：流分析需要更短的超时时间以实现实时处理
             else:  # 图片分析
                 max_frames = 50   # 图片分析较小缓冲
                 timeout = 1.0
@@ -589,44 +608,50 @@ class TaskService(BaseService):
             # 4. 创建结果处理器
             self.logger.info(f"💾 任务 {task_id}: 创建结果处理器...")
             
+            # 从任务配置中获取保存设置
+            save_result = task_data.get("save_result", True)
+            save_images = task_data.get("save_images", False)
+            
             # 使用正确的storage/results目录
             settings = get_settings()
             results_dir = settings.BASE_DIR / "storage" / "results" / f"task_{task_id}"
             
             result_processor = ResultProcessor(
                 output_dir=str(results_dir),
-                save_images=True,
-                save_metadata=True,
+                save_images=save_images,
+                save_metadata=save_result,
                 draw_boxes=True,
                 logger=self.logger
             )
             result_processor.start()
+            
+            self.logger.info(f"💾 任务 {task_id}: 结果处理器配置 - 保存结果: {save_result}, 保存图片: {save_images}")
 
             # 4. 创建分析引擎
             self.logger.info(f"🖥 任务 {task_id}: 创建AI分析引擎...")
             analysis_engine = AnalysisEngine(self.logger)
 
-            # 为每个模型创建分析器
+            # 为每个模型创建检测分析器
+            analyzers = {}
+            confidence_threshold = task_data.get("confidence_threshold", 0.5)
+            iou_threshold = task_data.get("iou_threshold", 0.45)
+            
             for model_code in task_data["model_codes"]:
-                analyzer = MockAnalyzer(
-                    name=f"{model_code}_analyzer",
-                    process_time=0.05,  # 50ms模拟处理时间
-                    logger=self.logger
+                # 创建基于模型类型的分析器，使用任务配置的参数
+                analyzer = self.analyzer_factory.create_analyzer(
+                    model_code=model_code,
+                    confidence_threshold=confidence_threshold,
+                    iou_threshold=iou_threshold,
+                    device="auto"
                 )
-
-                # 添加分析工作器
-                worker = analysis_engine.add_worker(
-                    name=f"worker_{model_code}",
-                    analyzer=analyzer,
-                    time_axis=time_axis,
-                    batch_size=4,  # 批处理4帧
-                    timeout=0.1
-                )
-
-                # 添加结果回调
-                worker.add_result_callback(
-                    lambda frames, results: self._on_analysis_result(task_id, frames, results, result_processor, video_player)
-                )
+                
+                if analyzer:
+                    analyzers[model_code] = analyzer
+                    self.logger.info(f"✅ 分析器创建成功: {model_code}")
+                else:
+                    self.logger.error(f"❌ 分析器创建失败: {model_code}")
+                    # 可以选择跳过该模型或抛出异常
+                    continue
 
             # 4. 根据分析类型创建对应的处理器
             processors = []
@@ -652,6 +677,16 @@ class TaskService(BaseService):
                 )
                 processors.append(image_processor)
                 
+                # 创建分析处理器 - 专门从时间轴读取数据进行分析
+                analysis_processor = ImageAnalysisProcessor(
+                    analyzers=analyzers,
+                    time_axis=time_axis,
+                    result_processor=result_processor,
+                    task_id=task_id,
+                    logger=self.logger
+                )
+                processors.append(analysis_processor)
+                
             elif task_data["analysis_type"] == 3:  # 流分析
                 self.logger.info(f"📡 任务 {task_id}: 创建流捕获器...")
                 multi_capture = MultiStreamCapture(memory_pool, time_axis, self.logger)
@@ -663,6 +698,16 @@ class TaskService(BaseService):
                     if i == 0 and video_player:
                         capture.video_player = video_player
                     processors.append(capture)
+                
+                # 创建流分析处理器
+                stream_analysis_processor = StreamAnalysisProcessor(
+                    analyzers=analyzers,
+                    time_axis=time_axis,
+                    result_processor=result_processor,
+                    task_id=task_id,
+                    logger=self.logger
+                )
+                processors.append(stream_analysis_processor)
 
             elif task_data["analysis_type"] == 2:  # 视频分析
                 self.logger.info(f" 任务 {task_id}: 创建视频文件处理器...")
@@ -686,6 +731,16 @@ class TaskService(BaseService):
                         self.logger.debug(f"🔄 批次 {batch_num} 完成: {batch_size} 帧, 总计 {total_processed} 帧")
                 )
                 processors.append(video_processor)
+                
+                # 创建视频分析处理器
+                video_analysis_processor = VideoAnalysisProcessor(
+                    analyzers=analyzers,
+                    time_axis=time_axis,
+                    result_processor=result_processor,
+                    task_id=task_id,
+                    logger=self.logger
+                )
+                processors.append(video_analysis_processor)
             
             else:
                 raise ValueError(f"不支持的分析类型: {task_data['analysis_type']}")
@@ -727,10 +782,17 @@ class TaskService(BaseService):
                     # 获取统计信息
                     memory_stats = memory_pool.get_stats()
                     time_axis_stats = time_axis.get_stats()
-                    analysis_stats = analysis_engine.get_all_stats()
+                    
+                    # 【关键修复】从分析处理器获取统计信息，而不是分析引擎
+                    total_processed = 0
+                    for processor in processors:
+                        if hasattr(processor, 'get_stats'):
+                            processor_stats = processor.get_stats()
+                            total_processed += processor_stats.get("total_processed", 0)
+                        elif hasattr(processor, 'stats'):
+                            total_processed += processor.stats.get("total_processed", 0)
 
                     # 计算进度（基于处理的帧数）
-                    total_processed = sum(stats.get("total_processed", 0) for stats in analysis_stats.values())
                     progress = min(95.0, (total_processed / 100.0) * 100)  # 最多95%，完成时设为100%
 
                     task_data["progress"] = progress

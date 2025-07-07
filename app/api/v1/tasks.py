@@ -34,8 +34,26 @@ class TaskCreateRequest(BaseModel):
     video_path: Optional[str] = Field(None, description="视频文件路径（视频分析时必填）")
     image_paths: Optional[List[str]] = Field(None, description="图片路径列表（图片分析时必填）")
     analysis_interval: Optional[int] = Field(5, description="分析间隔（秒）")
-    save_result: bool = Field(True, description="是否保存分析结果")
-    save_images: bool = Field(False, description="是否保存分析图片")
+    
+    # 结果保存配置
+    save_result: bool = Field(True, description="是否保存分析结果元数据")
+    save_images: bool = Field(False, description="是否保存检测图片")
+    
+    # 回调配置
+    callback_urls: Optional[List[str]] = Field(None, description="结果回调地址列表")
+    callback_interval: Optional[int] = Field(0, description="回调间隔（秒），0表示实时回调")
+    
+    # 视频回放配置
+    playback_duration: Optional[int] = Field(0, description="视频回放时长（秒），0表示不生成回放视频，最小5秒")
+    
+    # 检测配置
+    confidence_threshold: float = Field(0.5, ge=0.0, le=1.0, description="检测置信度阈值（0.0-1.0）")
+    iou_threshold: float = Field(0.45, ge=0.0, le=1.0, description="非极大值抑制IoU阈值（0.0-1.0）")
+    
+    # ROI和类别过滤配置
+    roi_config: Optional[Dict[str, Any]] = Field(None, description="ROI区域配置")
+    target_classes: Optional[List[str]] = Field(None, description="目标检测类别列表，为空则检测所有类别")
+    
     enable_video_player: bool = Field(False, description="是否启用实时视频播放器")
     config: Optional[Dict[str, Any]] = Field(None, description="任务配置")
 
@@ -85,7 +103,16 @@ async def create_task(request: TaskCreateRequest):
             video_path=request.video_path,
             image_paths=request.image_paths,
             config=request.config or {},
-            enable_video_player=request.enable_video_player
+            enable_video_player=request.enable_video_player,
+            confidence_threshold=request.confidence_threshold,
+            iou_threshold=request.iou_threshold,
+            save_result=request.save_result,
+            save_images=request.save_images,
+            callback_urls=request.callback_urls,
+            callback_interval=request.callback_interval,
+            playback_duration=request.playback_duration,
+            roi_config=request.roi_config,
+            target_classes=request.target_classes
         )
 
         return create_success_response(
