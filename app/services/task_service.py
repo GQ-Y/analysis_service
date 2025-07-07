@@ -75,8 +75,13 @@ class TaskService(BaseService):
         confidence_threshold: float = 0.5,
         iou_threshold: float = 0.45,
         save_result: bool = True,
-        save_images: bool = False
-        ) -> TaskInfo:
+        save_images: bool = False,
+        callback_urls: Optional[List[str]] = None,
+        callback_interval: Optional[int] = None,
+        playback_duration: Optional[int] = None,
+        roi_config: Optional[Dict[str, Any]] = None,
+        target_classes: Optional[List[str]] = None
+    ) -> TaskInfo:
         """创建任务
         
         Args:
@@ -93,6 +98,11 @@ class TaskService(BaseService):
             iou_threshold: 非极大值抑制IoU阈值 (0.0-1.0)
             save_result: 是否保存分析结果
             save_images: 是否保存检测图片
+            callback_urls: 回调地址列表
+            callback_interval: 回调间隔（秒），0表示实时回调
+            playback_duration: 回放视频时长（秒），适用于视频/流分析
+            roi_config: ROI区域配置
+            target_classes: 目标检测类别列表
 
         Returns:
             TaskInfo: 创建的任务信息
@@ -131,6 +141,11 @@ class TaskService(BaseService):
             "iou_threshold": iou_threshold,
             "save_result": save_result,
             "save_images": save_images,
+            "callback_urls": callback_urls,
+            "callback_interval": callback_interval or 0,
+            "playback_duration": playback_duration or 0,
+            "roi_config": roi_config,
+            "target_classes": target_classes,
             "status": 0,  # 未启动
             "progress": 0.0,
             "created_at": now,
@@ -373,14 +388,26 @@ class TaskService(BaseService):
             self.logger.error(f"❌ {error_msg}")
             stop_errors.append(error_msg)
         
-        # 停止结果处理器
+        # 停止结果处理管道
         try:
-            result_processor = components.get('result_processor')
-            if result_processor:
-                self.logger.info(f"⏹️ 停止结果处理器")
-                result_processor.stop()
+            result_pipeline = components.get('result_pipeline')
+            if result_pipeline:
+                self.logger.info(f"⏹️ 停止结果处理管道")
+                # 在异步上下文中运行
+                import asyncio
+                try:
+                    await result_pipeline.stop()
+                except RuntimeError as e:
+                    if "There is no current event loop" in str(e):
+                        # 创建新的事件循环
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(result_pipeline.stop())
+                        loop.close()
+                    else:
+                        raise
         except Exception as e:
-            error_msg = f"停止结果处理器失败: {e}"
+            error_msg = f"停止结果处理管道失败: {e}"
             self.logger.error(f"❌ {error_msg}")
             stop_errors.append(error_msg)
         
@@ -605,27 +632,28 @@ class TaskService(BaseService):
                 )
                 video_player.start()
 
-            # 4. 创建结果处理器
-            self.logger.info(f"💾 任务 {task_id}: 创建结果处理器...")
+            # 4. 创建结果处理管道
+            self.logger.info(f"🏭 任务 {task_id}: 创建结果处理管道...")
             
-            # 从任务配置中获取保存设置
-            save_result = task_data.get("save_result", True)
-            save_images = task_data.get("save_images", False)
+            # 导入新的结果处理管道
+            from app.core.result_processing.result_pipeline import ResultProcessingPipeline
             
-            # 使用正确的storage/results目录
-            settings = get_settings()
-            results_dir = settings.BASE_DIR / "storage" / "results" / f"task_{task_id}"
+            # 创建结果处理管道，包含task_config参数传递
+            task_config_with_id = task_data.copy()  # 复制所有任务配置
+            task_config_with_id["task_id"] = task_id  # 确保task_id存在
             
-            result_processor = ResultProcessor(
-                output_dir=str(results_dir),
-                save_images=save_images,
-                save_metadata=save_result,
-                draw_boxes=True,
+            result_pipeline = ResultProcessingPipeline(
+                task_id=task_id,
+                task_config=task_config_with_id,  # 传递完整的任务配置
+                time_axis_manager=None,  # 暂时不需要时间轴管理器
+                output_dir="unused",  # 存储处理器会自动管理路径
                 logger=self.logger
             )
-            result_processor.start()
             
-            self.logger.info(f"💾 任务 {task_id}: 结果处理器配置 - 保存结果: {save_result}, 保存图片: {save_images}")
+            # 启动结果处理管道
+            await result_pipeline.start()
+            
+            self.logger.info(f"🏭 任务 {task_id}: 结果处理管道已启动，处理器配置已就绪")
 
             # 4. 创建分析引擎
             self.logger.info(f"🖥 任务 {task_id}: 创建AI分析引擎...")
@@ -681,7 +709,7 @@ class TaskService(BaseService):
                 analysis_processor = ImageAnalysisProcessor(
                     analyzers=analyzers,
                     time_axis=time_axis,
-                    result_processor=result_processor,
+                    result_processor=result_pipeline,
                     task_id=task_id,
                     logger=self.logger
                 )
@@ -703,7 +731,7 @@ class TaskService(BaseService):
                 stream_analysis_processor = StreamAnalysisProcessor(
                     analyzers=analyzers,
                     time_axis=time_axis,
-                    result_processor=result_processor,
+                    result_processor=result_pipeline,
                     task_id=task_id,
                     logger=self.logger
                 )
@@ -736,7 +764,7 @@ class TaskService(BaseService):
                 video_analysis_processor = VideoAnalysisProcessor(
                     analyzers=analyzers,
                     time_axis=time_axis,
-                    result_processor=result_processor,
+                    result_processor=result_pipeline,
                     task_id=task_id,
                     logger=self.logger
                 )
@@ -761,7 +789,7 @@ class TaskService(BaseService):
             self.task_components[task_id] = {
                 'processors': processors,
                 'analysis_engine': analysis_engine,
-                'result_processor': result_processor,
+                'result_pipeline': result_pipeline,
                 'video_player': video_player,
                 'memory_pool': memory_pool,
                 'time_axis': time_axis
@@ -817,8 +845,8 @@ class TaskService(BaseService):
             # 停止分析引擎
             analysis_engine.stop_all()
 
-            # 停止结果处理器
-            result_processor.stop()
+            # 停止结果处理管道
+            await result_pipeline.stop()
 
             # 停止视频播放器
             if video_player:

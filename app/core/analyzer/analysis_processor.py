@@ -191,6 +191,13 @@ class ImageAnalysisProcessor:
                     "analysis_time": time.time() - start_time
                 }
                 
+                # 【关键修复】将分析结果添加到FrameBuffer
+                # FrameBuffer.analysis_results 是字典类型，使用add_analysis_result方法
+                frame_buffer.add_analysis_result("analysis_result", analysis_result)
+                
+                self.logger.debug(f"✅ 已将分析结果添加到FrameBuffer: 帧{getattr(frame_buffer, 'frame_id', 'unknown')}, "
+                                f"检测数量: {sum(len(result.get('detections', [])) for result in frame_results.values())}")
+                
                 # 发送给结果处理器
                 if self.result_processor:
                     self.result_processor.process_result(frame_buffer, self.task_id)
