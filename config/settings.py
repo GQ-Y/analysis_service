@@ -85,7 +85,7 @@ class Settings(BaseSettings):
             self.UPLOAD_DIR = str(self.BASE_DIR / "uploads")
 
         if not self.LOG_DIR:
-            self.LOG_DIR = str(self.BASE_DIR / "logs")
+            self.LOG_DIR = str(self.BASE_DIR / "storage" / "logs")
 
         # 确保目录存在
         for dir_path in [self.STATIC_DIR, self.UPLOAD_DIR, self.LOG_DIR]:
@@ -127,40 +127,46 @@ DATABASE_CONFIG = {
 }
 
 # 日志配置
-LOGGING_CONFIG = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "default": {
-            "format": "[%(asctime)s] %(levelname)s in %(module)s: %(message)s",
+def get_logging_config():
+    """获取日志配置（动态生成）"""
+    settings = get_settings()
+    return {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "[%(asctime)s] %(levelname)s in %(module)s: %(message)s",
+            },
+            "detailed": {
+                "format": "[%(asctime)s] %(levelname)s in %(module)s [%(pathname)s:%(lineno)d]: %(message)s",
+            },
         },
-        "detailed": {
-            "format": "[%(asctime)s] %(levelname)s in %(module)s [%(pathname)s:%(lineno)d]: %(message)s",
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler",
+                "level": "INFO",
+                "formatter": "default",
+                "stream": "ext://sys.stdout",
+            },
+            "file": {
+                "class": "logging.handlers.RotatingFileHandler",
+                "level": "DEBUG",
+                "formatter": "detailed",
+                "filename": str(Path(settings.LOG_DIR) / "app.log"),
+                "maxBytes": 10485760,  # 10MB
+                "backupCount": 5,
+            },
         },
-    },
-    "handlers": {
-        "console": {
-            "class": "logging.StreamHandler",
-            "level": "INFO",
-            "formatter": "default",
-            "stream": "ext://sys.stdout",
+        "loggers": {
+            "": {
+                "level": "DEBUG",
+                "handlers": ["console", "file"],
+            },
         },
-        "file": {
-            "class": "logging.handlers.RotatingFileHandler",
-            "level": "DEBUG",
-            "formatter": "detailed",
-            "filename": BASE_DIR / "storage" / "logs" / "app.log",
-            "maxBytes": 10485760,  # 10MB
-            "backupCount": 5,
-        },
-    },
-    "loggers": {
-        "": {
-            "level": "DEBUG",
-            "handlers": ["console", "file"],
-        },
-    },
-}
+    }
+
+# 保持向后兼容性
+LOGGING_CONFIG = get_logging_config()
 
 # 缓存配置
 CACHE_CONFIG = {

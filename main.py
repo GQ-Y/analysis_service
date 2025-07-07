@@ -17,6 +17,8 @@ import os
 import sys
 import uvicorn
 import argparse
+import logging
+import logging.config
 from pathlib import Path
 
 # 添加项目根目录到Python路径
@@ -24,11 +26,39 @@ project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
 from app.factory import ApplicationFactory
-from config.settings import get_settings
+from config.settings import get_settings, get_logging_config
+
+
+def setup_logging():
+    """设置日志配置"""
+    try:
+        # 确保日志目录存在
+        settings = get_settings()
+        log_dir = Path(settings.LOG_DIR)
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 获取动态日志配置
+        logging_config = get_logging_config()
+        
+        # 初始化日志配置
+        logging.config.dictConfig(logging_config)
+        
+        # 创建根日志记录器
+        logger = logging.getLogger(__name__)
+        logger.info("📝 日志系统初始化成功")
+        logger.info(f"📁 日志目录: {log_dir}")
+        
+        return True
+    except Exception as e:
+        print(f"❌ 日志系统初始化失败: {e}")
+        return False
 
 
 def create_app():
     """创建FastAPI应用实例"""
+    # 首先初始化日志
+    setup_logging()
+    
     factory = ApplicationFactory()
     return factory.create_app()
 

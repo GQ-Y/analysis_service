@@ -227,15 +227,17 @@ class TaskController(BaseController):
             Dict[str, Any]: 任务停止响应
         """
         try:
-            # 获取用户信息
+            # 获取用户信息（用于权限验证）
             user = self.require_user(request)
             
-            # 调用任务服务停止任务
+            # 转换task_id为整数
+            task_id_int = int(task_id)
+            
+            # 调用任务服务停止任务（只传递task_id）
             result = await self.handle_service_call(
                 request,
                 self.dependencies.task_service.stop_task,
-                task_id,
-                user_id=user.get('user_id'),
+                task_id_int,
                 action="停止任务"
             )
             
@@ -245,6 +247,9 @@ class TaskController(BaseController):
                 request_id=self.get_request_id(request)
             )
             
+        except ValueError as e:
+            # 处理task_id转换错误或业务逻辑错误
+            raise HTTPException(status_code=400, detail=str(e))
         except BusinessException as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:

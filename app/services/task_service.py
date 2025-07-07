@@ -25,6 +25,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, asdict
 
 from app.services.base_service import BaseService
+from config.settings import get_settings
 
 
 @dataclass
@@ -51,6 +52,7 @@ class TaskService(BaseService):
         self.tasks: Dict[int, Dict[str, Any]] = {}  # 内存存储任务
         self.task_counter = 1
         self.running_tasks: Dict[int, asyncio.Task] = {}  # 运行中的异步任务
+        self.task_components: Dict[int, Dict[str, Any]] = {}  # 任务组件引用（用于停止时清理）
     
     async def create_task(
         self,
@@ -166,29 +168,182 @@ class TaskService(BaseService):
             Dict[str, Any]: 停止结果
         """
         if task_id not in self.tasks:
-            raise ValueError(f"任务 {task_id} 不存在")
+            return {
+                "task_id": task_id,
+                "status": "not_found",
+                "message": f"⚠️ 任务 {task_id} 不存在"
+            }
         
         task_data = self.tasks[task_id]
         
+        # 如果任务已经停止，直接返回
         if task_data["status"] != 1:
-            raise ValueError(f"任务 {task_id} 未在运行中")
+            return {
+                "task_id": task_id,
+                "status": "already_stopped",
+                "message": "⏹️ 任务已经是停止状态"
+            }
         
-        # 取消运行中的异步任务
-        if task_id in self.running_tasks:
-            self.running_tasks[task_id].cancel()
-            del self.running_tasks[task_id]
+        self.logger.info(f"⏹️ 开始停止任务: ID={task_id}")
         
-        # 更新任务状态
-        task_data["status"] = 2  # 已停止
-        task_data["updated_at"] = datetime.now()
+        # 记录停止过程中的错误，但不让这些错误阻止停止流程
+        stop_errors = []
         
-        self.logger.info(f"⏹️ 任务停止成功: ID={task_id}")
+        try:
+            # 1. 首先停止底层组件（关键修复）
+            await self._stop_task_components(task_id)
+        except Exception as e:
+            error_msg = f"停止组件时出现错误: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
         
-        return {
-            "task_id": task_id,
-            "status": "stopped",
-            "message": "任务已停止"
-        }
+        try:
+            # 2. 然后取消运行中的异步任务
+            if task_id in self.running_tasks:
+                task = self.running_tasks[task_id]
+                task.cancel()
+                try:
+                    # 等待任务完全取消
+                    await asyncio.wait_for(task, timeout=5.0)
+                except asyncio.CancelledError:
+                    # 任务正常取消，这是预期行为
+                    self.logger.info(f"⏹️ 任务 {task_id} 异步任务已取消")
+                except asyncio.TimeoutError:
+                    # 超时但任务可能仍在取消中
+                    self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消超时，但将继续清理")
+                except Exception as cancel_e:
+                    # 其他取消过程中的异常
+                    self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消过程中出现异常: {cancel_e}")
+                finally:
+                    # 无论如何都要清理任务引用
+                    if task_id in self.running_tasks:
+                        del self.running_tasks[task_id]
+        except Exception as e:
+            error_msg = f"取消异步任务时出现错误: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        try:
+            # 3. 清理组件引用
+            if task_id in self.task_components:
+                del self.task_components[task_id]
+                self.logger.info(f"🧹 任务 {task_id}: 组件引用已清理")
+        except Exception as e:
+            error_msg = f"清理组件引用时出现错误: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 4. 无论如何都要更新任务状态
+        try:
+            task_data["status"] = 2  # 已停止
+            task_data["updated_at"] = datetime.now()
+        except Exception as e:
+            error_msg = f"更新任务状态时出现错误: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 5. 根据停止过程记录日志
+        if stop_errors:
+            self.logger.warning(f"⚠️ 任务 {task_id} 停止过程中出现 {len(stop_errors)} 个错误，但任务已强制停止")
+            for error in stop_errors:
+                self.logger.warning(f"   - {error}")
+            
+            return {
+                "task_id": task_id,
+                "status": "stopped_with_errors",
+                "message": f"任务已停止，但停止过程中出现 {len(stop_errors)} 个错误",
+                "errors": stop_errors
+            }
+        else:
+            self.logger.info(f"✅ 任务停止完成: ID={task_id}")
+            
+            return {
+                "task_id": task_id,
+                "status": "stopped",
+                "message": "任务已停止"
+            }
+    
+    async def _stop_task_components(self, task_id: int):
+        """停止任务的所有组件
+        
+        Args:
+            task_id: 任务ID
+        """
+        if task_id not in self.task_components:
+            self.logger.warning(f"⚠️ 任务 {task_id} 没有组件引用，可能已经清理")
+            return
+        
+        components = self.task_components[task_id]
+        stop_errors = []  # 收集停止过程中的错误
+        
+        # 停止流捕获器
+        try:
+            captures = components.get('captures', [])
+            for i, capture in enumerate(captures):
+                try:
+                    self.logger.info(f"⏹️ 停止流捕获器 {i+1}/{len(captures)}: {capture.stream_id}")
+                    capture.stop()
+                except Exception as e:
+                    error_msg = f"停止流捕获器 {capture.stream_id} 失败: {e}"
+                    self.logger.error(f"❌ {error_msg}")
+                    stop_errors.append(error_msg)
+        except Exception as e:
+            error_msg = f"停止流捕获器组失败: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 停止分析引擎
+        try:
+            analysis_engine = components.get('analysis_engine')
+            if analysis_engine:
+                self.logger.info(f"⏹️ 停止分析引擎")
+                analysis_engine.stop_all()
+        except Exception as e:
+            error_msg = f"停止分析引擎失败: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 停止结果处理器
+        try:
+            result_processor = components.get('result_processor')
+            if result_processor:
+                self.logger.info(f"⏹️ 停止结果处理器")
+                result_processor.stop()
+        except Exception as e:
+            error_msg = f"停止结果处理器失败: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 停止视频播放器
+        try:
+            video_player = components.get('video_player')
+            if video_player:
+                self.logger.info(f"⏹️ 停止视频播放器")
+                video_player.stop()
+        except Exception as e:
+            error_msg = f"停止视频播放器失败: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 清理内存池
+        try:
+            memory_pool = components.get('memory_pool')
+            if memory_pool:
+                self.logger.info(f"⏹️ 清理内存池")
+                memory_pool.cleanup()
+        except Exception as e:
+            error_msg = f"清理内存池失败: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 记录停止结果
+        if stop_errors:
+            self.logger.warning(f"⚠️ 任务 {task_id} 组件停止过程中出现 {len(stop_errors)} 个错误")
+            for error in stop_errors:
+                self.logger.warning(f"   - {error}")
+            # 不抛出异常，允许任务继续停止流程
+        else:
+            self.logger.info(f"✅ 任务 {task_id} 所有组件已停止")
     
     async def get_task_detail(self, task_id: int) -> Optional[TaskInfo]:
         """查看任务详情
@@ -357,8 +512,13 @@ class TaskService(BaseService):
 
             # 4. 创建结果处理器
             self.logger.info(f"💾 任务 {task_id}: 创建结果处理器...")
+            
+            # 使用正确的storage/results目录
+            settings = get_settings()
+            results_dir = settings.BASE_DIR / "storage" / "results" / f"task_{task_id}"
+            
             result_processor = ResultProcessor(
-                output_dir=f"results/task_{task_id}",
+                output_dir=str(results_dir),
                 save_images=True,
                 save_metadata=True,
                 draw_boxes=True,
@@ -367,7 +527,7 @@ class TaskService(BaseService):
             result_processor.start()
 
             # 4. 创建分析引擎
-            self.logger.info(f"🤖 任务 {task_id}: 创建AI分析引擎...")
+            self.logger.info(f"�� 任务 {task_id}: 创建AI分析引擎...")
             analysis_engine = AnalysisEngine(self.logger)
 
             # 为每个模型创建分析器
@@ -427,6 +587,18 @@ class TaskService(BaseService):
             # 启动流捕获（拉流管道）
             for capture in captures:
                 capture.start()
+
+            # 🔧 保存组件引用（关键修复）
+            self.task_components[task_id] = {
+                'captures': captures,
+                'analysis_engine': analysis_engine,
+                'result_processor': result_processor,
+                'video_player': video_player,
+                'memory_pool': memory_pool,
+                'time_axis': time_axis
+            }
+            
+            self.logger.info(f"✅ 任务 {task_id}: 组件引用已保存，可以正确停止")
 
             # 6. 监控任务执行
             start_time = time.time()
@@ -497,6 +669,11 @@ class TaskService(BaseService):
             # 清理运行中的任务记录
             if task_id in self.running_tasks:
                 del self.running_tasks[task_id]
+            
+            # 清理组件引用
+            if task_id in self.task_components:
+                del self.task_components[task_id]
+                self.logger.info(f"🧹 任务 {task_id}: 组件引用已清理")
 
     def _on_analysis_result(self, task_id: int, frame_buffers: list, results: list, result_processor=None, video_player=None):
         """分析结果回调"""

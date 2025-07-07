@@ -40,7 +40,7 @@ class ResultProcessor:
     
     def __init__(
         self,
-        output_dir: str = "results",
+        output_dir: str = None,
         save_images: bool = True,
         save_metadata: bool = True,
         draw_boxes: bool = True,
@@ -51,13 +51,19 @@ class ResultProcessor:
         初始化结果处理器
         
         Args:
-            output_dir: 输出目录
+            output_dir: 输出目录，None则使用默认的storage/results
             save_images: 是否保存图片
             save_metadata: 是否保存元数据
             draw_boxes: 是否绘制检测框
             max_queue_size: 最大队列大小
             logger: 日志记录器
         """
+        # 设置默认输出目录
+        if output_dir is None:
+            from config.settings import get_settings
+            settings = get_settings()
+            output_dir = str(settings.BASE_DIR / "storage" / "results")
+            
         self.output_dir = Path(output_dir)
         self.save_images = save_images
         self.save_metadata = save_metadata
@@ -350,7 +356,7 @@ class BatchResultProcessor:
     
     def __init__(
         self,
-        output_dir: str = "results",
+        output_dir: str = None,
         batch_size: int = 10,
         save_interval: float = 5.0,
         logger: Optional[logging.Logger] = None
@@ -359,11 +365,17 @@ class BatchResultProcessor:
         初始化批量结果处理器
         
         Args:
-            output_dir: 输出目录
+            output_dir: 输出目录，None则使用默认的storage/results
             batch_size: 批处理大小
             save_interval: 保存间隔（秒）
             logger: 日志记录器
         """
+        # 设置默认输出目录
+        if output_dir is None:
+            from config.settings import get_settings
+            settings = get_settings()
+            output_dir = str(settings.BASE_DIR / "storage" / "results")
+            
         self.output_dir = Path(output_dir)
         self.batch_size = batch_size
         self.save_interval = save_interval
