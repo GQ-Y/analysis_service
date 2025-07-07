@@ -42,7 +42,8 @@ class StreamCapture:
         reconnect_delay: float = 5.0,
         display_queue: Optional[Queue] = None,
         video_player: Optional['VideoPlayer'] = None,
-        logger: Optional[logging.Logger] = None
+        logger: Optional[logging.Logger] = None,
+        on_video_end_callback: Optional[Callable] = None
     ):
         """
         初始化流捕获器
@@ -54,7 +55,9 @@ class StreamCapture:
             stream_id: 流ID
             reconnect_delay: 重连延迟（秒）
             display_queue: 显示队列（可选）
+            video_player: 视频播放器（可选）
             logger: 日志记录器
+            on_video_end_callback: 视频结束回调函数（可选）
         """
         self.stream_url = stream_url
         self.memory_pool = memory_pool
@@ -64,12 +67,16 @@ class StreamCapture:
         self.display_queue = display_queue
         self.video_player = video_player
         self.logger = logger or logging.getLogger(__name__)
+        self.on_video_end_callback = on_video_end_callback
         
         # 捕获状态
         self.running = False
         self.connected = False
         self.cap: Optional[cv2.VideoCapture] = None
         self.thread: Optional[threading.Thread] = None
+        
+        # 检测是否为视频文件
+        self.is_video_file = self._is_video_file(stream_url)
         
         # 统计信息
         self._stats = {
@@ -79,13 +86,35 @@ class StreamCapture:
             "reconnect_count": 0,
             "start_time": 0,
             "last_frame_time": 0,
-            "fps": 0.0
+            "fps": 0.0,
+            "is_video_file": self.is_video_file
         }
         
         # 配置OpenCV
         os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
         
-        self.logger.info(f"📹 流捕获器初始化: {stream_url} -> {self.stream_id}")
+        if self.is_video_file:
+            self.logger.info(f"📹 视频文件捕获器初始化: {stream_url} -> {self.stream_id}")
+        else:
+            self.logger.info(f"📡 流捕获器初始化: {stream_url} -> {self.stream_id}")
+    
+    def _is_video_file(self, url: str) -> bool:
+        """检测是否为视频文件（而非实时流）"""
+        # 检测文件扩展名
+        video_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.flv', '.wmv', '.m4v', '.3gp', '.webm'}
+        url_lower = url.lower()
+        
+        # 检查是否为本地文件路径
+        if not url.startswith(('http://', 'https://', 'rtsp://', 'rtmp://')):
+            # 本地文件路径
+            return any(url_lower.endswith(ext) for ext in video_extensions)
+        
+        # 检查URL中的文件扩展名
+        if any(ext in url_lower for ext in video_extensions):
+            return True
+        
+        # 默认认为是流
+        return False
     
     def start(self) -> bool:
         """
@@ -187,9 +216,26 @@ class StreamCapture:
                 ret, frame = self.cap.read()
                 
                 if not ret:
-                    self.logger.warning(f"⚠️ 流 {self.stream_id} 读取帧失败")
-                    self._reconnect()
-                    continue
+                    # 区分视频文件结束和流断开
+                    if self.is_video_file:
+                        self.logger.info(f"🏁 视频文件 {self.stream_id} 播放完毕")
+                        
+                        # 调用视频结束回调
+                        if self.on_video_end_callback:
+                            try:
+                                self.logger.info(f"📞 调用视频结束回调函数...")
+                                self.on_video_end_callback(self.stream_id)
+                            except Exception as callback_e:
+                                self.logger.error(f"❌ 视频结束回调执行失败: {callback_e}")
+                        
+                        # 停止捕获循环
+                        self.running = False
+                        break
+                    else:
+                        # 实时流断开，尝试重连
+                        self.logger.warning(f"⚠️ 流 {self.stream_id} 读取帧失败，尝试重连")
+                        self._reconnect()
+                        continue
                 
                 # 更新统计
                 frame_id += 1

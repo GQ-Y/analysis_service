@@ -17,6 +17,8 @@ from .frame_buffer import FrameBuffer, FrameBufferStats, frame_buffer_stats
 from .memory_pool import MemoryPool, MemoryPoolManager, memory_pool_manager
 from .time_axis import TimeAxis, MultiStreamTimeAxis
 from .stream_capture import StreamCapture, MultiStreamCapture
+from .video_file_processor import VideoFileProcessor
+from .image_processor import ImageProcessor
 from .ai_analyzer import BaseAnalyzer, MockAnalyzer, AnalysisWorker, AnalysisEngine
 from .result_processor import ResultProcessor, BatchResultProcessor
 from .video_player import VideoPlayer, MultiWindowPlayer, multi_window_player
@@ -39,6 +41,10 @@ __all__ = [
     # 流捕获
     'StreamCapture',
     'MultiStreamCapture',
+
+    # 专用处理器
+    'VideoFileProcessor',
+    'ImageProcessor',
 
     # AI分析器
     'BaseAnalyzer',

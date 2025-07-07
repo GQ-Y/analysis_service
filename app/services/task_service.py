@@ -201,23 +201,32 @@ class TaskService(BaseService):
             # 2. 然后取消运行中的异步任务
             if task_id in self.running_tasks:
                 task = self.running_tasks[task_id]
-                task.cancel()
-                try:
-                    # 等待任务完全取消
-                    await asyncio.wait_for(task, timeout=5.0)
-                except asyncio.CancelledError:
-                    # 任务正常取消，这是预期行为
-                    self.logger.info(f"⏹️ 任务 {task_id} 异步任务已取消")
-                except asyncio.TimeoutError:
-                    # 超时但任务可能仍在取消中
-                    self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消超时，但将继续清理")
-                except Exception as cancel_e:
-                    # 其他取消过程中的异常
-                    self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消过程中出现异常: {cancel_e}")
-                finally:
-                    # 无论如何都要清理任务引用
-                    if task_id in self.running_tasks:
-                        del self.running_tasks[task_id]
+                if not task.done():
+                    task.cancel()
+                    try:
+                        # 等待任务完全取消
+                        await asyncio.wait_for(task, timeout=3.0)
+                    except asyncio.CancelledError:
+                        # 任务正常取消，这是预期行为
+                        self.logger.info(f"⏹️ 任务 {task_id} 异步任务已正常取消")
+                    except asyncio.TimeoutError:
+                        # 超时但任务可能仍在取消中
+                        self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消超时，将强制清理")
+                    except asyncio.InvalidStateError:
+                        # 任务状态异常，可能已经完成或被取消
+                        self.logger.info(f"ℹ️ 任务 {task_id} 异步任务状态已改变")
+                    except Exception as cancel_e:
+                        # 检查是否是事件循环相关的异常
+                        if "attached to a different loop" in str(cancel_e):
+                            self.logger.warning(f"⚠️ 任务 {task_id} 异步任务在不同事件循环中，将强制清理")
+                        else:
+                            self.logger.warning(f"⚠️ 任务 {task_id} 异步任务取消时出现异常: {cancel_e}")
+                else:
+                    self.logger.info(f"ℹ️ 任务 {task_id} 异步任务已完成，无需取消")
+                
+                # 无论如何都要清理任务引用
+                del self.running_tasks[task_id]
+                self.logger.info(f"🧹 任务 {task_id} 异步任务引用已清理")
         except Exception as e:
             error_msg = f"取消异步任务时出现错误: {e}"
             self.logger.error(f"❌ {error_msg}")
@@ -276,19 +285,21 @@ class TaskService(BaseService):
         components = self.task_components[task_id]
         stop_errors = []  # 收集停止过程中的错误
         
-        # 停止流捕获器
+        # 停止处理器
         try:
-            captures = components.get('captures', [])
-            for i, capture in enumerate(captures):
+            processors = components.get('processors', [])
+            for i, processor in enumerate(processors):
                 try:
-                    self.logger.info(f"⏹️ 停止流捕获器 {i+1}/{len(captures)}: {capture.stream_id}")
-                    capture.stop()
+                    processor_name = getattr(processor, 'stream_id', f"processor_{i+1}")
+                    self.logger.info(f"⏹️ 停止处理器 {i+1}/{len(processors)}: {processor_name}")
+                    processor.stop()
                 except Exception as e:
-                    error_msg = f"停止流捕获器 {capture.stream_id} 失败: {e}"
+                    processor_name = getattr(processor, 'stream_id', f"processor_{i+1}")
+                    error_msg = f"停止处理器 {processor_name} 失败: {e}"
                     self.logger.error(f"❌ {error_msg}")
                     stop_errors.append(error_msg)
         except Exception as e:
-            error_msg = f"停止流捕获器组失败: {e}"
+            error_msg = f"停止处理器组失败: {e}"
             self.logger.error(f"❌ {error_msg}")
             stop_errors.append(error_msg)
         
@@ -477,14 +488,27 @@ class TaskService(BaseService):
             # 导入零拷贝组件
             from app.core.zero_copy import (
                 MemoryPool, TimeAxis, StreamCapture, MultiStreamCapture,
+                VideoFileProcessor, ImageProcessor,
                 MockAnalyzer, AnalysisWorker, AnalysisEngine, ResultProcessor,
                 VideoPlayer
             )
 
             # 1. 内存预分配
             self.logger.info(f"🔧 任务 {task_id}: 预分配内存池...")
+            
+            # 根据分析类型调整内存池大小
+            if task_data["analysis_type"] == 2:  # 视频分析
+                pool_size = 400  # 视频分析需要更大的缓冲区，增加到200个
+                self.logger.info(f"📹 视频分析任务，使用超大容量内存池: {pool_size} 个缓冲区")
+            elif task_data["analysis_type"] == 3:  # 流分析
+                pool_size = 80   # 流分析使用中等缓冲区，适当增加
+                self.logger.info(f"📡 流分析任务，使用大容量内存池: {pool_size} 个缓冲区")
+            else:
+                pool_size = 50   # 其他类型使用默认缓冲区，适当增加
+                self.logger.info(f"🔍 其他分析任务，使用标准内存池: {pool_size} 个缓冲区")
+            
             memory_pool = MemoryPool(
-                pool_size=50,  # 50个缓冲区
+                pool_size=pool_size,
                 height=1080,
                 width=1920,
                 logger=self.logger
@@ -492,9 +516,21 @@ class TaskService(BaseService):
 
             # 2. 构建时间轴
             self.logger.info(f"⏰ 任务 {task_id}: 构建时间轴...")
+            
+            # 根据分析类型调整时间轴配置
+            if task_data["analysis_type"] == 2:  # 视频分析
+                max_frames = 500  # 视频批处理需要更大的时间轴缓冲
+                timeout = 5.0
+            elif task_data["analysis_type"] == 3:  # 流分析
+                max_frames = 200  # 流分析中等缓冲
+                timeout = 2.0
+            else:  # 图片分析
+                max_frames = 50   # 图片分析较小缓冲
+                timeout = 1.0
+            
             time_axis = TimeAxis(
-                timeout_seconds=2.0,
-                max_frames=200,
+                timeout_seconds=timeout,
+                max_frames=max_frames,
                 logger=self.logger
             )
 
@@ -527,7 +563,7 @@ class TaskService(BaseService):
             result_processor.start()
 
             # 4. 创建分析引擎
-            self.logger.info(f"�� 任务 {task_id}: 创建AI分析引擎...")
+            self.logger.info(f"🖥 任务 {task_id}: 创建AI分析引擎...")
             analysis_engine = AnalysisEngine(self.logger)
 
             # 为每个模型创建分析器
@@ -552,9 +588,31 @@ class TaskService(BaseService):
                     lambda frames, results: self._on_analysis_result(task_id, frames, results, result_processor, video_player)
                 )
 
-            # 4. 创建流捕获器（双管道处理）
-            captures = []
-            if task_data["analysis_type"] == 3:  # 流分析
+            # 4. 根据分析类型创建对应的处理器
+            processors = []
+            
+            if task_data["analysis_type"] == 1:  # 图片分析
+                self.logger.info(f"🖼️ 任务 {task_id}: 创建图片处理器...")
+                
+                # 获取图片路径
+                image_paths = task_data.get("image_paths", [])
+                if not image_paths:
+                    raise ValueError("图片分析任务需要提供image_paths")
+                
+                # 创建图片处理器
+                image_processor = ImageProcessor(
+                    image_path=image_paths,
+                    memory_pool=memory_pool,
+                    time_axis=time_axis,
+                    stream_id="image_analysis",
+                    batch_size=5,  # 每批处理5张图片
+                    processing_delay=0.2,  # 每张图片间隔0.2秒
+                    logger=self.logger,
+                    on_all_complete_callback=lambda: self._on_analysis_complete(task_id, "image_analysis")
+                )
+                processors.append(image_processor)
+                
+            elif task_data["analysis_type"] == 3:  # 流分析
                 self.logger.info(f"📡 任务 {task_id}: 创建流捕获器...")
                 multi_capture = MultiStreamCapture(memory_pool, time_axis, self.logger)
 
@@ -564,19 +622,35 @@ class TaskService(BaseService):
                     # 为第一个流设置视频播放器
                     if i == 0 and video_player:
                         capture.video_player = video_player
-                    captures.append(capture)
+                    processors.append(capture)
 
             elif task_data["analysis_type"] == 2:  # 视频分析
-                self.logger.info(f"🎥 任务 {task_id}: 创建视频捕获器...")
-                capture = StreamCapture(
-                    stream_url=task_data["video_path"],
+                self.logger.info(f" 任务 {task_id}: 创建视频文件处理器...")
+                
+                # 获取视频路径
+                video_path = task_data.get("video_path")
+                if not video_path:
+                    raise ValueError("视频分析任务需要提供video_path")
+                
+                video_processor = VideoFileProcessor(
+                    video_path=video_path,
                     memory_pool=memory_pool,
                     time_axis=time_axis,
-                    stream_id="video_stream",
+                    stream_id="video_file",
+                    batch_size=100,    # 每批处理100帧
+                    max_queue_size=300,  # 队列容量300帧
                     video_player=video_player,
-                    logger=self.logger
+                    logger=self.logger,
+                    on_video_end_callback=lambda: self._on_video_end(task_id, "video_file"),
+                    on_batch_complete_callback=lambda batch_num, batch_size, total_processed: 
+                        self.logger.debug(f"🔄 批次 {batch_num} 完成: {batch_size} 帧, 总计 {total_processed} 帧")
                 )
-                captures.append(capture)
+                processors.append(video_processor)
+            
+            else:
+                raise ValueError(f"不支持的分析类型: {task_data['analysis_type']}")
+            
+            self.logger.info(f"✅ 任务 {task_id}: 已创建 {len(processors)} 个处理器")
 
             # 5. 启动双管道处理
             self.logger.info(f"🔄 任务 {task_id}: 启动双管道处理...")
@@ -584,13 +658,13 @@ class TaskService(BaseService):
             # 启动分析引擎（分析管道）
             analysis_engine.start_all()
 
-            # 启动流捕获（拉流管道）
-            for capture in captures:
-                capture.start()
+            # 启动处理器（数据管道）
+            for processor in processors:
+                processor.start()
 
             # 🔧 保存组件引用（关键修复）
             self.task_components[task_id] = {
-                'captures': captures,
+                'processors': processors,
                 'analysis_engine': analysis_engine,
                 'result_processor': result_processor,
                 'video_player': video_player,
@@ -634,9 +708,9 @@ class TaskService(BaseService):
             # 7. 清理资源
             self.logger.info(f"🧹 任务 {task_id}: 清理资源...")
 
-            # 停止捕获器
-            for capture in captures:
-                capture.stop()
+            # 停止处理器
+            for processor in processors:
+                processor.stop()
 
             # 停止分析引擎
             analysis_engine.stop_all()
@@ -712,7 +786,88 @@ class TaskService(BaseService):
         # 限制结果数量（避免内存过多）
         if len(task_data["results"]) > 1000:
             task_data["results"] = task_data["results"][-1000:]  # 保留最新1000个结果
+
+        # 计算进度（基于处理的帧数）
+        total_frames = task_data.get("total_frames", 0)
+        processed_frames = len(task_data["results"])
+        if total_frames > 0:
+            task_data["progress"] = min(100.0, (processed_frames / total_frames) * 100)
+        else:
+            # 没有总帧数时，基于时间估算进度
+            runtime = time.time() - task_data.get("start_time", time.time())
+            estimated_total_time = 60.0  # 假设60秒的任务
+            task_data["progress"] = min(100.0, (runtime / estimated_total_time) * 100)
     
+    def _on_video_end(self, task_id: int, stream_id: str):
+        """视频文件播放结束回调"""
+        self.logger.info(f"🏁 视频播放结束回调: 任务ID={task_id}, 流ID={stream_id}")
+        
+        if task_id not in self.tasks:
+            self.logger.warning(f"⚠️ 任务 {task_id} 不存在，无法处理视频结束回调")
+            return
+        
+        task_data = self.tasks[task_id]
+        
+        # 检查任务是否还在运行
+        if task_data["status"] != 1:
+            self.logger.info(f"📋 任务 {task_id} 已经停止，忽略视频结束回调")
+            return
+        
+        self.logger.info(f"🎬 视频文件播放完毕，自动停止任务: {task_id}")
+        
+        # 使用同步方式处理停止操作，避免事件循环问题
+        try:
+            # 直接更新任务状态为停止
+            task_data["status"] = 2  # 已停止
+            task_data["progress"] = 100.0
+            task_data["updated_at"] = datetime.now()
+            self.logger.info(f"✅ 任务 {task_id} 已标记为完成状态")
+            
+            # 停止运行中的异步任务
+            if task_id in self.running_tasks:
+                running_task = self.running_tasks[task_id]
+                if not running_task.done():
+                    running_task.cancel()
+                    self.logger.info(f"🛑 任务 {task_id} 异步任务已取消")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 自动停止任务 {task_id} 失败: {e}")
+
+    def _on_analysis_complete(self, task_id: int, stream_id: str):
+        """分析完成回调（用于图片分析）"""
+        self.logger.info(f"🖼️ 分析完成回调: 任务ID={task_id}, 流ID={stream_id}")
+        
+        if task_id not in self.tasks:
+            self.logger.warning(f"⚠️ 任务 {task_id} 不存在，无法处理分析完成回调")
+            return
+        
+        task_data = self.tasks[task_id]
+        
+        # 检查任务是否还在运行
+        if task_data["status"] != 1:
+            self.logger.info(f"📋 任务 {task_id} 已经停止，忽略分析完成回调")
+            return
+        
+        self.logger.info(f"🎯 分析任务处理完毕，自动停止任务: {task_id}")
+        
+        # 使用同步方式处理停止操作，避免事件循环问题
+        try:
+            # 直接更新任务状态为完成
+            task_data["status"] = 4  # 已完成
+            task_data["progress"] = 100.0
+            task_data["updated_at"] = datetime.now()
+            self.logger.info(f"✅ 任务 {task_id} 已标记为完成状态")
+            
+            # 停止运行中的异步任务
+            if task_id in self.running_tasks:
+                running_task = self.running_tasks[task_id]
+                if not running_task.done():
+                    running_task.cancel()
+                    self.logger.info(f"🛑 任务 {task_id} 异步任务已取消")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 自动完成任务 {task_id} 失败: {e}")
+
     def _to_task_info(self, task_data: Dict[str, Any]) -> TaskInfo:
         """将任务数据转换为TaskInfo"""
         return TaskInfo(
