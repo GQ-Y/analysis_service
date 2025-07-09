@@ -58,21 +58,45 @@ class VideoProcessor(BaseResultProcessor):
             # 创建输出目录
             self.output_dir.mkdir(parents=True, exist_ok=True)
             
-            # 视频编码设置
+            # 视频编码设置 - 优化为H.264编码
             self.fps = 25  # 目标FPS
-            self.codec = cv2.VideoWriter_fourcc(*'mp4v')
+            self.codec = cv2.VideoWriter_fourcc(*'H264')  # 使用H.264编码，兼容性更好
+            
+            # 【新增】时间窗口锁定机制
+            self.active_video_windows = set()  # 存储正在生成视频的时间窗口
+            self.video_lock = asyncio.Lock()   # 异步锁
             
             # 统计信息
             self.videos_created = 0
             self.total_processed = 0
+            self.skipped_overlapping = 0  # 跳过的重叠视频数量
             
             self.logger.info(
-                f"🎬 视频处理器已启用: 回放{playback_duration}秒, 输出到{output_dir}"
+                f"🎬 视频处理器已启用: 回放{playback_duration}秒, 输出到{output_dir}, 编码H.264"
             )
         else:
             self.logger.info(
                 f"🎬 视频处理器已禁用: 分析类型{analysis_type}, 回放时长{playback_duration}秒"
             )
+    
+    def process(self, frame_buffer: FrameBuffer, task_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        实现基类的抽象方法
+        
+        Args:
+            frame_buffer: 帧缓冲区
+            task_config: 任务配置
+            
+        Returns:
+            Dict[str, Any]: 处理结果
+        """
+        # 视频处理器主要通过 process_result 方法处理，这里返回基本信息
+        return {
+            "processor": "video",
+            "enabled": self.enabled,
+            "videos_created": self.videos_created,
+            "total_processed": self.total_processed
+        }
     
     async def process_result(self, result: AnalysisResult):
         """
@@ -87,8 +111,53 @@ class VideoProcessor(BaseResultProcessor):
         self.total_processed += 1
         
         try:
-            # 异步生成视频回放
-            await self._generate_playback_video(result)
+            # 【新增】检查时间窗口冲突
+            detection_timestamp = result.timestamp
+            half_duration = self.playback_duration / 2
+            start_time = detection_timestamp - half_duration
+            end_time = detection_timestamp + half_duration
+            
+            # 创建时间窗口标识
+            window_key = f"{start_time:.1f}-{end_time:.1f}"
+            
+            async with self.video_lock:
+                # 检查是否有重叠的时间窗口
+                overlapping = False
+                for active_window in self.active_video_windows:
+                    active_start, active_end = map(float, active_window.split('-'))
+                    
+                    # 检查时间窗口是否重叠
+                    if not (end_time <= active_start or start_time >= active_end):
+                        overlapping = True
+                        break
+                
+                if overlapping:
+                    self.skipped_overlapping += 1
+                    self.logger.info(
+                        f"⏭️ 跳过重叠视频生成: 帧{result.frame_id}, "
+                        f"时间窗口{window_key}与现有窗口重叠 "
+                        f"(已跳过{self.skipped_overlapping}个)"
+                    )
+                    return
+                
+                # 添加到活跃窗口
+                self.active_video_windows.add(window_key)
+                self.logger.info(
+                    f"🎬 开始生成视频: 帧{result.frame_id}, 时间窗口{window_key}, "
+                    f"活跃窗口数: {len(self.active_video_windows)}"
+                )
+            
+            try:
+                # 异步生成视频回放
+                await self._generate_playback_video(result)
+            finally:
+                # 无论成功失败，都要移除时间窗口
+                async with self.video_lock:
+                    self.active_video_windows.discard(window_key)
+                    self.logger.info(
+                        f"🏁 视频生成完成: 窗口{window_key}已释放, "
+                        f"剩余活跃窗口: {len(self.active_video_windows)}"
+                    )
             
         except Exception as e:
             self.logger.error(f"❌ 视频回放生成失败 (帧{result.frame_id}): {e}")
@@ -191,37 +260,93 @@ class VideoProcessor(BaseResultProcessor):
             
             # 生成文件名
             timestamp_str = str(int(result.timestamp * 1000))
-            filename = f"playback_frame_{result.frame_id}_{timestamp_str}.mp4"
+            filename = f"detection_{result.frame_id}_{timestamp_str}.mp4"
             video_path = self.output_dir / filename
             
-            # 获取视频尺寸
+            # 获取视频尺寸，确保是偶数（H.264要求）
             height, width = frames[0].shape[:2]
+            if width % 2 != 0:
+                width -= 1
+            if height % 2 != 0:
+                height -= 1
             
-            # 创建视频写入器
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            video_writer = cv2.VideoWriter(
-                str(video_path), 
-                fourcc, 
-                self.fps, 
-                (width, height)
-            )
+            self.logger.info(f"🎬 创建视频: {filename}, 尺寸: {width}x{height}, FPS: {self.fps}")
             
-            if not video_writer.isOpened():
-                self.logger.error(f"❌ 无法创建视频写入器: {video_path}")
+            # 尝试多种编码器
+            codecs_to_try = [
+                ('H264', cv2.VideoWriter_fourcc(*'H264')),
+                ('XVID', cv2.VideoWriter_fourcc(*'XVID')),
+                ('MP4V', cv2.VideoWriter_fourcc(*'MP4V')),
+                ('MJPG', cv2.VideoWriter_fourcc(*'MJPG'))
+            ]
+            
+            video_writer = None
+            used_codec = None
+            
+            for codec_name, fourcc in codecs_to_try:
+                video_writer = cv2.VideoWriter(
+                    str(video_path), 
+                    fourcc, 
+                    self.fps, 
+                    (width, height)
+                )
+                
+                if video_writer.isOpened():
+                    used_codec = codec_name
+                    self.logger.info(f"✅ 使用编码器: {codec_name}")
+                    break
+                else:
+                    video_writer.release()
+                    video_writer = None
+            
+            if not video_writer or not video_writer.isOpened():
+                self.logger.error(f"❌ 无法创建视频写入器，尝试了所有编码器")
                 return None
             
             # 写入帧
+            frames_written = 0
+            detection_frame_index = len(frames) // 2  # 中间帧是检测帧
+            
             for i, frame in enumerate(frames):
-                # 在检测帧上绘制标注
-                if i == len(frames) // 2:  # 中间帧是检测帧
-                    frame = self._draw_detection_on_frame(frame, result)
-                
-                video_writer.write(frame)
+                try:
+                    # 调整帧尺寸
+                    if frame.shape[:2] != (height, width):
+                        frame = cv2.resize(frame, (width, height))
+                    
+                    # 在检测帧上绘制标注
+                    if i == detection_frame_index:
+                        frame = self._draw_detection_on_frame(frame, result)
+                    
+                    # 确保帧格式正确
+                    if len(frame.shape) == 3 and frame.shape[2] == 3:
+                        # BGR格式，直接写入
+                        video_writer.write(frame)
+                        frames_written += 1
+                    else:
+                        self.logger.warning(f"⚠️ 跳过无效帧格式: {frame.shape}")
+                        
+                except Exception as e:
+                    self.logger.error(f"❌ 写入帧 {i} 失败: {e}")
+                    continue
             
             # 释放写入器
             video_writer.release()
             
-            return video_path
+            # 检查文件是否成功创建
+            if video_path.exists() and video_path.stat().st_size > 0:
+                file_size_mb = video_path.stat().st_size / (1024 * 1024)
+                self.logger.info(
+                    f"✅ 视频创建成功: {filename}, "
+                    f"编码器: {used_codec}, "
+                    f"帧数: {frames_written}/{len(frames)}, "
+                    f"文件大小: {file_size_mb:.2f}MB"
+                )
+                return video_path
+            else:
+                self.logger.error(f"❌ 视频文件创建失败或文件为空: {video_path}")
+                if video_path.exists():
+                    video_path.unlink()  # 删除空文件
+                return None
             
         except Exception as e:
             self.logger.error(f"❌ 创建视频文件失败: {e}")
@@ -305,7 +430,7 @@ class VideoProcessor(BaseResultProcessor):
     
     def get_statistics(self) -> Dict[str, Any]:
         """获取统计信息"""
-        return {
+        stats = {
             "enabled": self.enabled,
             "total_processed": self.total_processed,
             "videos_created": self.videos_created,
@@ -313,6 +438,15 @@ class VideoProcessor(BaseResultProcessor):
             "analysis_type": self.analysis_type,
             "output_dir": str(self.output_dir)
         }
+        
+        if self.enabled:
+            stats.update({
+                "skipped_overlapping": self.skipped_overlapping,
+                "active_windows": len(self.active_video_windows),
+                "efficiency": f"{(self.videos_created / max(self.total_processed, 1) * 100):.1f}%"
+            })
+        
+        return stats
     
     def cleanup(self):
         """清理资源"""

@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+import threading
 from typing import Dict, Any, Optional, List
 import aiohttp
 
@@ -47,6 +48,11 @@ class CallbackProcessor(BaseResultProcessor):
         self.callback_buffer = []
         self.last_callback_time = 0
         
+        # 异步任务队列（后台处理）
+        self.pending_tasks = []
+        self.executor_thread = None
+        self.running = True
+        
         # 统计信息
         self.stats = {
             "total_callbacks": 0,
@@ -55,7 +61,40 @@ class CallbackProcessor(BaseResultProcessor):
             "retry_count": 0
         }
         
+        # 启动后台任务处理线程
+        self._start_background_executor()
+        
         self.logger.info(f"📞 回调处理器初始化: {len(self.callback_urls)} 个回调地址")
+    
+    def _start_background_executor(self):
+        """启动后台任务执行器"""
+        def executor():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            while self.running:
+                try:
+                    if self.pending_tasks:
+                        # 处理待执行的任务
+                        tasks_to_run = self.pending_tasks.copy()
+                        self.pending_tasks.clear()
+                        
+                        for task_func, args in tasks_to_run:
+                            try:
+                                loop.run_until_complete(task_func(*args))
+                            except Exception as e:
+                                self.logger.error(f"❌ 后台任务执行失败: {e}")
+                    
+                    time.sleep(0.1)  # 避免CPU占用过高
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ 后台执行器异常: {e}")
+                    time.sleep(1)
+            
+            loop.close()
+        
+        self.executor_thread = threading.Thread(target=executor, daemon=True)
+        self.executor_thread.start()
     
     def process(self, frame_buffer: FrameBuffer, task_config: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -95,8 +134,8 @@ class CallbackProcessor(BaseResultProcessor):
             # 检查是否需要立即回调或缓存
             current_time = time.time()
             if self.callback_interval == 0:
-                # 实时回调
-                asyncio.create_task(self._send_callbacks(callback_urls, callback_data))
+                # 实时回调 - 添加到后台任务队列
+                self.pending_tasks.append((self._send_callbacks, (callback_urls, callback_data)))
                 result["callbacks_sent"] = len(callback_urls)
                 result["success"] = True
             else:
@@ -105,7 +144,7 @@ class CallbackProcessor(BaseResultProcessor):
                 
                 # 检查是否达到回调间隔
                 if current_time - self.last_callback_time >= self.callback_interval:
-                    asyncio.create_task(self._send_batch_callbacks(callback_urls))
+                    self.pending_tasks.append((self._send_batch_callbacks, (callback_urls,)))
                     result["callbacks_sent"] = len(callback_urls)
                     result["success"] = True
                 else:
@@ -201,5 +240,27 @@ class CallbackProcessor(BaseResultProcessor):
             "callback_urls": self.callback_urls,
             "callback_interval": self.callback_interval,
             "buffer_size": len(self.callback_buffer),
+            "pending_tasks": len(self.pending_tasks),
             "success_rate": (self.stats["successful_callbacks"] / max(1, self.stats["total_callbacks"])) * 100
-        } 
+        }
+    
+    def cleanup(self):
+        """清理资源"""
+        self.running = False
+        
+        # 等待后台线程结束
+        if self.executor_thread and self.executor_thread.is_alive():
+            self.executor_thread.join(timeout=3.0)
+        
+        # 清空缓存
+        self.callback_buffer.clear()
+        self.pending_tasks.clear()
+        
+        self.logger.info("🧹 回调处理器已清理")
+    
+    def __del__(self):
+        """析构函数"""
+        try:
+            self.cleanup()
+        except:
+            pass 

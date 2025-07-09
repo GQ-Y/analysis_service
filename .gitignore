@@ -41,3 +41,5 @@ zlmos/linux/libmk_api.so
 zlmos/darwin/libzlmediakit.a
 zlmos/darwin/libmk_api.dylib
 storage/*
+public/videos/*
+unused/videos/*

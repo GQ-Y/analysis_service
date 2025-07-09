@@ -74,8 +74,14 @@ class DetectionFilter:
         Returns:
             过滤后的分析结果，如果被完全过滤则返回None
         """
-        if not result or not result.detections:
-            return result
+        # 如果没有结果，直接返回None
+        if not result:
+            return None
+            
+        # 如果没有检测结果，也返回None（这是关键修复）
+        if not result.detections:
+            self.logger.info("🔍 没有检测结果，返回None")
+            return None
         
         self.total_processed += 1
         
@@ -98,6 +104,7 @@ class DetectionFilter:
         
         # 如果所有检测都被过滤掉了
         if not filtered_detections:
+            self.logger.info("🔍 所有检测结果都被过滤掉，返回None")
             return None
         
         # 创建过滤后的结果

@@ -21,7 +21,6 @@ from .video_file_processor import VideoFileProcessor
 from .image_processor import ImageProcessor
 from .ai_analyzer import BaseAnalyzer, MockAnalyzer, AnalysisWorker, AnalysisEngine
 from .result_processor import ResultProcessor, BatchResultProcessor
-from .video_player import VideoPlayer, MultiWindowPlayer, multi_window_player
 
 __all__ = [
     # 帧缓冲区
@@ -45,19 +44,14 @@ __all__ = [
     # 专用处理器
     'VideoFileProcessor',
     'ImageProcessor',
-
+    
     # AI分析器
     'BaseAnalyzer',
     'MockAnalyzer',
     'AnalysisWorker',
     'AnalysisEngine',
-
-    # 结果处理
+    
+    # 结果处理器
     'ResultProcessor',
-    'BatchResultProcessor',
-
-    # 视频播放器
-    'VideoPlayer',
-    'MultiWindowPlayer',
-    'multi_window_player'
+    'BatchResultProcessor'
 ]

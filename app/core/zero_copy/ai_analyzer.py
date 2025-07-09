@@ -24,6 +24,209 @@ from .frame_buffer import FrameBuffer
 from .time_axis import TimeAxis
 
 
+class FPSController:
+    """
+    FPS控制器，用于控制不同算法模型的分析帧率
+    
+    在分析工作器和时间轴之间插入，按照设定的FPS进行帧抽取
+    """
+    
+    def __init__(
+        self,
+        time_axis: TimeAxis,
+        target_fps: Optional[float] = None,
+        model_code: Optional[str] = None,
+        logger: Optional[logging.Logger] = None
+    ):
+        """
+        初始化FPS控制器
+        
+        Args:
+            time_axis: 原始时间轴
+            target_fps: 目标分析帧率，None表示不限制（全帧分析）
+            model_code: 算法模型代码
+            logger: 日志记录器
+        """
+        self.time_axis = time_axis
+        self.target_fps = target_fps
+        self.model_code = model_code or "unknown"
+        self.logger = logger or logging.getLogger(__name__)
+        
+        # FPS控制状态
+        self.last_frame_time = 0.0
+        self.frame_interval = 1.0 / target_fps if target_fps and target_fps > 0 else 0.0
+        self.dropped_frames = 0
+        self.processed_frames = 0
+        
+        # 统计信息
+        self._stats = {
+            "target_fps": target_fps,
+            "actual_fps": 0.0,
+            "dropped_frames": 0,
+            "processed_frames": 0,
+            "drop_rate": 0.0
+        }
+        
+        self.logger.info(f"🎯 FPS控制器初始化: 模型={model_code}, 目标FPS={target_fps}")
+    
+    def get_frame(self) -> Optional[FrameBuffer]:
+        """
+        获取帧（带FPS控制）
+        
+        Returns:
+            Optional[FrameBuffer]: 符合FPS要求的帧，无可用帧返回None
+        """
+        if not self.target_fps or self.target_fps <= 0:
+            # 无FPS限制，直接返回原始帧
+            return self.time_axis.get_frame()
+        
+        current_time = time.time()
+        
+        # 检查是否到达下一帧时间
+        if current_time - self.last_frame_time < self.frame_interval:
+            # 还没到时间，丢弃当前可用的帧
+            while True:
+                frame = self.time_axis.get_frame()
+                if not frame:
+                    break
+                
+                # 释放丢弃的帧
+                frame.release()
+                self.dropped_frames += 1
+                self._stats["dropped_frames"] = self.dropped_frames
+                
+                # 检查是否有更多帧
+                if not self._has_more_frames():
+                    break
+            
+            return None
+        
+        # 获取帧
+        frame = self.time_axis.get_frame()
+        if frame:
+            self.last_frame_time = current_time
+            self.processed_frames += 1
+            self._stats["processed_frames"] = self.processed_frames
+            
+            # 计算实际FPS
+            if self.processed_frames > 1:
+                elapsed = current_time - (self.last_frame_time - self.frame_interval)
+                self._stats["actual_fps"] = self.processed_frames / max(elapsed, 0.001)
+            
+            # 计算丢帧率
+            total_frames = self.processed_frames + self.dropped_frames
+            self._stats["drop_rate"] = self.dropped_frames / max(total_frames, 1) * 100
+            
+            self.logger.debug(f"🎯 {self.model_code}: 获取帧 {frame.frame_id}, "
+                            f"实际FPS={self._stats['actual_fps']:.1f}, "
+                            f"丢帧率={self._stats['drop_rate']:.1f}%")
+        
+        return frame
+    
+    def get_batch(self, max_size: int) -> List[FrameBuffer]:
+        """
+        获取批量帧（带FPS控制）
+        
+        Args:
+            max_size: 最大批次大小
+            
+        Returns:
+            List[FrameBuffer]: 符合FPS要求的帧列表
+        """
+        if not self.target_fps or self.target_fps <= 0:
+            # 无FPS限制，直接返回原始批次
+            return self.time_axis.get_batch(max_size)
+        
+        batch = []
+        current_time = time.time()
+        
+        # 根据FPS计算需要的帧数
+        time_since_last = current_time - self.last_frame_time
+        frames_needed = int(time_since_last * self.target_fps)
+        frames_needed = min(frames_needed, max_size)
+        
+        if frames_needed <= 0:
+            return batch
+        
+        # 获取更多帧用于筛选
+        available_frames = self.time_axis.get_batch(max_size * 2)
+        
+        if not available_frames:
+            return batch
+        
+        # 按时间间隔筛选帧
+        selected_frames = []
+        dropped_count = 0
+        
+        for i, frame in enumerate(available_frames):
+            if len(selected_frames) >= frames_needed:
+                # 已获取足够帧，释放剩余帧
+                frame.release()
+                dropped_count += 1
+                continue
+            
+            # 检查时间间隔
+            frame_time = frame.timestamp
+            if not selected_frames or (frame_time - selected_frames[-1].timestamp) >= self.frame_interval:
+                selected_frames.append(frame)
+            else:
+                # 时间间隔不够，丢弃帧
+                frame.release()
+                dropped_count += 1
+        
+        # 更新统计
+        self.dropped_frames += dropped_count
+        self.processed_frames += len(selected_frames)
+        self._stats["dropped_frames"] = self.dropped_frames
+        self._stats["processed_frames"] = self.processed_frames
+        
+        if selected_frames:
+            self.last_frame_time = current_time
+            
+            # 计算实际FPS
+            if self.processed_frames > 1:
+                elapsed = current_time - (self.last_frame_time - self.frame_interval)
+                self._stats["actual_fps"] = self.processed_frames / max(elapsed, 0.001)
+            
+            # 计算丢帧率
+            total_frames = self.processed_frames + self.dropped_frames
+            self._stats["drop_rate"] = self.dropped_frames / max(total_frames, 1) * 100
+            
+            self.logger.debug(f"🎯 {self.model_code}: 获取批次 {len(selected_frames)} 帧, "
+                            f"丢弃 {dropped_count} 帧, "
+                            f"实际FPS={self._stats['actual_fps']:.1f}, "
+                            f"丢帧率={self._stats['drop_rate']:.1f}%")
+        
+        return selected_frames
+    
+    def _has_more_frames(self) -> bool:
+        """检查时间轴是否还有更多帧"""
+        stats = self.time_axis.get_stats()
+        return stats.get("current_size", 0) > 0
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取FPS控制器统计信息"""
+        stats = self._stats.copy()
+        stats.update({
+            "model_code": self.model_code,
+            "frame_interval": self.frame_interval,
+            "last_frame_time": self.last_frame_time
+        })
+        return stats
+    
+    def reset_stats(self):
+        """重置统计信息"""
+        self.dropped_frames = 0
+        self.processed_frames = 0
+        self.last_frame_time = 0.0
+        self._stats.update({
+            "actual_fps": 0.0,
+            "dropped_frames": 0,
+            "processed_frames": 0,
+            "drop_rate": 0.0
+        })
+
+
 class BaseAnalyzer(ABC):
     """AI分析器基类"""
     
@@ -251,6 +454,8 @@ class AnalysisWorker:
         time_axis: TimeAxis,
         batch_size: int = 1,
         timeout: float = 0.1,
+        target_fps: Optional[float] = None,
+        model_code: Optional[str] = None,
         logger: Optional[logging.Logger] = None
     ):
         """
@@ -261,13 +466,22 @@ class AnalysisWorker:
             time_axis: 时间轴
             batch_size: 批处理大小（1为单帧处理）
             timeout: 获取帧的超时时间
+            target_fps: 目标分析帧率，None表示不限制
+            model_code: 算法模型代码
             logger: 日志记录器
         """
         self.analyzer = analyzer
-        self.time_axis = time_axis
         self.batch_size = batch_size
         self.timeout = timeout
         self.logger = logger or logging.getLogger(__name__)
+        
+        # 创建FPS控制器
+        self.fps_controller = FPSController(
+            time_axis=time_axis,
+            target_fps=target_fps,
+            model_code=model_code,
+            logger=self.logger
+        )
         
         # 工作状态
         self.running = False
@@ -276,7 +490,8 @@ class AnalysisWorker:
         # 结果回调
         self.result_callbacks: List[Callable] = []
         
-        self.logger.info(f"👷 分析工作器初始化: {analyzer.name}, 批大小={batch_size}")
+        fps_info = f"FPS={target_fps}" if target_fps else "无限制"
+        self.logger.info(f"👷 分析工作器初始化: {analyzer.name}, 批大小={batch_size}, {fps_info}")
     
     def add_result_callback(self, callback: Callable):
         """添加结果回调函数"""
@@ -290,6 +505,7 @@ class AnalysisWorker:
         
         self.running = True
         self.analyzer.reset_stats()
+        self.fps_controller.reset_stats()
         
         # 创建并启动工作线程
         self.thread = threading.Thread(target=self._work_loop, daemon=True)
@@ -317,8 +533,8 @@ class AnalysisWorker:
         while self.running:
             try:
                 if self.batch_size == 1:
-                    # 单帧处理模式
-                    frame_buffer = self.time_axis.get_frame()
+                    # 单帧处理模式 - 使用FPS控制器
+                    frame_buffer = self.fps_controller.get_frame()
                     if frame_buffer:
                         result = self.analyzer.process_frame(frame_buffer)
                         # 先通知结果回调，再释放引用
@@ -327,8 +543,8 @@ class AnalysisWorker:
                     else:
                         time.sleep(self.timeout)
                 else:
-                    # 批处理模式
-                    frame_buffers = self.time_axis.get_batch(self.batch_size)
+                    # 批处理模式 - 使用FPS控制器
+                    frame_buffers = self.fps_controller.get_batch(self.batch_size)
                     if frame_buffers:
                         results = self.analyzer.process_batch(frame_buffers)
                         # 先通知结果回调，再释放引用
@@ -357,10 +573,13 @@ class AnalysisWorker:
     def get_stats(self) -> Dict[str, Any]:
         """获取工作器统计信息"""
         stats = self.analyzer.get_stats()
+        fps_stats = self.fps_controller.get_stats()
+        
         stats.update({
             "running": self.running,
             "batch_size": self.batch_size,
-            "timeout": self.timeout
+            "timeout": self.timeout,
+            "fps_controller": fps_stats
         })
         return stats
 
@@ -387,18 +606,40 @@ class AnalysisEngine:
         analyzer: BaseAnalyzer,
         time_axis: TimeAxis,
         batch_size: int = 1,
-        timeout: float = 0.1
+        timeout: float = 0.1,
+        target_fps: Optional[float] = None,
+        model_code: Optional[str] = None
     ) -> AnalysisWorker:
-        """添加分析工作器"""
+        """
+        添加分析工作器
+        
+        Args:
+            name: 工作器名称
+            analyzer: AI分析器
+            time_axis: 时间轴
+            batch_size: 批处理大小
+            timeout: 超时时间
+            target_fps: 目标分析帧率
+            model_code: 算法模型代码
+        """
         with self.lock:
             if name in self.workers:
                 self.logger.warning(f"⚠️ 分析工作器 {name} 已存在，将被替换")
                 self.remove_worker(name)
             
-            worker = AnalysisWorker(analyzer, time_axis, batch_size, timeout, self.logger)
+            worker = AnalysisWorker(
+                analyzer=analyzer,
+                time_axis=time_axis,
+                batch_size=batch_size,
+                timeout=timeout,
+                target_fps=target_fps,
+                model_code=model_code,
+                logger=self.logger
+            )
             self.workers[name] = worker
             
-            self.logger.info(f"➕ 添加分析工作器: {name}")
+            fps_info = f"FPS={target_fps}" if target_fps else "无限制"
+            self.logger.info(f"➕ 添加分析工作器: {name} ({fps_info})")
             return worker
     
     def remove_worker(self, name: str) -> bool:

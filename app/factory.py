@@ -101,9 +101,21 @@ class ApplicationFactory:
         Args:
             app: FastAPI应用实例
         """
+        # 配置静态文件服务
         if self.settings.STATIC_DIR and os.path.exists(self.settings.STATIC_DIR):
             self.logger.info(f"配置静态文件服务: {self.settings.STATIC_DIR}")
             app.mount("/static", StaticFiles(directory=self.settings.STATIC_DIR), name="static")
+        
+        # 配置public文件服务
+        public_dir = self.settings.BASE_DIR / "public"
+        if public_dir.exists():
+            self.logger.info(f"配置公共文件服务: {public_dir}")
+            app.mount("/public", StaticFiles(directory=str(public_dir)), name="public")
+            
+            # 同时配置videos目录的直接访问
+            videos_dir = public_dir / "videos"
+            if videos_dir.exists():
+                app.mount("/videos", StaticFiles(directory=str(videos_dir)), name="videos")
     
     def _configure_middleware(self, app: FastAPI):
         """配置中间件

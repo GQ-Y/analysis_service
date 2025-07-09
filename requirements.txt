@@ -1,26 +1,41 @@
+# Web Framework
 fastapi>=0.68.0
 uvicorn>=0.15.0
 pydantic>=1.8.0
 pydantic-settings>=2.0.0
 python-multipart>=0.0.5
+
+# HTTP Clients
 aiohttp>=3.8.0
+httpx>=0.24.0
+requests>=2.32.0
+
+# Data Processing
 PyYAML>=5.4.0
 opencv-python>=4.8.1.78
 numpy>=1.26.2
 Pillow>=8.0.0
 ultralytics>=8.0.0,<8.4.0
+scipy>=1.11.0
+
+# Cache & Database
 redis[hiredis]>=5.0.1
+
+# System & Monitoring
 psutil>=5.9.6
 gputil>=1.4.0
 loguru>=0.7.0
-scipy>=1.11.0
-httpx>=0.24.0
-python-dotenv>=1.0.0
+
+# Utils
 sortedcontainers>=2.4.0
-# git+https://github.com/ultralytics/CLIP.git
-# ONVIF device discovery support
+python-dotenv>=1.0.0
+
+# ONVIF Support
 onvif-zeep>=0.2.12
-# GStreamer Python bindings support (Windows 上较难安装，暂时保持平台限制)
+
+# GStreamer Support (Non-Windows Only)
 PyGObject>=3.30.0; sys_platform != "win32"
 pycairo>=1.20.0; sys_platform != "win32"
-requests>=3.4.2
+
+dependency-injector>=4.48.1
+email-validator>=2.1.0

@@ -425,10 +425,37 @@ class ResultProcessingPipeline:
                 self.file_logger.info(f"🔄 处理处理器: {name}")
                 
                 try:
+                    # 先调用基础的 process 方法
                     processor_result = self._safe_processor_call(
                         processor, name, self._current_frame_buffer, self.task_config
                     )
-                    self.file_logger.info(f"✅ 处理器 {name} 执行完成: {processor_result}")
+                    self.file_logger.info(f"✅ 处理器 {name} 基础调用完成: {processor_result}")
+                    
+                    # 【修复】如果是视频处理器，还需要调用 process_result 方法
+                    if name == "video" and hasattr(processor, 'process_result'):
+                        self.file_logger.info(f"🎬 调用视频处理器的 process_result 方法...")
+                        try:
+                            # 使用 asyncio 运行异步方法
+                            import asyncio
+                            try:
+                                # 尝试在现有事件循环中运行
+                                loop = asyncio.get_event_loop()
+                                if loop.is_running():
+                                    # 如果事件循环正在运行，使用 create_task
+                                    task = loop.create_task(processor.process_result(result))
+                                    # 不等待完成，让它在后台运行
+                                    self.file_logger.info(f"🎬 视频处理任务已提交到后台执行")
+                                else:
+                                    # 如果事件循环未运行，同步运行
+                                    loop.run_until_complete(processor.process_result(result))
+                                    self.file_logger.info(f"🎬 视频处理器 process_result 执行完成")
+                            except RuntimeError:
+                                # 如果没有事件循环，创建新的
+                                asyncio.run(processor.process_result(result))
+                                self.file_logger.info(f"🎬 视频处理器 process_result 执行完成（新事件循环）")
+                        except Exception as video_e:
+                            self.file_logger.error(f"❌ 视频处理器 process_result 执行失败: {video_e}")
+                            self.file_logger.exception("视频处理详细错误:")
                     
                 except Exception as e:
                     self.file_logger.error(f"❌ 处理器 {name} 执行失败: {e}")

@@ -29,6 +29,11 @@ from config.settings import get_settings
 from app.core.storage.model_manager import ModelManager
 from app.core.analyzer.analyzer_factory import AnalyzerFactory
 from app.core.analyzer.analysis_processor import ImageAnalysisProcessor, VideoAnalysisProcessor, StreamAnalysisProcessor
+from app.core.zero_copy.memory_pool import MemoryPool
+from app.core.zero_copy.time_axis import TimeAxis
+from app.core.zero_copy.ai_analyzer import AnalysisEngine
+from app.core.zero_copy.stream_capture import MultiStreamCapture
+from app.core.result_processing.result_pipeline import ResultProcessingPipeline
 
 
 @dataclass
@@ -71,7 +76,6 @@ class TaskService(BaseService):
         video_path: Optional[str] = None,
         image_paths: Optional[List[str]] = None,
         config: Dict[str, Any] = None,
-        enable_video_player: bool = False,
         confidence_threshold: float = 0.5,
         iou_threshold: float = 0.45,
         save_result: bool = True,
@@ -80,7 +84,10 @@ class TaskService(BaseService):
         callback_interval: Optional[int] = None,
         playback_duration: Optional[int] = None,
         roi_config: Optional[Dict[str, Any]] = None,
-        target_classes: Optional[List[str]] = None
+        target_classes: Optional[List[str]] = None,
+        analysis_fps: Optional[Dict[str, float]] = None,
+        model_confidence_config: Optional[Dict[str, float]] = None,
+        model_iou_config: Optional[Dict[str, float]] = None
     ) -> TaskInfo:
         """创建任务
         
@@ -93,7 +100,6 @@ class TaskService(BaseService):
             video_path: 视频文件路径
             image_paths: 图片路径列表
             config: 任务配置
-            enable_video_player: 是否启用视频播放器
             confidence_threshold: 检测置信度阈值 (0.0-1.0)
             iou_threshold: 非极大值抑制IoU阈值 (0.0-1.0)
             save_result: 是否保存分析结果
@@ -103,6 +109,9 @@ class TaskService(BaseService):
             playback_duration: 回放视频时长（秒），适用于视频/流分析
             roi_config: ROI区域配置
             target_classes: 目标检测类别列表
+            analysis_fps: 模型FPS配置 {model_code: fps}
+            model_confidence_config: 模型置信度配置 {model_code: confidence}
+            model_iou_config: 模型IOU阈值配置 {model_code: iou}
 
         Returns:
             TaskInfo: 创建的任务信息
@@ -136,7 +145,6 @@ class TaskService(BaseService):
             "video_path": video_path,
             "image_paths": image_paths or [],
             "config": config or {},
-            "enable_video_player": enable_video_player,
             "confidence_threshold": confidence_threshold,
             "iou_threshold": iou_threshold,
             "save_result": save_result,
@@ -146,6 +154,9 @@ class TaskService(BaseService):
             "playback_duration": playback_duration or 0,
             "roi_config": roi_config,
             "target_classes": target_classes,
+            "analysis_fps": analysis_fps,  # 添加分析帧率配置
+            "model_confidence_config": model_confidence_config or {},  # 添加模型置信度配置
+            "model_iou_config": model_iou_config or {},  # 添加模型IOU配置
             "status": 0,  # 未启动
             "progress": 0.0,
             "created_at": now,
@@ -565,27 +576,20 @@ class TaskService(BaseService):
         }
     
     async def _execute_task(self, task_id: int):
-        """执行任务（零拷贝AI分析）"""
-        task_data = self.tasks[task_id]
-
+        """执行分析任务"""
         try:
-            self.logger.info(f"🚀 开始执行零拷贝AI分析任务: ID={task_id}")
-
-            # 导入零拷贝组件
-            from app.core.zero_copy import (
-                MemoryPool, TimeAxis, StreamCapture, MultiStreamCapture,
-                VideoFileProcessor, ImageProcessor,
-                MockAnalyzer, AnalysisWorker, AnalysisEngine, ResultProcessor,
-                VideoPlayer
-            )
-
-            # 1. 内存预分配
-            self.logger.info(f"🔧 任务 {task_id}: 预分配内存池...")
+            # 获取任务数据
+            task_data = self.tasks.get(task_id)
+            if not task_data:
+                raise ValueError(f"任务不存在: {task_id}")
+            
+            # 1. 创建内存池
+            self.logger.info(f"💾 任务 {task_id}: 创建内存池...")
             
             # 根据分析类型调整内存池大小
             if task_data["analysis_type"] == 2:  # 视频分析
-                pool_size = 400  # 视频分析需要更大的缓冲区，增加到200个
-                self.logger.info(f"📹 视频分析任务，使用超大容量内存池: {pool_size} 个缓冲区")
+                pool_size = 100  # 视频分析使用大容量缓冲区
+                self.logger.info(f"🎥 视频分析任务，使用大容量内存池: {pool_size} 个缓冲区")
             elif task_data["analysis_type"] == 3:  # 流分析
                 pool_size = 80   # 流分析使用中等缓冲区，适当增加
                 self.logger.info(f"📡 流分析任务，使用大容量内存池: {pool_size} 个缓冲区")
@@ -620,23 +624,11 @@ class TaskService(BaseService):
                 logger=self.logger
             )
 
-            # 3. 创建视频播放器（如果启用）
-            video_player = None
-            if task_data.get("enable_video_player", False):
-                self.logger.info(f"🎬 任务 {task_id}: 创建视频播放器...")
-                video_player = VideoPlayer(
-                    window_name=f"任务{task_id} - {task_data['name']}",
-                    show_fps=True,
-                    show_info=True,
-                    logger=self.logger
-                )
-                video_player.start()
-
-            # 4. 创建结果处理管道
+            # 3. 创建结果处理管道
             self.logger.info(f"🏭 任务 {task_id}: 创建结果处理管道...")
             
             # 导入新的结果处理管道
-            from app.core.result_processing.result_pipeline import ResultProcessingPipeline
+            # from app.core.result_processing.result_pipeline import ResultProcessingPipeline # This line is removed as it's now imported at the top
             
             # 创建结果处理管道，包含task_config参数传递
             task_config_with_id = task_data.copy()  # 复制所有任务配置
@@ -663,19 +655,27 @@ class TaskService(BaseService):
             analyzers = {}
             confidence_threshold = task_data.get("confidence_threshold", 0.5)
             iou_threshold = task_data.get("iou_threshold", 0.45)
+            model_confidence_config = task_data.get("model_confidence_config", {})
+            model_iou_config = task_data.get("model_iou_config", {})
             
             for model_code in task_data["model_codes"]:
+                # 获取该模型的置信度和IOU配置，如果没有则使用全局配置
+                model_confidence = model_confidence_config.get(model_code, confidence_threshold)
+                model_iou = model_iou_config.get(model_code, iou_threshold)
+                
+                self.logger.info(f"🔧 创建分析器 {model_code}: confidence={model_confidence}, iou={model_iou}")
+                
                 # 创建基于模型类型的分析器，使用任务配置的参数
                 analyzer = self.analyzer_factory.create_analyzer(
                     model_code=model_code,
-                    confidence_threshold=confidence_threshold,
-                    iou_threshold=iou_threshold,
+                    confidence_threshold=model_confidence,
+                    iou_threshold=model_iou,
                     device="auto"
                 )
                 
                 if analyzer:
                     analyzers[model_code] = analyzer
-                    self.logger.info(f"✅ 分析器创建成功: {model_code}")
+                    self.logger.info(f"✅ 分析器创建成功: {model_code} (confidence={model_confidence}, iou={model_iou})")
                 else:
                     self.logger.error(f"❌ 分析器创建失败: {model_code}")
                     # 可以选择跳过该模型或抛出异常
@@ -693,6 +693,7 @@ class TaskService(BaseService):
                     raise ValueError("图片分析任务需要提供image_paths")
                 
                 # 创建图片处理器
+                # from app.core.processor.image_processor import ImageProcessor # This line is removed as it's now imported at the top
                 image_processor = ImageProcessor(
                     image_path=image_paths,
                     memory_pool=memory_pool,
@@ -705,12 +706,16 @@ class TaskService(BaseService):
                 )
                 processors.append(image_processor)
                 
+                # 从任务配置中提取模型FPS配置
+                model_fps_config = self._extract_model_fps_config(task_data)
+                
                 # 创建分析处理器 - 专门从时间轴读取数据进行分析
                 analysis_processor = ImageAnalysisProcessor(
                     analyzers=analyzers,
                     time_axis=time_axis,
                     result_processor=result_pipeline,
                     task_id=task_id,
+                    model_fps_config=model_fps_config,
                     logger=self.logger
                 )
                 processors.append(analysis_processor)
@@ -722,10 +727,10 @@ class TaskService(BaseService):
                 for i, stream_url in enumerate(task_data["stream_urls"]):
                     stream_id = f"stream_{i+1}"
                     capture = multi_capture.add_stream(stream_id, stream_url)
-                    # 为第一个流设置视频播放器
-                    if i == 0 and video_player:
-                        capture.video_player = video_player
                     processors.append(capture)
+                
+                # 从任务配置中提取模型FPS配置
+                model_fps_config = self._extract_model_fps_config(task_data)
                 
                 # 创建流分析处理器
                 stream_analysis_processor = StreamAnalysisProcessor(
@@ -733,6 +738,7 @@ class TaskService(BaseService):
                     time_axis=time_axis,
                     result_processor=result_pipeline,
                     task_id=task_id,
+                    model_fps_config=model_fps_config,
                     logger=self.logger
                 )
                 processors.append(stream_analysis_processor)
@@ -745,6 +751,7 @@ class TaskService(BaseService):
                 if not video_path:
                     raise ValueError("视频分析任务需要提供video_path")
                 
+                # from app.core.processor.video_file_processor import VideoFileProcessor # This line is removed as it's now imported at the top
                 video_processor = VideoFileProcessor(
                     video_path=video_path,
                     memory_pool=memory_pool,
@@ -752,7 +759,6 @@ class TaskService(BaseService):
                     stream_id="video_file",
                     batch_size=100,    # 每批处理100帧
                     max_queue_size=300,  # 队列容量300帧
-                    video_player=video_player,
                     logger=self.logger,
                     on_video_end_callback=lambda: self._on_video_end(task_id, "video_file"),
                     on_batch_complete_callback=lambda batch_num, batch_size, total_processed: 
@@ -760,12 +766,16 @@ class TaskService(BaseService):
                 )
                 processors.append(video_processor)
                 
+                # 从任务配置中提取模型FPS配置
+                model_fps_config = self._extract_model_fps_config(task_data)
+                
                 # 创建视频分析处理器
                 video_analysis_processor = VideoAnalysisProcessor(
                     analyzers=analyzers,
                     time_axis=time_axis,
                     result_processor=result_pipeline,
                     task_id=task_id,
+                    model_fps_config=model_fps_config,
                     logger=self.logger
                 )
                 processors.append(video_analysis_processor)
@@ -787,98 +797,20 @@ class TaskService(BaseService):
 
             # 🔧 保存组件引用（关键修复）
             self.task_components[task_id] = {
-                'processors': processors,
-                'analysis_engine': analysis_engine,
-                'result_pipeline': result_pipeline,
-                'video_player': video_player,
-                'memory_pool': memory_pool,
-                'time_axis': time_axis
+                "memory_pool": memory_pool,
+                "time_axis": time_axis,
+                "analysis_engine": analysis_engine,
+                "result_pipeline": result_pipeline,
+                "processors": processors
             }
-            
-            self.logger.info(f"✅ 任务 {task_id}: 组件引用已保存，可以正确停止")
 
-            # 6. 监控任务执行
-            start_time = time.time()
-            last_progress_time = start_time
+            self.logger.info(f"✅ 任务 {task_id}: 所有组件启动完成")
 
-            while task_data["status"] == 1:  # 运行中
-                current_time = time.time()
-                runtime = current_time - start_time
-
-                # 更新进度（基于运行时间）
-                if current_time - last_progress_time >= 2.0:  # 每2秒更新一次
-                    # 获取统计信息
-                    memory_stats = memory_pool.get_stats()
-                    time_axis_stats = time_axis.get_stats()
-                    
-                    # 【关键修复】从分析处理器获取统计信息，而不是分析引擎
-                    total_processed = 0
-                    for processor in processors:
-                        if hasattr(processor, 'get_stats'):
-                            processor_stats = processor.get_stats()
-                            total_processed += processor_stats.get("total_processed", 0)
-                        elif hasattr(processor, 'stats'):
-                            total_processed += processor.stats.get("total_processed", 0)
-
-                    # 计算进度（基于处理的帧数）
-                    progress = min(95.0, (total_processed / 100.0) * 100)  # 最多95%，完成时设为100%
-
-                    task_data["progress"] = progress
-                    task_data["updated_at"] = datetime.now()
-
-                    self.logger.info(f"📊 任务 {task_id} 进度: {progress:.1f}% | "
-                                   f"内存使用: {memory_stats['current_usage']}/{memory_stats['pool_size']} | "
-                                   f"时间轴: {time_axis_stats['current_size']} 帧 | "
-                                   f"已处理: {total_processed} 帧")
-
-                    last_progress_time = current_time
-
-                await asyncio.sleep(1)  # 每秒检查一次
-
-            # 7. 清理资源
-            self.logger.info(f"🧹 任务 {task_id}: 清理资源...")
-
-            # 停止处理器
-            for processor in processors:
-                processor.stop()
-
-            # 停止分析引擎
-            analysis_engine.stop_all()
-
-            # 停止结果处理管道
-            await result_pipeline.stop()
-
-            # 停止视频播放器
-            if video_player:
-                video_player.stop()
-
-            # 清理内存池
-            memory_pool.cleanup()
-
-            # 任务完成
-            if task_data["status"] == 1:
-                task_data["status"] = 4  # 已完成
-                task_data["progress"] = 100.0
-                task_data["updated_at"] = datetime.now()
-
-                self.logger.info(f"✅ 零拷贝AI分析任务完成: ID={task_id}")
-
-        except asyncio.CancelledError:
-            self.logger.info(f"⏹️ 任务被取消: ID={task_id}")
         except Exception as e:
-            self.logger.error(f"❌ 任务执行失败: ID={task_id}, 错误={str(e)}")
-            task_data["status"] = 3  # 错误
-            task_data["updated_at"] = datetime.now()
-        finally:
-            # 清理运行中的任务记录
-            if task_id in self.running_tasks:
-                del self.running_tasks[task_id]
-            
-            # 清理组件引用
-            if task_id in self.task_components:
-                del self.task_components[task_id]
-                self.logger.info(f"🧹 任务 {task_id}: 组件引用已清理")
-
+            self.logger.error(f"❌ 任务 {task_id} 执行失败: {str(e)}")
+            await self._update_task_status(task_id, 3)  # 设置为错误状态
+            raise
+    
     def _on_analysis_result(self, task_id: int, frame_buffers: list, results: list, result_processor=None, video_player=None):
         """分析结果回调"""
         if task_id not in self.tasks:
@@ -1013,6 +945,21 @@ class TaskService(BaseService):
             stream_urls=task_data["stream_urls"],
             result_count=len(task_data.get("results", []))
         )
+
+    def _extract_model_fps_config(self, task_data: Dict[str, Any]) -> Dict[str, float]:
+        """从任务数据中提取模型FPS配置"""
+        model_fps_config = {}
+        analysis_fps_data = task_data.get("analysis_fps")
+        
+        if isinstance(analysis_fps_data, dict):
+            # 新方式：每个模型独立配置 {"yolo11n": 10.0, "yolo11s": 5.0}
+            model_fps_config = analysis_fps_data
+        elif isinstance(analysis_fps_data, (int, float)):
+            # 旧方式：全局配置，应用到所有模型
+            for model_code in task_data.get("model_codes", []):
+                model_fps_config[model_code] = analysis_fps_data
+        
+        return model_fps_config
 
 
 # 全局任务服务实例

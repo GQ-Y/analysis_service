@@ -25,6 +25,7 @@ class ImageAnalysisProcessor:
                  task_id: int,
                  batch_size: int = 5,
                  processing_interval: float = 0.1,
+                 model_fps_config: Optional[Dict[str, float]] = None,
                  logger: Optional[logging.Logger] = None):
         """
         初始化分析处理器
@@ -36,6 +37,7 @@ class ImageAnalysisProcessor:
             task_id: 任务ID
             batch_size: 批处理大小
             processing_interval: 处理间隔
+            model_fps_config: 模型FPS配置 {model_code: fps}
             logger: 日志记录器
         """
         self.analyzers = analyzers
@@ -44,11 +46,16 @@ class ImageAnalysisProcessor:
         self.task_id = task_id
         self.batch_size = batch_size
         self.processing_interval = processing_interval
+        self.model_fps_config = model_fps_config or {}
         self.logger = logger or logging.getLogger(__name__)
         
         # 处理状态
         self.running = False
         self.thread: Optional[threading.Thread] = None
+        
+        # 为每个模型创建FPS控制器
+        self.fps_controllers = {}
+        self._create_fps_controllers()
         
         # 统计信息
         self.stats = {
@@ -60,7 +67,26 @@ class ImageAnalysisProcessor:
             "processing_time": 0.0
         }
         
-        self.logger.info(f"🔍 分析处理器初始化: {len(analyzers)} 个分析器")
+        self.logger.info(f"🔍 分析处理器初始化: {len(analyzers)} 个分析器, FPS控制: {len(self.fps_controllers)} 个")
+    
+    def _create_fps_controllers(self):
+        """为每个模型创建FPS控制器"""
+        from app.core.zero_copy.ai_analyzer import FPSController
+        
+        for model_code in self.analyzers.keys():
+            target_fps = self.model_fps_config.get(model_code)
+            
+            fps_controller = FPSController(
+                time_axis=self.time_axis,
+                target_fps=target_fps,
+                model_code=model_code,
+                logger=self.logger
+            )
+            
+            self.fps_controllers[model_code] = fps_controller
+            
+            fps_info = f"FPS={target_fps}" if target_fps else "无限制"
+            self.logger.info(f"🎯 创建FPS控制器: {model_code} ({fps_info})")
     
     def start(self):
         """启动分析处理器"""
@@ -90,15 +116,15 @@ class ImageAnalysisProcessor:
         
         while self.running:
             try:
-                # 从时间轴获取帧数据
-                frames = self._get_frames_from_time_axis()
+                # 从时间轴获取帧数据（按模型分组）
+                model_frames = self._get_frames_from_time_axis()
                 
-                if not frames:
+                if not model_frames or all(not frames for frames in model_frames.values()):
                     time.sleep(self.processing_interval)
                     continue
                 
-                # 批量分析
-                self._process_frames_batch(frames)
+                # 按模型分别处理帧
+                self._process_model_frames(model_frames)
                 
             except Exception as e:
                 self.logger.error(f"❌ 分析处理循环错误: {e}")
@@ -106,39 +132,53 @@ class ImageAnalysisProcessor:
         
         self.logger.info("🏁 分析处理循环结束")
     
-    def _get_frames_from_time_axis(self) -> List[Any]:
-        """从时间轴获取待处理的帧"""
-        frames = []
+    def _get_frames_from_time_axis(self) -> Dict[str, List[Any]]:
+        """从时间轴获取待处理的帧，按模型分组"""
+        model_frames = {}
+        
         try:
-            # 关键修复：使用超时逻辑获取需要处理的帧
-            # 而不是直接获取所有帧
-            frames = self.time_axis.get_due_frames()
-            
-            if frames:
-                self.logger.debug(f"📥 从时间轴获取到 {len(frames)} 个超时帧")
-            
-            # 如果没有超时帧，但时间轴中有帧，检查是否应该强制处理一些帧
-            if not frames and len(self.time_axis) > 0:
-                # 当缓冲区接近满时，强制处理一些较旧的帧
-                current_size = len(self.time_axis)
-                max_frames = getattr(self.time_axis, 'max_frames', 1000)
+            # 为每个模型使用对应的FPS控制器获取帧
+            for model_code, fps_controller in self.fps_controllers.items():
+                frames = fps_controller.get_batch(self.batch_size)
                 
-                # 如果缓冲区使用率超过70%，强制获取一些帧
-                if current_size > max_frames * 0.7:
-                    force_size = min(self.batch_size, current_size // 4)  # 获取1/4的帧
-                    frames = self.time_axis.get_batch(force_size)
-                    self.logger.info(f"🔥 强制处理 {len(frames)} 帧 (缓冲区使用率: {current_size}/{max_frames})")
+                if frames:
+                    model_frames[model_code] = frames
+                    self.logger.debug(f"📥 模型 {model_code} 获取到 {len(frames)} 帧")
                 else:
-                    # 添加调试信息，说明为什么没有获取帧
-                    self.logger.debug(f"⏳ 时间轴中有 {current_size} 帧，但未超时且使用率未达到强制阈值")
+                    model_frames[model_code] = []
                     
         except Exception as e:
             self.logger.error(f"❌ 从时间轴获取帧失败: {e}")
         
-        return frames
+        return model_frames
     
-    def _process_frames_batch(self, frames: List[Any]):
-        """批量处理帧"""
+    def _process_model_frames(self, model_frames: Dict[str, List[Any]]):
+        """按模型处理帧"""
+        for model_code, frames in model_frames.items():
+            if not frames:
+                continue
+                
+            try:
+                # 使用对应的分析器处理帧
+                analyzer = self.analyzers.get(model_code)
+                if not analyzer:
+                    self.logger.warning(f"⚠️ 模型 {model_code} 没有对应的分析器")
+                    # 释放帧
+                    for frame_buffer in frames:
+                        self._release_frame_buffer(frame_buffer)
+                    continue
+                
+                # 批量处理帧
+                self._process_frames_batch_for_model(frames, model_code, analyzer)
+                
+            except Exception as e:
+                self.logger.error(f"❌ 处理模型 {model_code} 帧失败: {e}")
+                # 释放帧
+                for frame_buffer in frames:
+                    self._release_frame_buffer(frame_buffer)
+    
+    def _process_frames_batch_for_model(self, frames: List[Any], model_code: str, analyzer: Any):
+        """为特定模型批量处理帧"""
         start_time = time.time()
         processed_frames = []
         
@@ -151,62 +191,60 @@ class ImageAnalysisProcessor:
                     self._release_frame_buffer(frame_buffer)
                     continue
                 
-                # 使用所有分析器进行分析
-                frame_results = {}
-                for model_code, analyzer in self.analyzers.items():
-                    try:
-                        result = analyzer.detect(image)
-                        frame_results[model_code] = result
-                        
-                        # 统计检测数量
-                        detections = result.get("detections", [])
-                        self.stats["total_detections"] += len(detections)
-                        
-                        # 【新增】打印详细的检测结果日志（DEBUG级别）
-                        self._log_detection_results(frame_buffer, model_code, result, detections)
-                        
-                        # 【新增】简洁的控制台提示（仅当有检测结果时）
-                        if len(detections) > 0:
-                            frame_id = getattr(frame_buffer, 'frame_id', 'unknown')
-                            class_counts = {}
-                            for detection in detections:
-                                class_name = detection.get("class_name", "unknown")
-                                class_counts[class_name] = class_counts.get(class_name, 0) + 1
-                            class_summary = ", ".join([f"{cls}:{count}" for cls, count in class_counts.items()])
-                            self.logger.info(f"🎯 [{model_code}] 帧{frame_id}: {class_summary}")
-                        
-                    except Exception as e:
-                        self.logger.error(f"❌ 分析器 {model_code} 处理失败: {e}")
-                        self.stats["failed_analysis"] += 1
-                        continue
-                
-                # 构建完整的分析结果
-                analysis_result = {
-                    "task_id": self.task_id,
-                    "frame_id": getattr(frame_buffer, 'frame_id', 0),
-                    "timestamp": getattr(frame_buffer, 'timestamp', time.time()),
-                    "stream_id": getattr(frame_buffer, 'stream_id', 'image_analysis'),
-                    "image_shape": image.shape,
-                    "model_results": frame_results,
-                    "analysis_time": time.time() - start_time
-                }
-                
-                # 【关键修复】将分析结果添加到FrameBuffer
-                # FrameBuffer.analysis_results 是字典类型，使用add_analysis_result方法
-                frame_buffer.add_analysis_result("analysis_result", analysis_result)
-                
-                self.logger.debug(f"✅ 已将分析结果添加到FrameBuffer: 帧{getattr(frame_buffer, 'frame_id', 'unknown')}, "
-                                f"检测数量: {sum(len(result.get('detections', [])) for result in frame_results.values())}")
-                
-                # 发送给结果处理器
-                if self.result_processor:
-                    self.result_processor.process_result(frame_buffer, self.task_id)
-                
-                # 添加到已处理列表，延后释放
-                processed_frames.append(frame_buffer)
-                
-                self.stats["successful_analysis"] += 1
-                self.stats["total_processed"] += 1
+                # 使用指定的分析器进行分析
+                try:
+                    result = analyzer.detect(image)
+                    
+                    # 统计检测数量
+                    detections = result.get("detections", [])
+                    self.stats["total_detections"] += len(detections)
+                    
+                    # 【新增】打印详细的检测结果日志（DEBUG级别）
+                    self._log_detection_results(frame_buffer, model_code, result, detections)
+                    
+                    # 【新增】简洁的控制台提示（仅当有检测结果时）
+                    if len(detections) > 0:
+                        frame_id = getattr(frame_buffer, 'frame_id', 'unknown')
+                        class_counts = {}
+                        for detection in detections:
+                            class_name = detection.get("class_name", "unknown")
+                            class_counts[class_name] = class_counts.get(class_name, 0) + 1
+                        class_summary = ", ".join([f"{cls}:{count}" for cls, count in class_counts.items()])
+                        self.logger.info(f"🎯 [{model_code}] 帧{frame_id}: {class_summary}")
+                    
+                    # 构建分析结果（只包含当前模型的结果）
+                    analysis_result = {
+                        "task_id": self.task_id,
+                        "frame_id": getattr(frame_buffer, 'frame_id', 0),
+                        "timestamp": getattr(frame_buffer, 'timestamp', time.time()),
+                        "stream_id": getattr(frame_buffer, 'stream_id', 'image_analysis'),
+                        "image_shape": image.shape,
+                        "model_results": {model_code: result},
+                        "analysis_time": time.time() - start_time
+                    }
+                    
+                    # 【关键修复】将分析结果添加到FrameBuffer
+                    # FrameBuffer.analysis_results 是字典类型，使用add_analysis_result方法
+                    frame_buffer.add_analysis_result(f"analysis_result_{model_code}", analysis_result)
+                    
+                    self.logger.debug(f"✅ 已将分析结果添加到FrameBuffer: 帧{getattr(frame_buffer, 'frame_id', 'unknown')}, "
+                                    f"模型{model_code}, 检测数量: {len(detections)}")
+                    
+                    # 发送给结果处理器
+                    if self.result_processor:
+                        self.result_processor.process_result(frame_buffer, self.task_id)
+                    
+                    # 添加到已处理列表，延后释放
+                    processed_frames.append(frame_buffer)
+                    
+                    self.stats["successful_analysis"] += 1
+                    self.stats["total_processed"] += 1
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ 分析器 {model_code} 处理失败: {e}")
+                    self.stats["failed_analysis"] += 1
+                    self._release_frame_buffer(frame_buffer)
+                    continue
                 
             except Exception as e:
                 self.logger.error(f"❌ 处理帧失败: {e}")
