@@ -16,10 +16,23 @@
 from .memory_manager import MemoryManager, get_memory_manager
 from .frame_buffer import FrameBuffer
 from .reference_counter import ReferenceCounter
+from .smart_memory_pool import SmartMemoryPool, PoolConfig, get_smart_memory_pool, cleanup_smart_memory_pool
+from .enhanced_memory_manager import EnhancedMemoryManager, get_enhanced_memory_manager, cleanup_enhanced_memory_manager
+from .performance_monitor import PerformanceMonitor, get_performance_monitor, cleanup_performance_monitor
 
 __all__ = [
     'MemoryManager',
     'FrameBuffer',
     'ReferenceCounter',
-    'get_memory_manager'
+    'SmartMemoryPool',
+    'PoolConfig',
+    'EnhancedMemoryManager',
+    'PerformanceMonitor',
+    'get_memory_manager',
+    'get_smart_memory_pool',
+    'cleanup_smart_memory_pool',
+    'get_enhanced_memory_manager',
+    'cleanup_enhanced_memory_manager',
+    'get_performance_monitor',
+    'cleanup_performance_monitor'
 ]

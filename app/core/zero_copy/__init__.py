@@ -19,7 +19,7 @@ from .time_axis import TimeAxis, MultiStreamTimeAxis
 from .stream_capture import StreamCapture, MultiStreamCapture
 from .video_file_processor import VideoFileProcessor
 from .image_processor import ImageProcessor
-from .ai_analyzer import BaseAnalyzer, MockAnalyzer, AnalysisWorker, AnalysisEngine
+from .ai_analyzer import BaseAnalyzer, AnalysisWorker, AnalysisEngine
 from .result_processor import ResultProcessor, BatchResultProcessor
 
 __all__ = [
@@ -47,7 +47,6 @@ __all__ = [
     
     # AI分析器
     'BaseAnalyzer',
-    'MockAnalyzer',
     'AnalysisWorker',
     'AnalysisEngine',
     

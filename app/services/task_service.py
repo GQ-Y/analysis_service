@@ -744,6 +744,7 @@ class TaskService(BaseService):
                     confidence_threshold=task_data.get("model_confidence_config", {}).get(model_code, task_data.get("confidence_threshold", 0.5)),
                     iou_threshold=task_data.get("model_iou_config", {}).get(model_code, task_data.get("iou_threshold", 0.45))
                 )
+                self.logger.info(f"🔍 分析器返回值: analyzer={analyzer}, type={type(analyzer)}, is None={analyzer is None}, bool={bool(analyzer) if analyzer is not None else 'N/A'}")
                 if analyzer:
                     analyzers[model_code] = analyzer
                     self.logger.info(f"✅ 分析器创建成功: {model_code}")

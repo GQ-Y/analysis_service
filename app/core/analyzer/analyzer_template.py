@@ -352,9 +352,6 @@ class SimpleAnalyzerTemplate(AnalyzerTemplate):
         self.analysis_type_enum = analysis_type
         self.supported_models_list = supported_models or []
         
-        # 简单模式配置
-        self.mock_mode = kwargs.get('mock_mode', False)
-        self.mock_delay = kwargs.get('mock_delay', 0.1)
     
     def get_analysis_type(self) -> AnalysisTypeEnum:
         """获取分析类型"""
@@ -366,28 +363,12 @@ class SimpleAnalyzerTemplate(AnalyzerTemplate):
     
     def _load_model_impl(self, model_code: str) -> bool:
         """加载模型的具体实现"""
-        if self.mock_mode:
-            self.logger.info(f"模拟模式：模型加载成功 {model_code}")
-            return True
-        
         # 子类需要实现实际的模型加载逻辑
         self.logger.warning(f"简单模板未实现模型加载逻辑: {model_code}")
         return False
     
     def _analyze_impl(self, data: Any, config: Optional[AnalysisConfig] = None) -> Dict[str, Any]:
         """分析的具体实现"""
-        if self.mock_mode:
-            import time
-            time.sleep(self.mock_delay)
-            
-            return {
-                'success': True,
-                'mock_result': True,
-                'analysis_type': self.analysis_type_enum.value,
-                'model_code': self.model_code,
-                'timestamp': self._get_current_timestamp()
-            }
-        
         # 子类需要实现实际的分析逻辑
         return self._create_error_result("简单模板未实现分析逻辑")
 
@@ -425,21 +406,21 @@ def quick_analyzer(analysis_type: AnalysisTypeEnum, supported_models: List[str] 
 
 
 # 示例：使用模板创建分析器
-@quick_analyzer(AnalysisTypeEnum.DETECTION, ['example_model'])
-class ExampleAnalyzer(AnalyzerTemplate):
-    """示例分析器"""
-    
-    def _load_model_impl(self, model_code: str) -> bool:
-        """加载模型"""
-        # 实现模型加载逻辑
-        self.logger.info(f"加载示例模型: {model_code}")
-        return True
-    
-    def _analyze_impl(self, data: Any, config: Optional[AnalysisConfig] = None) -> Dict[str, Any]:
-        """分析实现"""
-        # 实现分析逻辑
-        return {
-            'success': True,
-            'detections': [],
-            'timestamp': self._get_current_timestamp()
-        } 
+# @quick_analyzer(AnalysisTypeEnum.DETECTION, ['example_model'])
+# class ExampleAnalyzer(AnalyzerTemplate):
+#     """示例分析器"""
+#     
+#     def _load_model_impl(self, model_code: str) -> bool:
+#         """加载模型"""
+#         # 实现模型加载逻辑
+#         self.logger.info(f"加载示例模型: {model_code}")
+#         return True
+#     
+#     def _analyze_impl(self, data: Any, config: Optional[AnalysisConfig] = None) -> Dict[str, Any]:
+#         """分析实现"""
+#         # 实现分析逻辑
+#         return {
+#             'success': True,
+#             'detections': [],
+#             'timestamp': self._get_current_timestamp()
+#         } 

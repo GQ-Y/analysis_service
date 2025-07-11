@@ -473,9 +473,14 @@ class BaseAnalyzer(ABC):
         
         return final_detections
 
+    def __bool__(self) -> bool:
+        """返回分析器的布尔值（对象始终为True）"""
+        return True
+    
     def __len__(self) -> int:
-        """返回注册的分析器数量"""
-        return len(self._analyzers)
+        """返回分析器的某种长度（例如，已加载的模型数）"""
+        # 如果分析器已加载，返回1，否则返回0
+        return 1 if self.loaded else 0
     
     def get_statistics(self) -> Dict[str, Any]:
         """获取性能统计信息"""
@@ -704,7 +709,7 @@ class BaseAnalyzer(ABC):
     
     def _extract_image_from_frame_data(self, frame_data: Union[np.ndarray, Any]) -> np.ndarray:
         """
-        从帧数据中提取图像数组
+        从帧数据中提取图像数组（智能优化版本）
         
         Args:
             frame_data: 帧数据（可能是numpy数组或帧缓冲区）
@@ -712,6 +717,32 @@ class BaseAnalyzer(ABC):
         Returns:
             np.ndarray: 图像数组
         """
+        # 使用智能图像提取器
+        try:
+            from .smart_image_extractor import get_smart_image_extractor
+            
+            extractor = get_smart_image_extractor()
+            
+            # 构建分析器上下文
+            analyzer_context = {
+                'analyzer_type': getattr(self, 'analyzer_type', 'unknown'),
+                'modifies_input': getattr(self, 'modifies_input', False),
+                'concurrent_analysis': getattr(self, 'concurrent_analysis', False),
+                'model_code': getattr(self, 'model_code', 'unknown')
+            }
+            
+            result = extractor.extract_image_data(frame_data, analyzer_context=analyzer_context)
+            
+            if result is not None:
+                return result
+            else:
+                # 智能提取失败，使用传统方法
+                self.logger.warning("智能提取失败，使用传统方法")
+                
+        except Exception as e:
+            self.logger.warning(f"智能提取器异常: {e}，使用传统方法")
+        
+        # 传统提取方法（作为后备）
         if isinstance(frame_data, np.ndarray):
             return frame_data
         

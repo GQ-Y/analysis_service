@@ -13,12 +13,7 @@ import torch
 from typing import List, Dict, Any, Optional, Tuple
 from pathlib import Path
 
-try:
-    from ultralytics import YOLO
-    ULTRALYTICS_AVAILABLE = True
-except ImportError:
-    ULTRALYTICS_AVAILABLE = False
-    logging.warning("⚠️ ultralytics未安装，YOLO分析器将使用Mock模式")
+from ultralytics import YOLO
 
 from app.core.storage.model_manager import ModelManager, ModelInfo
 from app.models.base_model import AnalysisTypeEnum
@@ -48,16 +43,11 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         self.class_specific_nms = kwargs.get('class_specific_nms', False)
         self.half_precision = kwargs.get('half_precision', False)
         
-        # Mock模式支持
-        self.is_mock_mode = kwargs.get('is_mock_mode', False)
-        self.mock_detection_count = kwargs.get('mock_detection_count', 3)
-        self.mock_process_time = kwargs.get('mock_process_time', 0.1)
         
         # 清理kwargs中的特定参数，避免传递给父类
         filtered_kwargs = {k: v for k, v in kwargs.items() if k not in [
             'confidence_threshold', 'iou_threshold', 'max_detections', 'input_size',
-            'use_custom_nms', 'class_specific_nms', 'half_precision', 'is_mock_mode',
-            'mock_detection_count', 'mock_process_time'
+            'use_custom_nms', 'class_specific_nms', 'half_precision'
         ]}
         
         # 调用父类初始化
@@ -86,18 +76,11 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             self.class_names = self.model_info.classes
             self.input_size = self.model_info.input_size
             
-            # 检查ultralytics是否可用
-            if not ULTRALYTICS_AVAILABLE:
-                self.logger.warning(f"⚠️ ultralytics不可用，{self.model_code} 启用Mock模式")
-                self.is_mock_mode = True
-                return True
-            
             # 获取模型路径
             model_path = self.model_manager.get_model_path(self.model_code)
             if not model_path:
-                self.logger.warning(f"⚠️ 无法获取模型路径，启用Mock模式: {self.model_code}")
-                self.is_mock_mode = True
-                return True
+                self.logger.error(f"❌ 无法获取模型路径: {self.model_code}")
+                return False
             
             # 加载YOLO模型
             self.logger.info(f"🔄 加载YOLO模型: {model_path}")
@@ -114,17 +97,16 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             self._warmup_model()
             
             self.logger.info(f"✅ YOLO分析器初始化成功: {self.model_code}")
+            self.loaded = True  # 设置加载标志
             return True
             
         except Exception as e:
             self.logger.error(f"❌ YOLO分析器初始化失败 {self.model_code}: {e}")
-            self.logger.warning(f"⚠️ 启用Mock模式: {self.model_code}")
-            self.is_mock_mode = True
-            return True
+            return False
     
     def _warmup_model(self):
         """预热模型"""
-        if not self.model or self.is_mock_mode:
+        if not self.model:
             return
             
         try:
@@ -150,8 +132,8 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         start_time = time.time()
         
         try:
-            if self.is_mock_mode or not self.model:
-                return self._mock_detect(image, start_time)
+            if not self.model:
+                raise ValueError(f"模型未加载: {self.model_code}")
             
             # 使用真实YOLO模型进行推理
             if self.use_custom_nms:
@@ -197,7 +179,6 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 "model_code": self.model_code,
                 "image_shape": image.shape,
                 "device": self.device,
-                "mock_mode": False,
                 "nms_info": {
                     "use_custom_nms": self.use_custom_nms,
                     "class_specific_nms": self.class_specific_nms,
@@ -212,8 +193,7 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 "inference_time": time.time() - start_time,
                 "model_code": self.model_code,
                 "image_shape": image.shape,
-                "error": str(e),
-                "mock_mode": False
+                "error": str(e)
             }
     
     def _extract_detections(self, result, image_shape: Tuple[int, int, int]) -> List[Dict[str, Any]]:
@@ -260,83 +240,6 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         
         return detections
     
-    def _mock_detect(self, image: np.ndarray, start_time: float) -> Dict[str, Any]:
-        """Mock检测模式"""
-        height, width = image.shape[:2]
-        
-        # 根据图像特征生成不同的结果
-        image_hash = hash(image.tobytes()) % 1000
-        np.random.seed(image_hash)
-        
-        num_detections = np.random.randint(0, 3)
-        detections = []
-        
-        for i in range(num_detections):
-            x1 = np.random.randint(0, width // 2)
-            y1 = np.random.randint(0, height // 2)
-            x2 = min(x1 + np.random.randint(50, width // 3), width)
-            y2 = min(y1 + np.random.randint(50, height // 3), height)
-            
-            bbox_width = x2 - x1
-            bbox_height = y2 - y1
-            
-            class_ids = list(self.class_names.keys())
-            class_id = np.random.choice(class_ids) if class_ids else 0
-            confidence = np.random.uniform(0.6, 0.95)
-            
-            detection = {
-                "class_id": int(class_id),
-                "class_name": self.class_names.get(class_id, f"class_{class_id}"),
-                "confidence": float(confidence),
-                "bbox": {
-                    "x1": float(x1),
-                    "y1": float(y1),
-                    "x2": float(x2), 
-                    "y2": float(y2),
-                    "width": float(bbox_width),
-                    "height": float(bbox_height)
-                },
-                "area": float(bbox_width * bbox_height)
-            }
-            
-            detections.append(detection)
-        
-        # 模拟推理时间
-        inference_time = np.random.uniform(0.02, 0.08)
-        time.sleep(inference_time)
-        
-        # 应用自定义NMS（如果启用）
-        if self.use_custom_nms and detections:
-            if self.class_specific_nms:
-                detections = self.apply_class_specific_nms(detections, self.iou_threshold)
-            else:
-                detections = self.apply_nms(detections, self.iou_threshold)
-        
-        actual_inference_time = time.time() - start_time
-        
-        # 【新增】Mock模式检测日志
-        nms_info = ""
-        if self.use_custom_nms:
-            nms_type = "按类别NMS" if self.class_specific_nms else "全局NMS"
-            nms_info = f", {nms_type}"
-        
-        self.logger.debug(f"🎭 [{self.model_code}] Mock检测完成: "
-                       f"模拟检测{len(detections)}个目标, "
-                       f"模拟耗时{actual_inference_time*1000:.1f}ms{nms_info}")
-        
-        return {
-            "detections": detections,
-            "inference_time": actual_inference_time,
-            "model_code": self.model_code,
-            "image_shape": image.shape,
-            "device": f"mock_{self.device}",
-            "mock_mode": True,
-            "nms_info": {
-                "use_custom_nms": self.use_custom_nms,
-                "class_specific_nms": self.class_specific_nms,
-                "iou_threshold": self.iou_threshold
-            }
-        }
     
     def batch_detect(self, images: List[np.ndarray]) -> List[Dict[str, Any]]:
         """
@@ -354,8 +257,8 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         start_time = time.time()
         
         try:
-            if self.is_mock_mode or not self.model:
-                return self._mock_batch_detect(images, start_time)
+            if not self.model:
+                raise ValueError(f"模型未加载: {self.model_code}")
             
             # 使用真实YOLO模型进行批量推理
             if self.use_custom_nms:
@@ -389,8 +292,7 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                     "model_code": self.model_code,
                     "image_shape": image.shape,
                     "device": self.device,
-                    "mock_mode": False,
-                    "nms_info": {
+                        "nms_info": {
                         "use_custom_nms": self.use_custom_nms,
                         "class_specific_nms": self.class_specific_nms,
                         "iou_threshold": self.iou_threshold
@@ -433,98 +335,10 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                     "error": str(e),
                     "model_code": self.model_code,
                     "image_shape": images[i].shape if i < len(images) else (0, 0, 0),
-                    "inference_time": 0.0,
-                    "mock_mode": False
+                    "inference_time": 0.0
                 })
             return error_results
     
-    def _mock_batch_detect(self, images: List[np.ndarray], start_time: float) -> List[Dict[str, Any]]:
-        """Mock模式的批量检测"""
-        batch_results = []
-        
-        # 模拟批处理的性能优势
-        batch_inference_time = np.random.uniform(0.05, 0.15)  # 批处理总时间
-        time.sleep(batch_inference_time)
-        
-        for i, image in enumerate(images):
-            # 生成模拟检测结果
-            height, width = image.shape[:2]
-            num_detections = np.random.randint(0, 5)
-            detections = []
-            
-            for _ in range(num_detections):
-                x1 = np.random.randint(0, width // 2)
-                y1 = np.random.randint(0, height // 2)
-                x2 = np.random.randint(x1 + 20, width)
-                y2 = np.random.randint(y1 + 20, height)
-                
-                bbox_width = x2 - x1
-                bbox_height = y2 - y1
-                
-                class_ids = list(self.class_names.keys())
-                class_id = np.random.choice(class_ids) if class_ids else 0
-                confidence = np.random.uniform(0.6, 0.95)
-                
-                detection = {
-                    "class_id": int(class_id),
-                    "class_name": self.class_names.get(class_id, f"class_{class_id}"),
-                    "confidence": float(confidence),
-                    "bbox": {
-                        "x1": float(x1),
-                        "y1": float(y1),
-                        "x2": float(x2), 
-                        "y2": float(y2),
-                        "width": float(bbox_width),
-                        "height": float(bbox_height)
-                    },
-                    "area": float(bbox_width * bbox_height)
-                }
-                detections.append(detection)
-            
-            # 应用自定义NMS（如果启用）
-            if self.use_custom_nms and detections:
-                if self.class_specific_nms:
-                    detections = self.apply_class_specific_nms(detections, self.iou_threshold)
-                else:
-                    detections = self.apply_nms(detections, self.iou_threshold)
-            
-            batch_result = {
-                "detections": detections,
-                "batch_index": i,
-                "model_code": self.model_code,
-                "image_shape": image.shape,
-                "device": f"mock_{self.device}",
-                "mock_mode": True,
-                "nms_info": {
-                    "use_custom_nms": self.use_custom_nms,
-                    "class_specific_nms": self.class_specific_nms,
-                    "iou_threshold": self.iou_threshold
-                }
-            }
-            batch_results.append(batch_result)
-        
-        # 计算总时间和平均时间
-        total_inference_time = time.time() - start_time
-        avg_inference_time = total_inference_time / len(images)
-        
-        for result in batch_results:
-            result["inference_time"] = avg_inference_time
-            result["batch_total_time"] = total_inference_time
-        
-        # 【新增】Mock批处理日志
-        total_detections = sum(len(result["detections"]) for result in batch_results)
-        nms_info = ""
-        if self.use_custom_nms:
-            nms_type = "按类别NMS" if self.class_specific_nms else "全局NMS"
-            nms_info = f", {nms_type}"
-        
-        self.logger.debug(f"🎭 [{self.model_code}] Mock批量检测完成: "
-                       f"模拟处理{len(images)}张图像, "
-                       f"模拟检测{total_detections}个目标, "
-                       f"批处理耗时{total_inference_time*1000:.1f}ms, "
-                       f"平均{avg_inference_time*1000:.1f}ms/张{nms_info}")
-        
-        return batch_results
     
     def get_model_info(self) -> Dict[str, Any]:
         """获取模型信息"""
@@ -534,7 +348,6 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             "class_names": self.class_names,
             "input_size": self.input_size,
             "device": self.device,
-            "mock_mode": self.is_mock_mode,
             "confidence_threshold": self.confidence_threshold,
             "iou_threshold": self.iou_threshold,
             "use_custom_nms": self.use_custom_nms,
@@ -543,7 +356,7 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
     
     def cleanup(self):
         """清理资源"""
-        if self.model and not self.is_mock_mode:
+        if self.model:
             del self.model
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -618,7 +431,6 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         return {
             "model_code": self.model_code,
             "device": self.device,
-            "mock_mode": self.is_mock_mode,
             "confidence_threshold": self.confidence_threshold,
             "iou_threshold": self.iou_threshold,
             "input_size": self.input_size,

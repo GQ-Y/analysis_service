@@ -505,9 +505,6 @@ class ImageAnalysisProcessor:
             else:
                 self.logger.debug(f"🚫 [{model_code}] 帧{frame_id}: 未检测到任何目标")
                 
-            # 检测是否为Mock模式
-            if result.get("mock_mode", False):
-                self.logger.warning(f"⚠️ [{model_code}] 帧{frame_id}: 使用Mock模式分析")
             
             # 检测是否有错误
             if "error" in result:

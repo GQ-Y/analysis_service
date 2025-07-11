@@ -2,6 +2,20 @@
 # 定义各种预配置的分析器实例
 
 analyzers:
+  # YOLO11n检测器
+  yolo11n:
+    analysis_type: "detection"
+    model_code: "yolo11n"
+    confidence_threshold: 0.5
+    iou_threshold: 0.4
+    device: "auto"
+    half_precision: true
+    use_custom_nms: true
+    class_specific_nms: false
+    max_detections: 100
+    input_size: [640, 640]
+    description: "YOLO11n检测器，轻量级高效模型"
+    
   # 高精度YOLO检测器
   yolo_high_precision:
     analysis_type: "detection"
@@ -57,18 +71,6 @@ analyzers:
     max_detections: 30
     input_size: [320, 320]
     description: "移动端YOLO检测器，适合资源受限的环境"
-    
-  # 模拟检测器（用于测试）
-  mock_detector:
-    analysis_type: "detection"
-    model_code: "mock_yolo"
-    confidence_threshold: 0.5
-    iou_threshold: 0.4
-    device: "cpu"
-    is_mock_mode: true
-    mock_detection_count: 3
-    mock_process_time: 0.1
-    description: "模拟检测器，用于测试和演示"
     
   # 分类分析器（示例）
   image_classifier:
@@ -147,8 +149,8 @@ scenarios:
   # 测试场景
   testing:
     analyzers:
-      - mock_detector
-    description: "测试场景，使用模拟器"
+      - yolo_mobile
+    description: "测试场景，使用轻量级模型"
 
 # 全局配置
 global_config:
