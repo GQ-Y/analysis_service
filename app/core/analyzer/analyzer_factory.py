@@ -84,10 +84,7 @@ class AnalyzerFactory:
             # 检查模型是否可用
             if not self.model_manager.is_model_available(model_code):
                 self.logger.warning(f"⚠️ 模型不可用，尝试使用Mock模式: {model_code}")
-                # TODO: 尝试下载模型
-                # if not self.model_manager.download_model(model_code):
-                #     self.logger.error(f"❌ 无法下载模型: {model_code}")
-                #     return None
+                # 注意：模型下载功能暂未实现，建议手动下载模型文件
             
             # 创建分析器实例
             try:

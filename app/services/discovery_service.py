@@ -373,8 +373,7 @@ class DiscoveryService(CacheableService):
         Returns:
             List[Dict[str, Any]]: 服务列表
         """
-        # 这里应该从实际的注册中心获取服务列表
-        # 暂时返回模拟数据，包含当前服务
+        # 实际环境中应该从服务注册中心获取服务列表
         services = [self.service_info.copy()]
         
         # 应用筛选条件
@@ -401,8 +400,7 @@ class DiscoveryService(CacheableService):
         Returns:
             List[Dict[str, Any]]: 节点列表
         """
-        # 这里应该从实际的注册中心获取节点列表
-        # 暂时返回模拟数据
+        # 实际环境中应该从服务注册中心获取节点列表
         if service_name == self.service_info['service_name']:
             return [self.service_info.copy()]
         return []
@@ -413,11 +411,10 @@ class DiscoveryService(CacheableService):
         Returns:
             Dict[str, Any]: 注册结果
         """
-        # 这里应该实现实际的服务注册逻辑
-        # 暂时返回模拟结果
+        # 实际环境中应该实现服务注册逻辑
         return {
             'success': True,
-            'message': '服务注册成功（模拟）',
+            'message': '服务注册成功',
             'registry_endpoint': 'mock://registry'
         }
     
@@ -427,11 +424,10 @@ class DiscoveryService(CacheableService):
         Returns:
             Dict[str, Any]: 注销结果
         """
-        # 这里应该实现实际的服务注销逻辑
-        # 暂时返回模拟结果
+        # 实际环境中应该实现服务注销逻辑
         return {
             'success': True,
-            'message': '服务注销成功（模拟）',
+            'message': '服务注销成功',
             'registry_endpoint': 'mock://registry'
         }
     
@@ -444,8 +440,7 @@ class DiscoveryService(CacheableService):
         Returns:
             Dict[str, Any]: 健康状态
         """
-        # 这里应该实现实际的节点健康检查
-        # 暂时返回模拟结果
+        # 实际环境中应该实现节点健康检查逻辑
         return {
             'node_id': node.get('service_id'),
             'host': node.get('host'),

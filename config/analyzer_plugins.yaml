@@ -1,0 +1,77 @@
+# 分析器插件配置文件
+# 定义各种分析器插件的配置参数
+
+plugins:
+  # YOLO检测分析器插件
+  yolo_detection:
+    enabled: true
+    priority: 1
+    config:
+      default_confidence_threshold: 0.5
+      default_iou_threshold: 0.4
+      default_device: "auto"
+      enable_nms: true
+      class_specific_nms: false
+      max_detections: 100
+      input_size: [640, 640]
+      
+  # 分类分析器插件（示例）
+  classification:
+    enabled: false
+    priority: 2
+    config:
+      default_confidence_threshold: 0.7
+      top_k: 5
+      enable_softmax: true
+      
+  # 分割分析器插件（示例）
+  segmentation:
+    enabled: false
+    priority: 3
+    config:
+      default_confidence_threshold: 0.5
+      enable_post_processing: true
+      mask_threshold: 0.5
+      
+  # 目标跟踪分析器插件（示例）
+  tracking:
+    enabled: false
+    priority: 4
+    config:
+      max_age: 30
+      min_hits: 3
+      iou_threshold: 0.3
+      
+  # 姿态估计分析器插件（示例）
+  pose_estimation:
+    enabled: false
+    priority: 5
+    config:
+      keypoint_threshold: 0.3
+      skeleton_threshold: 0.1
+      
+  # 人脸识别分析器插件（示例）
+  face_recognition:
+    enabled: false
+    priority: 6
+    config:
+      face_threshold: 0.6
+      recognition_threshold: 0.4
+      max_faces: 10
+
+# 全局插件设置
+global_settings:
+  # 插件加载超时时间（秒）
+  load_timeout: 30
+  
+  # 是否启用插件热重载
+  enable_hot_reload: false
+  
+  # 插件日志级别
+  log_level: "INFO"
+  
+  # 插件依赖检查
+  check_dependencies: true
+  
+  # 插件版本兼容性检查
+  check_compatibility: true 

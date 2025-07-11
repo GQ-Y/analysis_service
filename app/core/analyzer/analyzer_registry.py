@@ -339,10 +339,6 @@ def _register_known_analyzers():
     except ImportError as e:
         logger.warning(f"⚠️ 无法导入YOLO检测分析器: {e}")
     
-    # TODO: 注册其他已知的分析器
-    # try:
-    #     from app.core.analyzer.classification.classification_analyzer import ClassificationAnalyzer
-    #     if not _global_registry.is_registered(AnalysisTypeEnum.CLASSIFICATION):
-    #         _global_registry.register(AnalysisTypeEnum.CLASSIFICATION, ClassificationAnalyzer)
-    # except ImportError:
-    #     pass
+    # 预留其他分析器的注册位置
+    # 可以在这里添加其他分析器的注册代码
+    # 例如：分类分析器、分割分析器等

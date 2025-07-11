@@ -30,38 +30,44 @@ from app.core.analyzer.base_analyzer import BaseAnalyzer
 class YoloDetectionAnalyzer(BaseAnalyzer):
     """YOLO目标检测分析器 - 专注于模型推理的输入输出"""
     
-    def __init__(self, model_code: Optional[str] = None, model_manager: Optional[ModelManager] = None, 
-                 confidence_threshold: float = 0.5, 
-                 iou_threshold: float = 0.45,
-                 device: str = "auto",
-                 use_custom_nms: bool = False,
-                 class_specific_nms: bool = True):
+    def __init__(self, model_code: str, model_manager: ModelManager = None, **kwargs):
         """
         初始化YOLO检测分析器
         
         Args:
-            model_code: 模型代码，可选
-            model_manager: 模型管理器，如果为None则创建默认的
-            confidence_threshold: 置信度阈值
-            iou_threshold: IoU阈值
-            device: 设备 ("cpu", "cuda", "auto")
-            use_custom_nms: 是否使用自定义NMS算法（而不是YOLO内置的）
-            class_specific_nms: 是否使用按类别分组的NMS
+            model_code: 模型代码
+            model_manager: 模型管理器
+            **kwargs: 其他参数
         """
-        # 调用父类构造函数
-        super().__init__(model_code=model_code, device=device)
+        # 提取特定参数
+        self.confidence_threshold = kwargs.get('confidence_threshold', 0.5)
+        self.iou_threshold = kwargs.get('iou_threshold', 0.4)
+        self.max_detections = kwargs.get('max_detections', 100)
+        self.input_size = kwargs.get('input_size', (640, 640))
+        self.use_custom_nms = kwargs.get('use_custom_nms', False)
+        self.class_specific_nms = kwargs.get('class_specific_nms', False)
+        self.half_precision = kwargs.get('half_precision', False)
+        
+        # Mock模式支持
+        self.is_mock_mode = kwargs.get('is_mock_mode', False)
+        self.mock_detection_count = kwargs.get('mock_detection_count', 3)
+        self.mock_process_time = kwargs.get('mock_process_time', 0.1)
+        
+        # 清理kwargs中的特定参数，避免传递给父类
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in [
+            'confidence_threshold', 'iou_threshold', 'max_detections', 'input_size',
+            'use_custom_nms', 'class_specific_nms', 'half_precision', 'is_mock_mode',
+            'mock_detection_count', 'mock_process_time'
+        ]}
+        
+        # 调用父类初始化
+        super().__init__(model_code, **filtered_kwargs)
         
         self.model_manager = model_manager or ModelManager("storage")
-        self.confidence_threshold = confidence_threshold
-        self.iou_threshold = iou_threshold
-        self.use_custom_nms = use_custom_nms
-        self.class_specific_nms = class_specific_nms
-        
         self.model = None
         self.model_info: Optional[ModelInfo] = None
         self.class_names: Dict[int, str] = {}
         self.input_size: Tuple[int, int] = (640, 640)
-        self.is_mock_mode = False
         
         # 只有在提供了model_code时才初始化模型
         if model_code:
@@ -587,12 +593,6 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 "analyzer": self.name
             }
     
-    def analyze_frame(self, frame_buffer) -> Dict[str, Any]:
-        """
-        分析单帧（兼容BaseAnalyzer接口，委托给process_frame）
-        """
-        return self.process_frame(frame_buffer)
-    
     def process_batch(self, frame_buffers: List) -> List[Dict[str, Any]]:
         """
         批量处理（AnalysisWorker期望的接口）
@@ -608,12 +608,6 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             result = self.process_frame(frame_buffer)
             results.append(result)
         return results
-    
-    def analyze_batch(self, frame_buffers: List) -> List[Dict[str, Any]]:
-        """
-        批量分析（兼容BaseAnalyzer接口，委托给process_batch）
-        """
-        return self.process_batch(frame_buffers)
     
     def reset_stats(self):
         """重置统计信息（兼容BaseAnalyzer接口）"""

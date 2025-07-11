@@ -176,7 +176,7 @@ class ModelManager:
     
     def download_model(self, model_code: str) -> bool:
         """
-        下载模型（TODO: 后续实现）
+        下载模型
         
         Args:
             model_code: 模型代码
@@ -184,8 +184,8 @@ class ModelManager:
         Returns:
             bool: 是否下载成功
         """
-        # TODO: 实现模型下载逻辑
-        self.logger.warning(f"⚠️ 模型下载功能待实现: {model_code}")
+        self.logger.warning(f"⚠️ 模型下载功能暂未实现: {model_code}")
+        self.logger.info(f"💡 建议: 手动下载模型到 storage/models/{model_code}/ 目录")
         return False
     
     def _calculate_file_hash(self, file_path: str) -> str:

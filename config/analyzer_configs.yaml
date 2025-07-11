@@ -1,0 +1,173 @@
+# 分析器配置文件
+# 定义各种预配置的分析器实例
+
+analyzers:
+  # 高精度YOLO检测器
+  yolo_high_precision:
+    analysis_type: "detection"
+    model_code: "yolov8n"
+    confidence_threshold: 0.7
+    iou_threshold: 0.3
+    device: "auto"
+    half_precision: false
+    use_custom_nms: true
+    class_specific_nms: true
+    max_detections: 100
+    input_size: [640, 640]
+    description: "高精度YOLO检测器，适合对准确性要求高的场景"
+    
+  # 快速YOLO检测器
+  yolo_fast:
+    analysis_type: "detection"
+    model_code: "yolov8n"
+    confidence_threshold: 0.5
+    iou_threshold: 0.4
+    device: "auto"
+    half_precision: true
+    use_custom_nms: false
+    class_specific_nms: false
+    max_detections: 50
+    input_size: [416, 416]
+    description: "快速YOLO检测器，适合对速度要求高的场景"
+    
+  # 平衡型YOLO检测器
+  yolo_balanced:
+    analysis_type: "detection"
+    model_code: "yolov8s"
+    confidence_threshold: 0.6
+    iou_threshold: 0.35
+    device: "auto"
+    half_precision: true
+    use_custom_nms: true
+    class_specific_nms: false
+    max_detections: 80
+    input_size: [640, 640]
+    description: "平衡型YOLO检测器，速度和精度的平衡"
+    
+  # 移动端YOLO检测器
+  yolo_mobile:
+    analysis_type: "detection"
+    model_code: "yolov8n"
+    confidence_threshold: 0.5
+    iou_threshold: 0.4
+    device: "cpu"
+    half_precision: false
+    use_custom_nms: false
+    class_specific_nms: false
+    max_detections: 30
+    input_size: [320, 320]
+    description: "移动端YOLO检测器，适合资源受限的环境"
+    
+  # 模拟检测器（用于测试）
+  mock_detector:
+    analysis_type: "detection"
+    model_code: "mock_yolo"
+    confidence_threshold: 0.5
+    iou_threshold: 0.4
+    device: "cpu"
+    is_mock_mode: true
+    mock_detection_count: 3
+    mock_process_time: 0.1
+    description: "模拟检测器，用于测试和演示"
+    
+  # 分类分析器（示例）
+  image_classifier:
+    analysis_type: "classification"
+    model_code: "resnet50"
+    confidence_threshold: 0.7
+    device: "auto"
+    top_k: 5
+    enable_softmax: true
+    description: "图像分类器，基于ResNet50"
+    
+  # 分割分析器（示例）
+  semantic_segmentation:
+    analysis_type: "segmentation"
+    model_code: "deeplabv3"
+    confidence_threshold: 0.5
+    device: "auto"
+    mask_threshold: 0.5
+    enable_post_processing: true
+    description: "语义分割器，基于DeepLabV3"
+    
+  # 目标跟踪器（示例）
+  object_tracker:
+    analysis_type: "tracking"
+    model_code: "deepsort"
+    max_age: 30
+    min_hits: 3
+    iou_threshold: 0.3
+    feature_dim: 128
+    description: "目标跟踪器，基于DeepSORT"
+    
+  # 姿态估计器（示例）
+  pose_estimator:
+    analysis_type: "pose_estimation"
+    model_code: "openpose"
+    keypoint_threshold: 0.3
+    skeleton_threshold: 0.1
+    max_persons: 10
+    description: "姿态估计器，基于OpenPose"
+    
+  # 人脸识别器（示例）
+  face_recognizer:
+    analysis_type: "face_recognition"
+    model_code: "facenet"
+    face_threshold: 0.6
+    recognition_threshold: 0.4
+    max_faces: 10
+    embedding_dim: 512
+    description: "人脸识别器，基于FaceNet"
+
+# 配置组合（预设场景）
+scenarios:
+  # 安防监控场景
+  security_monitoring:
+    analyzers:
+      - yolo_high_precision
+      - object_tracker
+      - face_recognizer
+    description: "安防监控场景，高精度检测+跟踪+人脸识别"
+    
+  # 实时处理场景
+  real_time_processing:
+    analyzers:
+      - yolo_fast
+      - object_tracker
+    description: "实时处理场景，快速检测+跟踪"
+    
+  # 离线分析场景
+  offline_analysis:
+    analyzers:
+      - yolo_high_precision
+      - image_classifier
+      - semantic_segmentation
+    description: "离线分析场景，全面的图像分析"
+    
+  # 测试场景
+  testing:
+    analyzers:
+      - mock_detector
+    description: "测试场景，使用模拟器"
+
+# 全局配置
+global_config:
+  # 默认设备
+  default_device: "auto"
+  
+  # 默认批处理大小
+  default_batch_size: 8
+  
+  # 默认超时时间（秒）
+  default_timeout: 30
+  
+  # 是否启用性能监控
+  enable_profiling: false
+  
+  # 日志级别
+  log_level: "INFO"
+  
+  # 缓存设置
+  cache_enabled: true
+  cache_size: 100
+  cache_ttl: 3600  # 1小时 

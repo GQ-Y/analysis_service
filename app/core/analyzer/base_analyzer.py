@@ -473,6 +473,291 @@ class BaseAnalyzer(ABC):
         
         return final_detections
 
+    def __len__(self) -> int:
+        """返回注册的分析器数量"""
+        return len(self._analyzers)
+    
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取性能统计信息"""
+        return {
+            'total_frames': self.stats['total_frames'],
+            'total_time': self.stats['total_time'],
+            'avg_fps': self.stats['avg_fps'],
+            'last_inference_time': self.stats['last_inference_time'],
+            'analyzer_type': self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type),
+            'device': self.device,
+            'loaded': self.loaded
+        }
+    
+    def update_statistics(self, inference_time: float):
+        """更新性能统计信息"""
+        self.stats['total_frames'] += 1
+        self.stats['total_time'] += inference_time
+        self.stats['last_inference_time'] = inference_time
+        if self.stats['total_time'] > 0:
+            self.stats['avg_fps'] = self.stats['total_frames'] / self.stats['total_time']
+    
+    # ===== 统一接口调用方法 =====
+    
+    def unified_analyze_frame(self, frame_data: Union[np.ndarray, Any], config: AnalysisConfig = None) -> Dict[str, Any]:
+        """
+        统一的单帧分析接口
+        
+        自动适配不同的分析器实现方式，按优先级尝试调用：
+        1. analyze_frame() - 标准抽象方法
+        2. detect() - YOLO等检测器的传统方法
+        3. process_frame() - 兼容性方法
+        
+        Args:
+            frame_data: 输入帧数据（可能是numpy数组或帧缓冲区）
+            config: 分析配置
+            
+        Returns:
+            Dict[str, Any]: 统一格式的分析结果
+        """
+        start_time = time.time()
+        
+        try:
+            result = None
+            method_used = None
+            
+            # 优先级1: 标准的analyze_frame方法
+            if hasattr(self, 'analyze_frame') and callable(getattr(self, 'analyze_frame')):
+                try:
+                    # 检查是否是协程函数
+                    import asyncio
+                    if asyncio.iscoroutinefunction(self.analyze_frame):
+                        # 协程函数处理
+                        result = asyncio.run(self.analyze_frame(frame_data, config))
+                    else:
+                        # 同步方法
+                        result = self.analyze_frame(frame_data, config)
+                    method_used = "analyze_frame"
+                except Exception as e:
+                    self.logger.debug(f"analyze_frame方法调用失败: {e}")
+            
+            # 优先级2: 检测器的detect方法
+            if result is None and hasattr(self, 'detect') and callable(getattr(self, 'detect')):
+                try:
+                    # 如果frame_data是帧缓冲区，提取图像数据
+                    image_data = self._extract_image_from_frame_data(frame_data)
+                    result = self.detect(image_data)
+                    method_used = "detect"
+                except Exception as e:
+                    self.logger.debug(f"detect方法调用失败: {e}")
+            
+            # 优先级3: 兼容性的process_frame方法
+            if result is None and hasattr(self, 'process_frame') and callable(getattr(self, 'process_frame')):
+                try:
+                    result = self.process_frame(frame_data)
+                    method_used = "process_frame"
+                except Exception as e:
+                    self.logger.debug(f"process_frame方法调用失败: {e}")
+            
+            # 如果所有方法都失败，返回错误结果
+            if result is None:
+                result = {
+                    "error": "没有可用的分析方法",
+                    "detections": [],
+                    "inference_time": 0.0,
+                    "analyzer_type": self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type)
+                }
+                method_used = "none"
+            
+            # 标准化结果格式
+            result = self._standardize_result(result)
+            
+            # 更新统计信息
+            inference_time = time.time() - start_time
+            self.update_statistics(inference_time)
+            
+            # 添加元数据
+            result.update({
+                "method_used": method_used,
+                "analyzer_type": self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type),
+                "device": self.device,
+                "total_inference_time": inference_time
+            })
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"统一分析接口调用失败: {e}")
+            return {
+                "error": str(e),
+                "detections": [],
+                "inference_time": 0.0,
+                "method_used": "error",
+                "analyzer_type": self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type)
+            }
+    
+    def unified_analyze_batch(self, frame_data_list: List[Union[np.ndarray, Any]], config: AnalysisConfig = None) -> List[Dict[str, Any]]:
+        """
+        统一的批量分析接口
+        
+        自动适配不同的分析器实现方式，按优先级尝试调用：
+        1. analyze_batch() - 标准抽象方法
+        2. batch_detect() - YOLO等检测器的批处理方法
+        3. process_batch() - 兼容性方法
+        4. 逐帧调用unified_analyze_frame() - 回退方案
+        
+        Args:
+            frame_data_list: 输入帧数据列表
+            config: 分析配置
+            
+        Returns:
+            List[Dict[str, Any]]: 统一格式的分析结果列表
+        """
+        start_time = time.time()
+        
+        try:
+            results = None
+            method_used = None
+            
+            # 优先级1: 标准的analyze_batch方法
+            if hasattr(self, 'analyze_batch') and callable(getattr(self, 'analyze_batch')):
+                try:
+                    # 检查是否是协程函数
+                    import asyncio
+                    if asyncio.iscoroutinefunction(self.analyze_batch):
+                        # 协程函数处理
+                        results = asyncio.run(self.analyze_batch(frame_data_list, config))
+                    else:
+                        # 同步方法
+                        results = self.analyze_batch(frame_data_list, config)
+                    method_used = "analyze_batch"
+                except Exception as e:
+                    self.logger.debug(f"analyze_batch方法调用失败: {e}")
+            
+            # 优先级2: 检测器的batch_detect方法
+            if results is None and hasattr(self, 'batch_detect') and callable(getattr(self, 'batch_detect')):
+                try:
+                    # 如果frame_data_list包含帧缓冲区，提取图像数据
+                    image_data_list = [self._extract_image_from_frame_data(frame_data) for frame_data in frame_data_list]
+                    results = self.batch_detect(image_data_list)
+                    method_used = "batch_detect"
+                except Exception as e:
+                    self.logger.debug(f"batch_detect方法调用失败: {e}")
+            
+            # 优先级3: 兼容性的process_batch方法
+            if results is None and hasattr(self, 'process_batch') and callable(getattr(self, 'process_batch')):
+                try:
+                    results = self.process_batch(frame_data_list)
+                    method_used = "process_batch"
+                except Exception as e:
+                    self.logger.debug(f"process_batch方法调用失败: {e}")
+            
+            # 优先级4: 回退到逐帧处理
+            if results is None:
+                try:
+                    results = []
+                    for frame_data in frame_data_list:
+                        result = self.unified_analyze_frame(frame_data, config)
+                        results.append(result)
+                    method_used = "fallback_frame_by_frame"
+                except Exception as e:
+                    self.logger.debug(f"逐帧处理回退失败: {e}")
+            
+            # 如果所有方法都失败，返回错误结果
+            if results is None:
+                results = []
+                for i, frame_data in enumerate(frame_data_list):
+                    results.append({
+                        "error": "没有可用的批处理方法",
+                        "detections": [],
+                        "inference_time": 0.0,
+                        "batch_index": i,
+                        "analyzer_type": self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type)
+                    })
+                method_used = "none"
+            
+            # 标准化结果格式
+            results = [self._standardize_result(result) for result in results]
+            
+            # 更新统计信息
+            total_inference_time = time.time() - start_time
+            self.update_statistics(total_inference_time)
+            
+            # 添加批处理元数据
+            for i, result in enumerate(results):
+                result.update({
+                    "method_used": method_used,
+                    "analyzer_type": self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type),
+                    "device": self.device,
+                    "batch_index": i,
+                    "batch_size": len(frame_data_list),
+                    "batch_total_time": total_inference_time
+                })
+            
+            return results
+            
+        except Exception as e:
+            self.logger.error(f"统一批处理接口调用失败: {e}")
+            return [{
+                "error": str(e),
+                "detections": [],
+                "inference_time": 0.0,
+                "method_used": "error",
+                "batch_index": i,
+                "analyzer_type": self.analyzer_type.value if hasattr(self.analyzer_type, 'value') else str(self.analyzer_type)
+            } for i in range(len(frame_data_list))]
+    
+    def _extract_image_from_frame_data(self, frame_data: Union[np.ndarray, Any]) -> np.ndarray:
+        """
+        从帧数据中提取图像数组
+        
+        Args:
+            frame_data: 帧数据（可能是numpy数组或帧缓冲区）
+            
+        Returns:
+            np.ndarray: 图像数组
+        """
+        if isinstance(frame_data, np.ndarray):
+            return frame_data
+        
+        # 尝试从帧缓冲区提取图像
+        if hasattr(frame_data, 'get_frame_view'):
+            return frame_data.get_frame_view()
+        elif hasattr(frame_data, 'frame_data'):
+            return frame_data.frame_data
+        elif hasattr(frame_data, 'get_frame_copy'):
+            return frame_data.get_frame_copy()
+        else:
+            raise ValueError(f"无法从帧数据中提取图像: {type(frame_data)}")
+    
+    def _standardize_result(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        标准化分析结果格式
+        
+        Args:
+            result: 原始分析结果
+            
+        Returns:
+            Dict[str, Any]: 标准化后的结果
+        """
+        if not isinstance(result, dict):
+            return {
+                "error": "分析结果格式无效",
+                "detections": [],
+                "inference_time": 0.0
+            }
+        
+        # 确保必要字段存在
+        standardized = {
+            "detections": result.get("detections", []),
+            "inference_time": result.get("inference_time", 0.0),
+            "confidence": result.get("confidence", 0.0),
+            "model_name": result.get("model_name", "unknown"),
+            "image_shape": result.get("image_shape", None)
+        }
+        
+        # 保留其他字段
+        for key, value in result.items():
+            if key not in standardized:
+                standardized[key] = value
+        
+        return standardized
+
 
 class DetectionAnalyzer(BaseAnalyzer):
     """目标检测分析器基类"""

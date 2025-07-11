@@ -663,36 +663,9 @@ class VideoPlaybackService:
             font_color = (255, 255, 255)  # 白色
             thickness = 2
             
-            # 【已移除】不再显示顶部时间和检测ID信息栏
-            # 注释理由：用户要求去除视频左上角的时间和分析ID显示
             height, width = overlay_frame.shape[:2]
             
-            # # 顶部信息栏（已禁用）
-            # cv2.rectangle(overlay_frame, (0, 0), (width, 80), (0, 0, 0), -1)  # 黑色背景
-            # overlay = overlay_frame.copy()
-            # cv2.rectangle(overlay, (0, 0), (width, 80), (0, 0, 0), -1)
-            # cv2.addWeighted(overlay_frame, 0.7, overlay, 0.3, 0, overlay_frame)  # 半透明效果
-            
-            # # 添加文本信息（已禁用）
-            # y_offset = 25
-            
-            # # 检测ID和时间戳（已禁用）
-            # text1 = f"Detection ID: {detection_id}"
-            # cv2.putText(overlay_frame, text1, (10, y_offset), font, font_scale, font_color, thickness)
-            
-            # # 时间戳（格式化为可读时间）（已禁用）
-            # import datetime
-            # readable_time = datetime.datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
-            # text2 = f"Time: {readable_time}"
-            # cv2.putText(overlay_frame, text2, (10, y_offset + 25), font, font_scale, font_color, thickness)
-            
-            # # 进度条（已禁用）
-            # progress = frame_index / max(total_frames - 1, 1)
-            # progress_width = int(300 * progress)
-            # cv2.rectangle(overlay_frame, (10, y_offset + 35), (310, y_offset + 45), (100, 100, 100), -1)  # 灰色背景
-            # cv2.rectangle(overlay_frame, (10, y_offset + 35), (10 + progress_width, y_offset + 45), (0, 255, 0), -1)  # 绿色进度
-            
-            # 【关键修复】添加分析结果特定信息 - 处理不同的数据结构
+            # 添加分析结果特定信息 - 处理不同的数据结构
             detections_to_draw = []
             
             # 情况1：直接包含detections字段

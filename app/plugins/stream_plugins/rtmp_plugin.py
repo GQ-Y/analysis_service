@@ -269,14 +269,14 @@ class RTMPPlugin(StreamPlugin):
             stream_info = self._active_streams[stream_url]
             config = self.get_config()
             
-            # 模拟流处理逻辑
+            # 初始化流处理
             stream_info['status'] = 'connected'
             
             frame_count = 0
             while not stop_event.is_set():
                 try:
-                    # 模拟读取帧数据
                     # 在实际实现中，这里会使用FFmpeg或其他库读取RTMP流
+                    # 目前使用模拟处理逻辑
                     
                     # 模拟处理延迟
                     stop_event.wait(0.033)  # 约30fps
@@ -290,7 +290,7 @@ class RTMPPlugin(StreamPlugin):
                     stream_info['last_frame_time'] = datetime.now()
                     stream_info['bytes_received'] += 1024  # 模拟数据
                     
-                    # 模拟偶尔的错误
+                    # 定期输出处理进度
                     if frame_count % 1000 == 0:
                         self.logger.debug(f"RTMP流处理进度 {stream_url}: {frame_count} 帧")
                     
