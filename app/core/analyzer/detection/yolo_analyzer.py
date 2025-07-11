@@ -33,7 +33,9 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
     def __init__(self, model_code: Optional[str] = None, model_manager: Optional[ModelManager] = None, 
                  confidence_threshold: float = 0.5, 
                  iou_threshold: float = 0.45,
-                 device: str = "auto"):
+                 device: str = "auto",
+                 use_custom_nms: bool = False,
+                 class_specific_nms: bool = True):
         """
         初始化YOLO检测分析器
         
@@ -43,6 +45,8 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             confidence_threshold: 置信度阈值
             iou_threshold: IoU阈值
             device: 设备 ("cpu", "cuda", "auto")
+            use_custom_nms: 是否使用自定义NMS算法（而不是YOLO内置的）
+            class_specific_nms: 是否使用按类别分组的NMS
         """
         # 调用父类构造函数
         super().__init__(model_code=model_code, device=device)
@@ -50,6 +54,8 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         self.model_manager = model_manager or ModelManager("storage")
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
+        self.use_custom_nms = use_custom_nms
+        self.class_specific_nms = class_specific_nms
         
         self.model = None
         self.model_info: Optional[ModelInfo] = None
@@ -142,22 +148,42 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 return self._mock_detect(image, start_time)
             
             # 使用真实YOLO模型进行推理
-            results = self.model(image, 
-                               conf=self.confidence_threshold,
-                               iou=self.iou_threshold,
-                               verbose=False)
+            if self.use_custom_nms:
+                # 使用自定义NMS时，禁用YOLO内置NMS（设置iou=1.0）
+                results = self.model(image, 
+                                   conf=self.confidence_threshold,
+                                   iou=1.0,  # 禁用内置NMS
+                                   verbose=False)
+            else:
+                # 使用YOLO内置NMS
+                results = self.model(image, 
+                                   conf=self.confidence_threshold,
+                                   iou=self.iou_threshold,
+                                   verbose=False)
             
             # 提取检测结果
             detections = self._extract_detections(results[0], image.shape)
             
+            # 应用自定义NMS（如果启用）
+            if self.use_custom_nms and detections:
+                if self.class_specific_nms:
+                    detections = self.apply_class_specific_nms(detections, self.iou_threshold)
+                else:
+                    detections = self.apply_nms(detections, self.iou_threshold)
+            
             inference_time = time.time() - start_time
             
             # 【新增】YOLO检测日志
+            nms_info = ""
+            if self.use_custom_nms:
+                nms_type = "按类别NMS" if self.class_specific_nms else "全局NMS"
+                nms_info = f", {nms_type}"
+            
             self.logger.debug(f"🤖 [{self.model_code}] YOLO推理完成: "
                            f"检测{len(detections)}个目标, "
                            f"推理耗时{inference_time*1000:.1f}ms, "
                            f"设备:{self.device}, "
-                           f"置信度阈值:{self.confidence_threshold}")
+                           f"置信度阈值:{self.confidence_threshold}{nms_info}")
             
             return {
                 "detections": detections,
@@ -165,7 +191,12 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 "model_code": self.model_code,
                 "image_shape": image.shape,
                 "device": self.device,
-                "mock_mode": False
+                "mock_mode": False,
+                "nms_info": {
+                    "use_custom_nms": self.use_custom_nms,
+                    "class_specific_nms": self.class_specific_nms,
+                    "iou_threshold": self.iou_threshold
+                }
             }
             
         except Exception as e:
@@ -268,12 +299,24 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         inference_time = np.random.uniform(0.02, 0.08)
         time.sleep(inference_time)
         
+        # 应用自定义NMS（如果启用）
+        if self.use_custom_nms and detections:
+            if self.class_specific_nms:
+                detections = self.apply_class_specific_nms(detections, self.iou_threshold)
+            else:
+                detections = self.apply_nms(detections, self.iou_threshold)
+        
         actual_inference_time = time.time() - start_time
         
         # 【新增】Mock模式检测日志
+        nms_info = ""
+        if self.use_custom_nms:
+            nms_type = "按类别NMS" if self.class_specific_nms else "全局NMS"
+            nms_info = f", {nms_type}"
+        
         self.logger.debug(f"🎭 [{self.model_code}] Mock检测完成: "
                        f"模拟检测{len(detections)}个目标, "
-                       f"模拟耗时{actual_inference_time*1000:.1f}ms")
+                       f"模拟耗时{actual_inference_time*1000:.1f}ms{nms_info}")
         
         return {
             "detections": detections,
@@ -281,7 +324,12 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             "model_code": self.model_code,
             "image_shape": image.shape,
             "device": f"mock_{self.device}",
-            "mock_mode": True
+            "mock_mode": True,
+            "nms_info": {
+                "use_custom_nms": self.use_custom_nms,
+                "class_specific_nms": self.class_specific_nms,
+                "iou_threshold": self.iou_threshold
+            }
         }
     
     def batch_detect(self, images: List[np.ndarray]) -> List[Dict[str, Any]]:
@@ -304,15 +352,30 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 return self._mock_batch_detect(images, start_time)
             
             # 使用真实YOLO模型进行批量推理
-            results = self.model(images, 
-                               conf=self.confidence_threshold,
-                               iou=self.iou_threshold,
-                               verbose=False)
+            if self.use_custom_nms:
+                # 使用自定义NMS时，禁用YOLO内置NMS（设置iou=1.0）
+                results = self.model(images, 
+                                   conf=self.confidence_threshold,
+                                   iou=1.0,  # 禁用内置NMS
+                                   verbose=False)
+            else:
+                # 使用YOLO内置NMS
+                results = self.model(images, 
+                                   conf=self.confidence_threshold,
+                                   iou=self.iou_threshold,
+                                   verbose=False)
             
             # 提取每张图像的检测结果
             batch_results = []
             for i, (result, image) in enumerate(zip(results, images)):
                 detections = self._extract_detections(result, image.shape)
+                
+                # 应用自定义NMS（如果启用）
+                if self.use_custom_nms and detections:
+                    if self.class_specific_nms:
+                        detections = self.apply_class_specific_nms(detections, self.iou_threshold)
+                    else:
+                        detections = self.apply_nms(detections, self.iou_threshold)
                 
                 batch_result = {
                     "detections": detections,
@@ -320,7 +383,12 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                     "model_code": self.model_code,
                     "image_shape": image.shape,
                     "device": self.device,
-                    "mock_mode": False
+                    "mock_mode": False,
+                    "nms_info": {
+                        "use_custom_nms": self.use_custom_nms,
+                        "class_specific_nms": self.class_specific_nms,
+                        "iou_threshold": self.iou_threshold
+                    }
                 }
                 batch_results.append(batch_result)
             
@@ -335,12 +403,16 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             
             # 【新增】批处理日志
             total_detections = sum(len(result["detections"]) for result in batch_results)
+            nms_info = ""
+            if self.use_custom_nms:
+                nms_type = "按类别NMS" if self.class_specific_nms else "全局NMS"
+                nms_info = f", {nms_type}"
+            
             self.logger.debug(f"🚀 [{self.model_code}] 批量YOLO推理完成: "
                            f"处理{len(images)}张图像, "
-                           f"总检测{total_detections}个目标, "
+                           f"检测{total_detections}个目标, "
                            f"批处理耗时{total_inference_time*1000:.1f}ms, "
-                           f"平均{avg_inference_time*1000:.1f}ms/张, "
-                           f"设备:{self.device}")
+                           f"平均{avg_inference_time*1000:.1f}ms/张{nms_info}")
             
             return batch_results
             
@@ -403,13 +475,25 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
                 }
                 detections.append(detection)
             
+            # 应用自定义NMS（如果启用）
+            if self.use_custom_nms and detections:
+                if self.class_specific_nms:
+                    detections = self.apply_class_specific_nms(detections, self.iou_threshold)
+                else:
+                    detections = self.apply_nms(detections, self.iou_threshold)
+            
             batch_result = {
                 "detections": detections,
                 "batch_index": i,
                 "model_code": self.model_code,
                 "image_shape": image.shape,
                 "device": f"mock_{self.device}",
-                "mock_mode": True
+                "mock_mode": True,
+                "nms_info": {
+                    "use_custom_nms": self.use_custom_nms,
+                    "class_specific_nms": self.class_specific_nms,
+                    "iou_threshold": self.iou_threshold
+                }
             }
             batch_results.append(batch_result)
         
@@ -423,11 +507,16 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
         
         # 【新增】Mock批处理日志
         total_detections = sum(len(result["detections"]) for result in batch_results)
+        nms_info = ""
+        if self.use_custom_nms:
+            nms_type = "按类别NMS" if self.class_specific_nms else "全局NMS"
+            nms_info = f", {nms_type}"
+        
         self.logger.debug(f"🎭 [{self.model_code}] Mock批量检测完成: "
                        f"模拟处理{len(images)}张图像, "
                        f"模拟检测{total_detections}个目标, "
                        f"批处理耗时{total_inference_time*1000:.1f}ms, "
-                       f"平均{avg_inference_time*1000:.1f}ms/张")
+                       f"平均{avg_inference_time*1000:.1f}ms/张{nms_info}")
         
         return batch_results
     
@@ -441,7 +530,9 @@ class YoloDetectionAnalyzer(BaseAnalyzer):
             "device": self.device,
             "mock_mode": self.is_mock_mode,
             "confidence_threshold": self.confidence_threshold,
-            "iou_threshold": self.iou_threshold
+            "iou_threshold": self.iou_threshold,
+            "use_custom_nms": self.use_custom_nms,
+            "class_specific_nms": self.class_specific_nms
         }
     
     def cleanup(self):

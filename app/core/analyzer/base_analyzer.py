@@ -353,6 +353,126 @@ class BaseAnalyzer(ABC):
                 f"device='{self.device}', "
                 f"loaded={self.loaded})")
 
+    def apply_nms(self, detections: List[Dict], iou_threshold: float) -> List[Dict]:
+        """应用非极大值抑制
+        
+        Args:
+            detections: 检测结果列表，每个检测包含bbox和confidence
+            iou_threshold: IoU阈值
+            
+        Returns:
+            List[Dict]: NMS后的检测结果
+        """
+        if not detections:
+            return []
+        
+        # 按置信度排序（降序）
+        sorted_detections = sorted(detections, key=lambda x: x.get('confidence', 0), reverse=True)
+        
+        # 存储保留的检测结果
+        keep_detections = []
+        
+        while sorted_detections:
+            # 取出置信度最高的检测
+            current_detection = sorted_detections.pop(0)
+            keep_detections.append(current_detection)
+            
+            # 计算当前检测与剩余检测的IoU
+            remaining_detections = []
+            for detection in sorted_detections:
+                iou = self._calculate_iou(current_detection, detection)
+                
+                # 如果IoU小于阈值，则保留该检测
+                if iou < iou_threshold:
+                    remaining_detections.append(detection)
+                # 否则抑制该检测（不添加到remaining_detections中）
+            
+            sorted_detections = remaining_detections
+        
+        return keep_detections
+    
+    def _calculate_iou(self, det1: Dict, det2: Dict) -> float:
+        """计算两个检测框的IoU
+        
+        Args:
+            det1: 第一个检测结果
+            det2: 第二个检测结果
+            
+        Returns:
+            float: IoU值
+        """
+        try:
+            # 提取边界框坐标
+            box1 = det1.get('bbox', {})
+            box2 = det2.get('bbox', {})
+            
+            x1_1, y1_1, x2_1, y2_1 = box1.get('x1', 0), box1.get('y1', 0), box1.get('x2', 0), box1.get('y2', 0)
+            x1_2, y1_2, x2_2, y2_2 = box2.get('x1', 0), box2.get('y1', 0), box2.get('x2', 0), box2.get('y2', 0)
+            
+            # 计算交集区域
+            x1_inter = max(x1_1, x1_2)
+            y1_inter = max(y1_1, y1_2)
+            x2_inter = min(x2_1, x2_2)
+            y2_inter = min(y2_1, y2_2)
+            
+            # 如果没有交集，返回0
+            if x1_inter >= x2_inter or y1_inter >= y2_inter:
+                return 0.0
+            
+            # 计算交集面积
+            intersection_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+            
+            # 计算两个框的面积
+            area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
+            area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
+            
+            # 计算并集面积
+            union_area = area1 + area2 - intersection_area
+            
+            # 避免除零
+            if union_area <= 0:
+                return 0.0
+            
+            # 计算IoU
+            iou = intersection_area / union_area
+            return iou
+            
+        except Exception as e:
+            self.logger.warning(f"计算IoU时出错: {e}")
+            return 0.0
+    
+    def apply_class_specific_nms(self, detections: List[Dict], iou_threshold: float) -> List[Dict]:
+        """应用按类别分组的NMS
+        
+        Args:
+            detections: 检测结果列表
+            iou_threshold: IoU阈值
+            
+        Returns:
+            List[Dict]: 按类别应用NMS后的检测结果
+        """
+        if not detections:
+            return []
+        
+        # 按类别分组
+        class_groups = {}
+        for detection in detections:
+            class_id = detection.get('class_id', 0)
+            if class_id not in class_groups:
+                class_groups[class_id] = []
+            class_groups[class_id].append(detection)
+        
+        # 对每个类别单独应用NMS
+        final_detections = []
+        for class_id, class_detections in class_groups.items():
+            nms_detections = self.apply_nms(class_detections, iou_threshold)
+            final_detections.extend(nms_detections)
+        
+        # 按置信度重新排序
+        final_detections.sort(key=lambda x: x.get('confidence', 0), reverse=True)
+        
+        return final_detections
+
 
 class DetectionAnalyzer(BaseAnalyzer):
     """目标检测分析器基类"""
@@ -387,20 +507,6 @@ class DetectionAnalyzer(BaseAnalyzer):
             return detections
         
         return [det for det in detections if det.get('class_name') in target_classes]
-    
-    def apply_nms(self, detections: List[Dict], iou_threshold: float) -> List[Dict]:
-        """应用非极大值抑制
-        
-        Args:
-            detections: 检测结果列表
-            iou_threshold: IoU阈值
-            
-        Returns:
-            List[Dict]: NMS后的检测结果
-        """
-        # 这里应该实现实际的NMS算法
-        # 暂时返回原始结果
-        return detections
 
 
 class ClassificationAnalyzer(BaseAnalyzer):
