@@ -2,23 +2,18 @@
 # -*- coding: utf-8 -*-
 
 """
-文件名: __init__.py
-作者: Yanli
-邮箱: 1959595510@qq.com
-创建日期: 2025-01-04
-描述: 分析器包
-
-包含视频分析器相关的核心组件。
-
-本文件是分析服务项目的一部分。
+分析器核心模块 - 自动注册分析器
 """
 
-from .base_analyzer import BaseAnalyzer
+from .analyzer_registry import get_global_registry, ensure_analyzers_registered
 from .analyzer_factory import AnalyzerFactory
-from .analyzer_registry import AnalyzerRegistry
 
+# 确保分析器在模块导入时自动注册
+ensure_analyzers_registered()
+
+# 导出主要接口
 __all__ = [
-    'BaseAnalyzer',
-    'AnalyzerFactory', 
-    'AnalyzerRegistry'
+    'get_global_registry',
+    'AnalyzerFactory',
+    'ensure_analyzers_registered'
 ]

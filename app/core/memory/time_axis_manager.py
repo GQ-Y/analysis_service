@@ -111,4 +111,35 @@ class TimeAxisManager:
                     "status": "active" if hasattr(time_axis, 'running') and time_axis.running else "inactive"
                 }
         
-        return stats 
+        return stats
+    
+    def get_frames_for_time_range(
+        self,
+        start_timestamp: float,
+        end_timestamp: float,
+        axis_id: Optional[str] = None
+    ) -> List:
+        """
+        获取指定时间范围内的帧序列
+        
+        Args:
+            start_timestamp: 开始时间戳
+            end_timestamp: 结束时间戳
+            axis_id: 时间轴ID，None则从第一个可用的时间轴获取
+            
+        Returns:
+            List: 指定时间范围内的帧列表
+        """
+        # 如果没有指定时间轴ID，使用第一个可用的时间轴
+        if axis_id is None:
+            if not self.time_axes:
+                self.logger.warning("⚠️ 时间轴管理器: 没有可用的时间轴")
+                return []
+            axis_id = next(iter(self.time_axes))
+        
+        time_axis = self.get_time_axis(axis_id)
+        if not time_axis:
+            self.logger.warning(f"⚠️ 时间轴管理器: 时间轴不存在 {axis_id}")
+            return []
+        
+        return time_axis.get_frames_for_time_range(start_timestamp, end_timestamp) 

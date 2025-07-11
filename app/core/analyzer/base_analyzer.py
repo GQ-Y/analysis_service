@@ -197,8 +197,12 @@ class BaseAnalyzer(ABC):
         
         self.logger.info(f"开始模型预热，预热帧数: {warmup_frames}")
         
+        # 🔧 动态获取输入尺寸，而不是硬编码
+        input_size = self._get_input_size()
+        self.logger.info(f"使用输入尺寸进行预热: {input_size}")
+        
         # 创建虚拟帧进行预热
-        dummy_frame = np.random.randint(0, 255, (640, 640, 3), dtype=np.uint8)
+        dummy_frame = np.random.randint(0, 255, (*input_size, 3), dtype=np.uint8)
         
         for i in range(warmup_frames):
             try:
@@ -211,6 +215,45 @@ class BaseAnalyzer(ABC):
         # 重置统计信息，不计入预热时间
         self.reset_stats()
         self.logger.info("模型预热完成")
+    
+    def _get_input_size(self) -> Tuple[int, int]:
+        """获取模型输入尺寸
+        
+        Returns:
+            Tuple[int, int]: 输入尺寸 (width, height)
+        """
+        # 默认尺寸
+        default_size = (640, 640)
+        
+        try:
+            # 1. 如果有 input_size 属性，直接使用
+            if hasattr(self, 'input_size') and self.input_size:
+                size = self.input_size
+                if isinstance(size, (tuple, list)) and len(size) >= 2:
+                    return tuple(size[:2])  # 只取前两个维度
+            
+            # 2. 如果有 model_info 属性，从中获取
+            if hasattr(self, 'model_info') and self.model_info:
+                if hasattr(self.model_info, 'input_size') and self.model_info.input_size:
+                    size = self.model_info.input_size
+                    if isinstance(size, (tuple, list)) and len(size) >= 2:
+                        return tuple(size[:2])
+            
+            # 3. 尝试从模型管理器获取
+            if hasattr(self, 'model_manager') and hasattr(self, 'model_code'):
+                model_info = self.model_manager.get_model_info(self.model_code)
+                if model_info and hasattr(model_info, 'input_size') and model_info.input_size:
+                    size = model_info.input_size
+                    if isinstance(size, (tuple, list)) and len(size) >= 2:
+                        return tuple(size[:2])
+            
+            # 4. 如果都没有，使用默认尺寸
+            self.logger.warning(f"无法获取输入尺寸，使用默认尺寸: {default_size}")
+            return default_size
+            
+        except Exception as e:
+            self.logger.warning(f"获取输入尺寸失败，使用默认尺寸: {e}")
+            return default_size
     
     def validate_config(self, config: AnalysisConfig) -> bool:
         """验证配置

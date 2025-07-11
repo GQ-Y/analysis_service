@@ -21,12 +21,16 @@ except ImportError:
     logging.warning("⚠️ ultralytics未安装，YOLO分析器将使用Mock模式")
 
 from app.core.storage.model_manager import ModelManager, ModelInfo
+from app.models.base_model import AnalysisTypeEnum
+from app.core.analyzer.analyzer_registry import register_analyzer
+from app.core.analyzer.base_analyzer import BaseAnalyzer
 
 
-class YoloDetectionAnalyzer:
+@register_analyzer(AnalysisTypeEnum.DETECTION)
+class YoloDetectionAnalyzer(BaseAnalyzer):
     """YOLO目标检测分析器 - 专注于模型推理的输入输出"""
     
-    def __init__(self, model_code: str, model_manager: ModelManager, 
+    def __init__(self, model_code: Optional[str] = None, model_manager: Optional[ModelManager] = None, 
                  confidence_threshold: float = 0.5, 
                  iou_threshold: float = 0.45,
                  device: str = "auto"):
@@ -34,32 +38,28 @@ class YoloDetectionAnalyzer:
         初始化YOLO检测分析器
         
         Args:
-            model_code: 模型代码
-            model_manager: 模型管理器
+            model_code: 模型代码，可选
+            model_manager: 模型管理器，如果为None则创建默认的
             confidence_threshold: 置信度阈值
             iou_threshold: IoU阈值
             device: 设备 ("cpu", "cuda", "auto")
         """
-        self.model_code = model_code
-        self.model_manager = model_manager
+        # 调用父类构造函数
+        super().__init__(model_code=model_code, device=device)
+        
+        self.model_manager = model_manager or ModelManager("storage")
         self.confidence_threshold = confidence_threshold
         self.iou_threshold = iou_threshold
         
-        self.logger = logging.getLogger(__name__)
         self.model = None
         self.model_info: Optional[ModelInfo] = None
         self.class_names: Dict[int, str] = {}
         self.input_size: Tuple[int, int] = (640, 640)
         self.is_mock_mode = False
         
-        # 设备选择
-        if device == "auto":
-            self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            self.device = device
-            
-        # 初始化模型
-        self._load_model()
+        # 只有在提供了model_code时才初始化模型
+        if model_code:
+            self._load_model()
     
     def _load_model(self) -> bool:
         """加载YOLO模型"""
@@ -286,7 +286,7 @@ class YoloDetectionAnalyzer:
     
     def batch_detect(self, images: List[np.ndarray]) -> List[Dict[str, Any]]:
         """
-        批量检测
+        批量检测 - 真正的批处理实现
         
         Args:
             images: 图像列表
@@ -294,21 +294,142 @@ class YoloDetectionAnalyzer:
         Returns:
             List[Dict[str, Any]]: 检测结果列表
         """
-        results = []
-        for i, image in enumerate(images):
-            try:
-                result = self.detect(image)
-                result["batch_index"] = i
-                results.append(result)
-            except Exception as e:
-                self.logger.error(f"❌ 批量检测失败 {i}: {e}")
-                results.append({
+        if not images:
+            return []
+            
+        start_time = time.time()
+        
+        try:
+            if self.is_mock_mode or not self.model:
+                return self._mock_batch_detect(images, start_time)
+            
+            # 使用真实YOLO模型进行批量推理
+            results = self.model(images, 
+                               conf=self.confidence_threshold,
+                               iou=self.iou_threshold,
+                               verbose=False)
+            
+            # 提取每张图像的检测结果
+            batch_results = []
+            for i, (result, image) in enumerate(zip(results, images)):
+                detections = self._extract_detections(result, image.shape)
+                
+                batch_result = {
+                    "detections": detections,
+                    "batch_index": i,
+                    "model_code": self.model_code,
+                    "image_shape": image.shape,
+                    "device": self.device,
+                    "mock_mode": False
+                }
+                batch_results.append(batch_result)
+            
+            # 计算批处理总时间
+            total_inference_time = time.time() - start_time
+            
+            # 为每个结果添加推理时间（平均分配）
+            avg_inference_time = total_inference_time / len(images)
+            for result in batch_results:
+                result["inference_time"] = avg_inference_time
+                result["batch_total_time"] = total_inference_time
+            
+            # 【新增】批处理日志
+            total_detections = sum(len(result["detections"]) for result in batch_results)
+            self.logger.debug(f"🚀 [{self.model_code}] 批量YOLO推理完成: "
+                           f"处理{len(images)}张图像, "
+                           f"总检测{total_detections}个目标, "
+                           f"批处理耗时{total_inference_time*1000:.1f}ms, "
+                           f"平均{avg_inference_time*1000:.1f}ms/张, "
+                           f"设备:{self.device}")
+            
+            return batch_results
+            
+        except Exception as e:
+            self.logger.error(f"❌ YOLO批量检测失败: {e}")
+            # 返回错误结果
+            error_results = []
+            for i in range(len(images)):
+                error_results.append({
                     "detections": [],
                     "batch_index": i,
                     "error": str(e),
-                    "model_code": self.model_code
+                    "model_code": self.model_code,
+                    "image_shape": images[i].shape if i < len(images) else (0, 0, 0),
+                    "inference_time": 0.0,
+                    "mock_mode": False
                 })
-        return results
+            return error_results
+    
+    def _mock_batch_detect(self, images: List[np.ndarray], start_time: float) -> List[Dict[str, Any]]:
+        """Mock模式的批量检测"""
+        batch_results = []
+        
+        # 模拟批处理的性能优势
+        batch_inference_time = np.random.uniform(0.05, 0.15)  # 批处理总时间
+        time.sleep(batch_inference_time)
+        
+        for i, image in enumerate(images):
+            # 生成模拟检测结果
+            height, width = image.shape[:2]
+            num_detections = np.random.randint(0, 5)
+            detections = []
+            
+            for _ in range(num_detections):
+                x1 = np.random.randint(0, width // 2)
+                y1 = np.random.randint(0, height // 2)
+                x2 = np.random.randint(x1 + 20, width)
+                y2 = np.random.randint(y1 + 20, height)
+                
+                bbox_width = x2 - x1
+                bbox_height = y2 - y1
+                
+                class_ids = list(self.class_names.keys())
+                class_id = np.random.choice(class_ids) if class_ids else 0
+                confidence = np.random.uniform(0.6, 0.95)
+                
+                detection = {
+                    "class_id": int(class_id),
+                    "class_name": self.class_names.get(class_id, f"class_{class_id}"),
+                    "confidence": float(confidence),
+                    "bbox": {
+                        "x1": float(x1),
+                        "y1": float(y1),
+                        "x2": float(x2), 
+                        "y2": float(y2),
+                        "width": float(bbox_width),
+                        "height": float(bbox_height)
+                    },
+                    "area": float(bbox_width * bbox_height)
+                }
+                detections.append(detection)
+            
+            batch_result = {
+                "detections": detections,
+                "batch_index": i,
+                "model_code": self.model_code,
+                "image_shape": image.shape,
+                "device": f"mock_{self.device}",
+                "mock_mode": True
+            }
+            batch_results.append(batch_result)
+        
+        # 计算总时间和平均时间
+        total_inference_time = time.time() - start_time
+        avg_inference_time = total_inference_time / len(images)
+        
+        for result in batch_results:
+            result["inference_time"] = avg_inference_time
+            result["batch_total_time"] = total_inference_time
+        
+        # 【新增】Mock批处理日志
+        total_detections = sum(len(result["detections"]) for result in batch_results)
+        self.logger.debug(f"🎭 [{self.model_code}] Mock批量检测完成: "
+                       f"模拟处理{len(images)}张图像, "
+                       f"模拟检测{total_detections}个目标, "
+                       f"批处理耗时{total_inference_time*1000:.1f}ms, "
+                       f"平均{avg_inference_time*1000:.1f}ms/张")
+        
+        return batch_results
     
     def get_model_info(self) -> Dict[str, Any]:
         """获取模型信息"""
@@ -330,6 +451,116 @@ class YoloDetectionAnalyzer:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         self.logger.info(f"🧹 YOLO检测分析器资源已清理: {self.model_code}")
+
+    async def analyze_batch_async(self, frames: List[np.ndarray], confidence_threshold: float = None, iou_threshold: float = None) -> List[Dict[str, Any]]:
+        """异步批量分析（简单包装同步版本）"""
+        return self.analyze_batch(frames, confidence_threshold, iou_threshold)
+
+    # === 适配器方法：兼容AnalysisWorker期望的BaseAnalyzer接口 ===
+    
+    @property
+    def name(self):
+        """分析器名称（兼容BaseAnalyzer接口）"""
+        return f"yolo_{self.model_code}"
+    
+    def process_frame(self, frame_buffer) -> Dict[str, Any]:
+        """
+        处理单帧（AnalysisWorker期望的接口）
+        
+        Args:
+            frame_buffer: 帧缓冲区对象
+            
+        Returns:
+            Dict[str, Any]: 分析结果
+        """
+        try:
+            # 从帧缓冲区提取图像数据
+            if hasattr(frame_buffer, 'get_frame_view'):
+                image = frame_buffer.get_frame_view()
+            elif hasattr(frame_buffer, 'frame_data'):
+                image = frame_buffer.frame_data
+            elif hasattr(frame_buffer, 'get_frame_copy'):
+                image = frame_buffer.get_frame_copy()
+            else:
+                raise ValueError(f"不支持的帧缓冲区类型: {type(frame_buffer)}")
+            
+            # 调用原有的检测方法
+            return self.detect(image)
+            
+        except Exception as e:
+            self.logger.error(f"❌ YOLO处理帧失败: {e}")
+            return {
+                "detections": [],
+                "error": str(e),
+                "frame_id": getattr(frame_buffer, 'frame_id', -1),
+                "analyzer": self.name
+            }
+    
+    def analyze_frame(self, frame_buffer) -> Dict[str, Any]:
+        """
+        分析单帧（兼容BaseAnalyzer接口，委托给process_frame）
+        """
+        return self.process_frame(frame_buffer)
+    
+    def process_batch(self, frame_buffers: List) -> List[Dict[str, Any]]:
+        """
+        批量处理（AnalysisWorker期望的接口）
+        
+        Args:
+            frame_buffers: 帧缓冲区列表
+            
+        Returns:
+            List[Dict[str, Any]]: 分析结果列表
+        """
+        results = []
+        for frame_buffer in frame_buffers:
+            result = self.process_frame(frame_buffer)
+            results.append(result)
+        return results
+    
+    def analyze_batch(self, frame_buffers: List) -> List[Dict[str, Any]]:
+        """
+        批量分析（兼容BaseAnalyzer接口，委托给process_batch）
+        """
+        return self.process_batch(frame_buffers)
+    
+    def reset_stats(self):
+        """重置统计信息（兼容BaseAnalyzer接口）"""
+        pass
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取统计信息"""
+        return {
+            "model_code": self.model_code,
+            "device": self.device,
+            "mock_mode": self.is_mock_mode,
+            "confidence_threshold": self.confidence_threshold,
+            "iou_threshold": self.iou_threshold,
+            "input_size": self.input_size,
+            "class_count": len(self.class_names)
+        }
+
+    def get_analysis_type(self) -> AnalysisTypeEnum:
+        """获取分析类型"""
+        return AnalysisTypeEnum.DETECTION
+    
+    async def load_model(self, model_code: str) -> bool:
+        """加载模型 - 兼容新的接口"""
+        self.model_code = model_code
+        return self._load_model()
+    
+    def get_supported_models(self) -> List[str]:
+        """获取支持的模型列表"""
+        # 这里可以返回所有支持的YOLO模型
+        return ["yolo11n", "yolo11s", "yolo11m", "yolo11l", "yolo11x"]
+    
+    async def analyze_frame(self, frame: np.ndarray, config=None) -> Dict[str, Any]:
+        """分析单帧 - 符合BaseAnalyzer接口"""
+        return self.detect(frame)
+    
+    async def analyze_batch(self, frames: List[np.ndarray], config=None) -> List[Dict[str, Any]]:
+        """批量分析 - 符合BaseAnalyzer接口"""
+        return self.batch_detect(frames)
 
 
 class YoloDetectionAnalyzerFactory:

@@ -7,7 +7,7 @@
 from .detection_filter import DetectionFilter, FilterPipeline
 from .callback_processor import CallbackProcessor  
 from .storage_processor import StorageProcessor
-from .video_processor import VideoProcessor
+# from .video_processor import VideoProcessor  # 已删除，由VideoPlaybackService替代
 from .result_pipeline import ResultProcessingPipeline
 
 __all__ = [
@@ -15,6 +15,6 @@ __all__ = [
     "FilterPipeline", 
     "CallbackProcessor",
     "StorageProcessor",
-    "VideoProcessor",
+    # "VideoProcessor",  # 已删除，由VideoPlaybackService替代
     "ResultProcessingPipeline"
 ] 

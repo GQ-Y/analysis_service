@@ -235,9 +235,114 @@ def is_analyzer_registered(analysis_type: AnalysisTypeEnum) -> bool:
 
 
 def get_all_registered_types() -> List[AnalysisTypeEnum]:
-    """获取全局注册表中所有已注册的分析器类型
+    """获取所有已注册的分析器类型
     
     Returns:
         List[AnalysisTypeEnum]: 已注册的分析器类型列表
     """
     return _global_registry.get_registered_types()
+
+
+def register_analyzer(analysis_type: AnalysisTypeEnum):
+    """分析器注册装饰器
+    
+    Args:
+        analysis_type: 分析类型
+        
+    Returns:
+        装饰器函数
+    """
+    def decorator(analyzer_class: Type[BaseAnalyzer]):
+        """装饰器实现"""
+        # 自动注册到全局注册表
+        _global_registry.register(analysis_type, analyzer_class)
+        return analyzer_class
+    return decorator
+
+
+def auto_discover_analyzers(package_path: str = "app.core.analyzer"):
+    """自动发现并注册分析器
+    
+    Args:
+        package_path: 要搜索的包路径
+    """
+    import importlib
+    import pkgutil
+    import inspect
+    
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # 导入包
+        package = importlib.import_module(package_path)
+        
+        # 遍历包中的所有模块
+        for importer, modname, ispkg in pkgutil.walk_packages(
+            package.__path__, 
+            package.__name__ + "."
+        ):
+            try:
+                # 导入模块
+                module = importlib.import_module(modname)
+                
+                # 检查模块中的所有类
+                for name, obj in inspect.getmembers(module, inspect.isclass):
+                    # 检查是否是BaseAnalyzer的子类且不是BaseAnalyzer本身
+                    if (issubclass(obj, BaseAnalyzer) and 
+                        obj != BaseAnalyzer and 
+                        hasattr(obj, 'get_analysis_type')):
+                        
+                        try:
+                            # 尝试获取分析类型
+                            instance = obj()
+                            analysis_type = instance.get_analysis_type()
+                            
+                            # 如果还没有注册，则注册
+                            if not _global_registry.is_registered(analysis_type):
+                                _global_registry.register(analysis_type, obj)
+                                logger.info(f"🔍 自动发现并注册分析器: {analysis_type.value} -> {obj.__name__}")
+                            else:
+                                logger.debug(f"📋 分析器已注册: {analysis_type.value} -> {obj.__name__}")
+                                
+                        except Exception as e:
+                            logger.debug(f"⚠️ 无法自动注册分析器 {obj.__name__}: {e}")
+                            
+            except Exception as e:
+                logger.debug(f"⚠️ 导入模块失败 {modname}: {e}")
+                
+    except Exception as e:
+        logger.error(f"❌ 自动发现分析器失败: {e}")
+
+
+def ensure_analyzers_registered():
+    """确保分析器已注册 - 在需要时调用"""
+    if len(_global_registry) == 0:
+        logging.getLogger(__name__).info("🔍 开始自动发现分析器...")
+        auto_discover_analyzers()
+        
+        # 如果仍然没有注册任何分析器，手动注册已知的分析器
+        if len(_global_registry) == 0:
+            _register_known_analyzers()
+
+
+def _register_known_analyzers():
+    """手动注册已知的分析器"""
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # 注册YOLO检测分析器
+        from app.core.analyzer.detection.yolo_analyzer import YoloDetectionAnalyzer
+        if not _global_registry.is_registered(AnalysisTypeEnum.DETECTION):
+            _global_registry.register(AnalysisTypeEnum.DETECTION, YoloDetectionAnalyzer)
+            logger.info("🔧 手动注册YOLO检测分析器")
+            
+    except ImportError as e:
+        logger.warning(f"⚠️ 无法导入YOLO检测分析器: {e}")
+    
+    # TODO: 注册其他已知的分析器
+    # try:
+    #     from app.core.analyzer.classification.classification_analyzer import ClassificationAnalyzer
+    #     if not _global_registry.is_registered(AnalysisTypeEnum.CLASSIFICATION):
+    #         _global_registry.register(AnalysisTypeEnum.CLASSIFICATION, ClassificationAnalyzer)
+    # except ImportError:
+    #     pass

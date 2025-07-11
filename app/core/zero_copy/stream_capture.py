@@ -43,7 +43,8 @@ class StreamCapture:
         display_queue: Optional[Queue] = None,
         video_player: Optional['VideoPlayer'] = None,
         logger: Optional[logging.Logger] = None,
-        on_video_end_callback: Optional[Callable] = None
+        on_video_end_callback: Optional[Callable] = None,
+        on_stream_connected_callback: Optional[Callable] = None
     ):
         """
         初始化流捕获器
@@ -58,6 +59,7 @@ class StreamCapture:
             video_player: 视频播放器（可选）
             logger: 日志记录器
             on_video_end_callback: 视频结束回调函数（可选）
+            on_stream_connected_callback: 拉流成功回调函数（可选）
         """
         self.stream_url = stream_url
         self.memory_pool = memory_pool
@@ -68,6 +70,7 @@ class StreamCapture:
         self.video_player = video_player
         self.logger = logger or logging.getLogger(__name__)
         self.on_video_end_callback = on_video_end_callback
+        self.on_stream_connected_callback = on_stream_connected_callback
         
         # 捕获状态
         self.running = False
@@ -182,6 +185,14 @@ class StreamCapture:
             
             self.connected = True
             self.logger.info(f"✅ 流连接成功: {width}x{height}@{fps:.1f}fps")
+            
+            # 【新增】调用拉流成功回调
+            if self.on_stream_connected_callback:
+                try:
+                    self.logger.info(f"📞 调用拉流成功回调函数...")
+                    self.on_stream_connected_callback()
+                except Exception as callback_e:
+                    self.logger.error(f"❌ 拉流成功回调执行失败: {callback_e}")
             
             return True
             
@@ -384,7 +395,8 @@ class MultiStreamCapture:
         stream_id: str,
         stream_url: str,
         reconnect_delay: float = 5.0,
-        display_queue: Optional[Queue] = None
+        display_queue: Optional[Queue] = None,
+        on_stream_connected_callback: Optional[Callable] = None
     ) -> StreamCapture:
         """
         添加流捕获器
@@ -394,6 +406,7 @@ class MultiStreamCapture:
             stream_url: 流URL
             reconnect_delay: 重连延迟
             display_queue: 显示队列
+            on_stream_connected_callback: 拉流成功回调函数
             
         Returns:
             StreamCapture: 流捕获器实例
@@ -410,6 +423,7 @@ class MultiStreamCapture:
                 stream_id=stream_id,
                 reconnect_delay=reconnect_delay,
                 display_queue=display_queue,
+                on_stream_connected_callback=on_stream_connected_callback,
                 logger=self.logger
             )
             

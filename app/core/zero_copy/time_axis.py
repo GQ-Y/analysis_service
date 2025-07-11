@@ -200,6 +200,38 @@ class TimeAxis:
         
         return due_frames
     
+    def get_frames_for_time_range(
+        self, 
+        start_timestamp: float, 
+        end_timestamp: float
+    ) -> List[FrameBuffer]:
+        """
+        获取指定时间范围内的帧序列
+        
+        Args:
+            start_timestamp: 开始时间戳
+            end_timestamp: 结束时间戳
+            
+        Returns:
+            List[FrameBuffer]: 指定时间范围内的帧列表
+        """
+        frames = []
+        
+        with self.lock:
+            if not self.slots:
+                return frames
+            
+            # 找到时间范围内的所有帧
+            for timestamp in self.slots.irange(start_timestamp, end_timestamp, 
+                                              inclusive=(True, True)):
+                frame_buffer = self.slots[timestamp]
+                if frame_buffer and frame_buffer.is_valid:
+                    frames.append(frame_buffer)
+        
+        self.logger.debug(f"📊 时间轴: 时间范围[{start_timestamp:.3f}, {end_timestamp:.3f}] "
+                         f"内找到 {len(frames)} 帧")
+        return frames
+    
     def clear(self) -> int:
         """
         清空时间轴

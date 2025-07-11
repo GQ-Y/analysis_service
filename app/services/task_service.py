@@ -422,14 +422,25 @@ class TaskService(BaseService):
             self.logger.error(f"❌ {error_msg}")
             stop_errors.append(error_msg)
         
-        # 停止视频播放器
+        # 停止视频缓存服务
         try:
-            video_player = components.get('video_player')
-            if video_player:
-                self.logger.info(f"⏹️ 停止视频播放器")
-                video_player.stop()
+            video_cache_service = components.get('video_cache_service')
+            if video_cache_service:
+                self.logger.info(f"⏹️ 停止视频缓存服务")
+                video_cache_service.stop()
         except Exception as e:
-            error_msg = f"停止视频播放器失败: {e}"
+            error_msg = f"停止视频缓存服务失败: {e}"
+            self.logger.error(f"❌ {error_msg}")
+            stop_errors.append(error_msg)
+        
+        # 停止视频回放服务
+        try:
+            video_playback_service = components.get('video_playback_service')
+            if video_playback_service:
+                self.logger.info(f"⏹️ 停止视频回放服务")
+                video_playback_service.stop()
+        except Exception as e:
+            error_msg = f"停止视频回放服务失败: {e}"
             self.logger.error(f"❌ {error_msg}")
             stop_errors.append(error_msg)
         
@@ -591,7 +602,7 @@ class TaskService(BaseService):
                 pool_size = 100  # 视频分析使用大容量缓冲区
                 self.logger.info(f"🎥 视频分析任务，使用大容量内存池: {pool_size} 个缓冲区")
             elif task_data["analysis_type"] == 3:  # 流分析
-                pool_size = 80   # 流分析使用中等缓冲区，适当增加
+                pool_size = 500  # 流分析+视频回放需要更大缓冲区，支持1分钟视频缓存
                 self.logger.info(f"📡 流分析任务，使用大容量内存池: {pool_size} 个缓冲区")
             else:
                 pool_size = 50   # 其他类型使用默认缓冲区，适当增加
@@ -610,10 +621,10 @@ class TaskService(BaseService):
             # 根据分析类型调整时间轴配置
             if task_data["analysis_type"] == 2:  # 视频分析
                 max_frames = 500  # 视频批处理需要更大的时间轴缓冲
-                timeout = 5.0
+                timeout = 1.0
             elif task_data["analysis_type"] == 3:  # 流分析
-                max_frames = 200  # 流分析中等缓冲
-                timeout = 0.2     # 关键修复：流分析需要更短的超时时间以实现实时处理
+                max_frames = 500  # 流分析中等缓冲
+                timeout = 0.1     # 关键修复：流分析需要更短的超时时间以实现实时处理
             else:  # 图片分析
                 max_frames = 50   # 图片分析较小缓冲
                 timeout = 1.0
@@ -624,64 +635,151 @@ class TaskService(BaseService):
                 logger=self.logger
             )
 
-            # 3. 创建结果处理管道
+            # 3. 检查是否需要创建视频缓存和回放服务
+            self.logger.info(f"📹 任务 {task_id}: 检查视频缓存和回放服务需求...")
+            
+            analysis_type = task_data.get("analysis_type", 1)
+            playback_duration = task_data.get("playback_duration", 0)
+            
+            # 启动条件检查
+            should_enable_video_cache = (
+                analysis_type in [2, 3] and  # 视频或流分析
+                playback_duration > 3        # 回放时长大于3秒
+            )
+            
+            video_cache_service = None
+            video_playback_service = None
+            
+            if should_enable_video_cache:
+                self.logger.info("📹 满足视频缓存服务启动条件:")
+                self.logger.info(f"   - 分析类型: {analysis_type} ({'视频分析' if analysis_type == 2 else '流分析'})")
+                self.logger.info(f"   - 回放时长: {playback_duration}秒 (>3秒)")
+                
+                # 创建独立的视频缓存服务
+                from app.services.video_cache_service import VideoCacheService
+                from app.services.video_playback_service import VideoPlaybackService
+                
+                # 获取流地址（用于视频缓存服务）
+                stream_url = None
+                if analysis_type == 3 and task_data.get("stream_urls"):
+                    stream_url = task_data["stream_urls"][0]  # 取第一个流地址
+                elif analysis_type == 2 and task_data.get("video_path"):
+                    stream_url = task_data["video_path"]  # 使用视频文件路径
+                
+                if stream_url:
+                    self.logger.info(f"📹 创建视频缓存服务: {stream_url}")
+                    
+                    video_cache_service = VideoCacheService(
+                        stream_url=stream_url,
+                        cache_dir=f"./storage/video_cache/task_{task_id}",
+                        cache_duration=60,   # 1分钟缓存
+                        target_fps=None,     # 自动使用视频流原始帧率
+                        target_resolution=(1920, 1080),  # 新增：设置目标分辨率为1080P
+                        logger=self.logger
+                    )
+                    
+                    # 启动视频缓存服务
+                    if video_cache_service.start():
+                        self.logger.info("✅ 视频缓存服务启动成功")
+                        
+                        # 创建视频回放服务
+                        self.logger.info("🎬 创建视频回放服务...")
+                        video_playback_service = VideoPlaybackService(
+                            video_cache_service=video_cache_service,
+                            output_dir=f"./storage/playback_videos/task_{task_id}",
+                            playback_duration=float(playback_duration),
+                            fps=video_cache_service.target_fps,  # 使用缓存服务的实际帧率
+                            logger=self.logger
+                        )
+                        
+                        # 启动视频回放服务
+                        if video_playback_service.start():
+                            self.logger.info("✅ 视频回放服务启动成功")
+                        else:
+                            self.logger.error("❌ 视频回放服务启动失败")
+                            video_playback_service = None
+                    else:
+                        self.logger.error("❌ 视频缓存服务启动失败")
+                        video_cache_service = None
+                else:
+                    self.logger.warning("⚠️ 未找到有效的流地址或视频路径，跳过视频缓存服务")
+            else:
+                self.logger.info("⏭️ 跳过视频缓存和回放服务:")
+                if analysis_type not in [2, 3]:
+                    self.logger.info(f"   - 分析类型不符合: {analysis_type} (需要2或3)")
+                if playback_duration <= 3:
+                    self.logger.info(f"   - 回放时长不符合: {playback_duration}秒 (需要>3秒)")
+
+            # 4. 创建结果处理管道
             self.logger.info(f"🏭 任务 {task_id}: 创建结果处理管道...")
             
-            # 导入新的结果处理管道
-            # from app.core.result_processing.result_pipeline import ResultProcessingPipeline # This line is removed as it's now imported at the top
-            
-            # 创建结果处理管道，包含task_config参数传递
+            # 创建结果处理管道，传递视频回放服务
             task_config_with_id = task_data.copy()  # 复制所有任务配置
             task_config_with_id["task_id"] = task_id  # 确保task_id存在
             
             result_pipeline = ResultProcessingPipeline(
                 task_id=task_id,
                 task_config=task_config_with_id,  # 传递完整的任务配置
-                time_axis_manager=None,  # 暂时不需要时间轴管理器
-                output_dir="unused",  # 存储处理器会自动管理路径
+                time_axis_manager=time_axis,  # 直接传递时间轴
+                output_dir="storage/output",  # 输出目录
+                video_playback_service=video_playback_service,  # 传递视频回放服务
+                video_cache_service=video_cache_service,  # 传递视频缓存服务
                 logger=self.logger
             )
             
             # 启动结果处理管道
             await result_pipeline.start()
             
-            self.logger.info(f"🏭 任务 {task_id}: 结果处理管道已启动，处理器配置已就绪")
+            self.logger.info(f"🏭 任务 {task_id}: 结果处理管道已启动，回放服务配置已就绪")
 
-            # 4. 创建分析引擎
-            self.logger.info(f"🖥 任务 {task_id}: 创建AI分析引擎...")
-            analysis_engine = AnalysisEngine(self.logger)
-
-            # 为每个模型创建检测分析器
-            analyzers = {}
-            confidence_threshold = task_data.get("confidence_threshold", 0.5)
-            iou_threshold = task_data.get("iou_threshold", 0.45)
-            model_confidence_config = task_data.get("model_confidence_config", {})
-            model_iou_config = task_data.get("model_iou_config", {})
+            # 6. 创建分析引擎
+            self.logger.info(f"🔍 任务 {task_id}: 创建分析引擎...")
             
+            # 创建分析器
+            analyzers = {}
             for model_code in task_data["model_codes"]:
-                # 获取该模型的置信度和IOU配置，如果没有则使用全局配置
-                model_confidence = model_confidence_config.get(model_code, confidence_threshold)
-                model_iou = model_iou_config.get(model_code, iou_threshold)
-                
-                self.logger.info(f"🔧 创建分析器 {model_code}: confidence={model_confidence}, iou={model_iou}")
-                
-                # 创建基于模型类型的分析器，使用任务配置的参数
+                self.logger.info(f"🤖 创建分析器: {model_code}")
                 analyzer = self.analyzer_factory.create_analyzer(
                     model_code=model_code,
-                    confidence_threshold=model_confidence,
-                    iou_threshold=model_iou,
-                    device="auto"
+                    confidence_threshold=task_data.get("model_confidence_config", {}).get(model_code, task_data.get("confidence_threshold", 0.5)),
+                    iou_threshold=task_data.get("model_iou_config", {}).get(model_code, task_data.get("iou_threshold", 0.45))
                 )
-                
                 if analyzer:
                     analyzers[model_code] = analyzer
-                    self.logger.info(f"✅ 分析器创建成功: {model_code} (confidence={model_confidence}, iou={model_iou})")
+                    self.logger.info(f"✅ 分析器创建成功: {model_code}")
                 else:
                     self.logger.error(f"❌ 分析器创建失败: {model_code}")
-                    # 可以选择跳过该模型或抛出异常
-                    continue
+                    raise ValueError(f"无法创建分析器: {model_code}")
+            
+            # 创建分析引擎
+            analysis_engine = AnalysisEngine(logger=self.logger)
+            
+            # 为每个分析器创建工作器
+            for model_code, analyzer in analyzers.items():
+                # 获取模型FPS配置
+                target_fps = task_data.get("analysis_fps", {}).get(model_code)
+                
+                # 添加分析工作器
+                worker = analysis_engine.add_worker(
+                    name=model_code,
+                    analyzer=analyzer,
+                    time_axis=time_axis,
+                    batch_size=1,  # 单帧处理
+                    timeout=0.1,
+                    target_fps=target_fps,
+                    model_code=model_code
+                )
+                
+                # 添加结果回调
+                worker.add_result_callback(
+                    lambda frame_buffers, results, pipeline=result_pipeline: 
+                    self._on_analysis_result_callback(task_id, frame_buffers, results, pipeline)
+                )
+                
+                self.logger.info(f"✅ 已添加分析工作器: {model_code}")
 
-            # 4. 根据分析类型创建对应的处理器
+            # 7. 创建数据处理器
+            self.logger.info(f"🔄 任务 {task_id}: 创建数据处理器...")
             processors = []
             
             if task_data["analysis_type"] == 1:  # 图片分析
@@ -693,7 +791,7 @@ class TaskService(BaseService):
                     raise ValueError("图片分析任务需要提供image_paths")
                 
                 # 创建图片处理器
-                # from app.core.processor.image_processor import ImageProcessor # This line is removed as it's now imported at the top
+                from app.core.processor.image_processor import ImageProcessor
                 image_processor = ImageProcessor(
                     image_path=image_paths,
                     memory_pool=memory_pool,
@@ -726,7 +824,15 @@ class TaskService(BaseService):
 
                 for i, stream_url in enumerate(task_data["stream_urls"]):
                     stream_id = f"stream_{i+1}"
-                    capture = multi_capture.add_stream(stream_id, stream_url)
+                    
+                    # 创建流捕获器，传递拉流成功回调
+                    capture = multi_capture.add_stream(
+                        stream_id=stream_id, 
+                        stream_url=stream_url,
+                        on_stream_connected_callback=lambda sid=stream_id: self._on_stream_connected(
+                            task_id, sid
+                        )
+                    )
                     processors.append(capture)
                 
                 # 从任务配置中提取模型FPS配置
@@ -744,14 +850,14 @@ class TaskService(BaseService):
                 processors.append(stream_analysis_processor)
 
             elif task_data["analysis_type"] == 2:  # 视频分析
-                self.logger.info(f" 任务 {task_id}: 创建视频文件处理器...")
+                self.logger.info(f"🎥 任务 {task_id}: 创建视频文件处理器...")
                 
                 # 获取视频路径
                 video_path = task_data.get("video_path")
                 if not video_path:
                     raise ValueError("视频分析任务需要提供video_path")
                 
-                # from app.core.processor.video_file_processor import VideoFileProcessor # This line is removed as it's now imported at the top
+                from app.core.processor.video_file_processor import VideoFileProcessor
                 video_processor = VideoFileProcessor(
                     video_path=video_path,
                     memory_pool=memory_pool,
@@ -760,6 +866,9 @@ class TaskService(BaseService):
                     batch_size=100,    # 每批处理100帧
                     max_queue_size=300,  # 队列容量300帧
                     logger=self.logger,
+                    on_video_start_callback=lambda: self._on_video_start(
+                        task_id, video_cache_service
+                    ) if video_cache_service else None,
                     on_video_end_callback=lambda: self._on_video_end(task_id, "video_file"),
                     on_batch_complete_callback=lambda batch_num, batch_size, total_processed: 
                         self.logger.debug(f"🔄 批次 {batch_num} 完成: {batch_size} 帧, 总计 {total_processed} 帧")
@@ -785,7 +894,7 @@ class TaskService(BaseService):
             
             self.logger.info(f"✅ 任务 {task_id}: 已创建 {len(processors)} 个处理器")
 
-            # 5. 启动双管道处理
+            # 7. 启动双管道处理
             self.logger.info(f"🔄 任务 {task_id}: 启动双管道处理...")
 
             # 启动分析引擎（分析管道）
@@ -801,6 +910,8 @@ class TaskService(BaseService):
                 "time_axis": time_axis,
                 "analysis_engine": analysis_engine,
                 "result_pipeline": result_pipeline,
+                "video_cache_service": video_cache_service,  # 保存视频缓存服务引用
+                "video_playback_service": video_playback_service,  # 保存视频回放服务引用
                 "processors": processors
             }
 
@@ -810,7 +921,7 @@ class TaskService(BaseService):
             self.logger.error(f"❌ 任务 {task_id} 执行失败: {str(e)}")
             await self._update_task_status(task_id, 3)  # 设置为错误状态
             raise
-    
+
     def _on_analysis_result(self, task_id: int, frame_buffers: list, results: list, result_processor=None, video_player=None):
         """分析结果回调"""
         if task_id not in self.tasks:
@@ -960,6 +1071,156 @@ class TaskService(BaseService):
                 model_fps_config[model_code] = analysis_fps_data
         
         return model_fps_config
+
+    def _on_analysis_result_callback(self, task_id: int, frame_buffers: list, results: list, result_pipeline):
+        """分析结果回调处理"""
+        try:
+            # 将分析结果分发给结果处理管道
+            for frame_buffer, result in zip(frame_buffers, results):
+                if result_pipeline:
+                    # 【修复】设置正确的分析结果格式，同时兼容存储处理器和视频处理器
+                    if result and isinstance(result, dict) and 'detections' in result:
+                        # 为存储处理器设置字典格式的analysis_results
+                        frame_buffer.analysis_results = {
+                            'result_1': {
+                                'model_results': {
+                                    result.get('model_code', 'yolo11n'): {
+                                        'detections': result.get('detections', []),
+                                        'inference_time': result.get('inference_time', 0),
+                                        'confidence_threshold': result.get('confidence_threshold', 0.5)
+                                    }
+                                }
+                            }
+                        }
+                        
+                        # 为视频处理器创建AnalysisResult对象
+                        from app.models.analysis_result import AnalysisResult, Detection
+                        import time
+                        
+                        # 【关键修复1】获取正确的图像分辨率信息
+                        image_shape = None
+                        
+                        # 尝试从视频缓存服务获取分辨率
+                        task_components = self.task_components.get(task_id, {})
+                        video_cache_service = task_components.get('video_cache_service')
+                        
+                        if video_cache_service:
+                            # 优先使用原始分辨率（分析器实际处理的分辨率）
+                            if hasattr(video_cache_service, 'target_resolution') and video_cache_service.target_resolution:
+                                target_width, target_height = video_cache_service.target_resolution
+                                image_shape = (target_height, target_width, 3)  # OpenCV格式：(height, width, channels)
+                                self.logger.debug(f"📊 从视频缓存服务获取目标分辨率: {image_shape}")
+                            elif hasattr(video_cache_service, 'original_resolution') and video_cache_service.original_resolution:
+                                orig_width, orig_height = video_cache_service.original_resolution
+                                image_shape = (orig_height, orig_width, 3)
+                                self.logger.debug(f"📊 从视频缓存服务获取原始分辨率: {image_shape}")
+                        
+                        # 回退：使用结果中的image_shape
+                        if not image_shape and 'image_shape' in result:
+                            image_shape = result['image_shape']
+                            self.logger.debug(f"📊 使用分析结果中的image_shape: {image_shape}")
+                        
+                        # 默认：使用1080P分辨率
+                        if not image_shape:
+                            image_shape = (1080, 1920, 3)  # 默认1080P
+                            self.logger.warning(f"⚠️ 使用默认1080P分辨率: {image_shape}")
+                        
+                        # 转换检测结果
+                        detections = []
+                        for det in result.get('detections', []):
+                            # 【关键修复2】正确提取bbox坐标，统一处理格式
+                            bbox_dict = det.get('bbox', {})
+                            
+                            if isinstance(bbox_dict, dict):
+                                # 字典格式：{"x1": x1, "y1": y1, "x2": x2, "y2": y2}
+                                bbox = [
+                                    float(bbox_dict.get('x1', 0)),
+                                    float(bbox_dict.get('y1', 0)),
+                                    float(bbox_dict.get('x2', 0)),
+                                    float(bbox_dict.get('y2', 0))
+                                ]
+                                self.logger.debug(f"🔧 字典格式bbox转换: {bbox_dict} -> {bbox}")
+                            elif isinstance(bbox_dict, (list, tuple)) and len(bbox_dict) >= 4:
+                                # 列表格式：[x1, y1, x2, y2]
+                                bbox = [float(x) for x in bbox_dict[:4]]
+                                self.logger.debug(f"🔧 列表格式bbox: {bbox}")
+                            else:
+                                # 无效格式，使用默认值
+                                bbox = [0.0, 0.0, 0.0, 0.0]
+                                self.logger.warning(f"⚠️ 无效bbox格式: {type(bbox_dict)}, 值: {bbox_dict}")
+                            
+                            # 计算面积
+                            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]) if bbox[2] > bbox[0] and bbox[3] > bbox[1] else 0.0
+                            
+                            detection = Detection(
+                                class_id=det.get('class_id', 0),
+                                class_name=det.get('class_name', 'unknown'),
+                                confidence=float(det.get('confidence', 0.0)),
+                                bbox=bbox,
+                                area=area
+                            )
+                            detections.append(detection)
+                            
+                            self.logger.debug(f"✅ 创建Detection对象: {det.get('class_name', 'unknown')}, bbox={bbox}, confidence={det.get('confidence', 0.0):.3f}")
+                        
+                        # 【修复】只有当有检测结果时才创建AnalysisResult对象
+                        if detections:
+                            analysis_result = AnalysisResult(
+                                frame_id=getattr(frame_buffer, 'frame_id', 0),
+                                timestamp=getattr(frame_buffer, 'timestamp', time.time()),
+                                model_name=result.get('model_code', 'yolo11n'),
+                                image_shape=image_shape,  # 使用正确的图像分辨率
+                                detections=detections,
+                                inference_time=result.get('inference_time', 0.0)
+                            )
+                            frame_buffer.analysis_result = analysis_result
+                            
+                            # 【关键修复3】在frame_buffer上添加分辨率信息，确保视频回放服务能够访问
+                            frame_buffer.analysis_resolution = image_shape[:2] if len(image_shape) >= 2 else (1920, 1080)  # (height, width) -> (width, height)
+                            frame_buffer.analysis_resolution = (image_shape[1], image_shape[0]) if len(image_shape) >= 2 else (1920, 1080)
+                            
+                            self.logger.info(f"✅ 已设置AnalysisResult: 帧{getattr(frame_buffer, 'frame_id', 'unknown')}, 检测数量: {len(detections)}, 分辨率: {image_shape}")
+                        else:
+                            # 无检测结果时设置为None，这样视频处理器就不会处理这一帧
+                            frame_buffer.analysis_result = None
+                            self.logger.debug(f"🔍 无检测结果: 帧{getattr(frame_buffer, 'frame_id', 'unknown')}")
+                    else:
+                        # 分析结果为空或格式错误时也设置为None
+                        frame_buffer.analysis_result = None
+                    
+                    # 调用process_result（只传递frame_buffer和task_id）
+                    result_pipeline.process_result(frame_buffer, task_id)
+        except Exception as e:
+            self.logger.error(f"❌ 任务 {task_id}: 分析结果回调处理失败: {e}")
+            import traceback
+            self.logger.error(f"详细错误信息: {traceback.format_exc()}")
+
+    def _on_stream_connected(self, task_id: int, stream_id: str):
+        """拉流成功回调"""
+        try:
+            self.logger.info(f"📡 任务 {task_id}: 流 {stream_id} 连接成功")
+            
+            # 【新架构】视频缓存现在由独立的VideoCacheService处理
+            # 不需要在拉流回调中启动，服务在任务启动时就已经启动
+            self.logger.info(f"📹 视频缓存服务已在任务启动时启动，开始自动缓存流数据")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 拉流成功回调执行失败: {e}")
+
+    def _on_video_start(self, task_id: int, video_cache_service):
+        """视频开始播放回调"""
+        try:
+            self.logger.info(f"🎥 任务 {task_id}: 视频开始播放")
+            
+            # 【新架构】视频缓存现在由独立的VideoCacheService处理
+            # 服务在任务启动时就已经启动，这里只需要记录日志
+            if video_cache_service:
+                self.logger.info(f"📹 视频缓存服务已在任务启动时启动，开始自动缓存视频数据")
+            else:
+                self.logger.info(f"ℹ️ 无视频缓存服务配置")
+                
+        except Exception as e:
+            self.logger.error(f"❌ 视频开始回调执行失败: {e}")
 
 
 # 全局任务服务实例
