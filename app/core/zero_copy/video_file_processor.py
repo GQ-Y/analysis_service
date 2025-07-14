@@ -48,6 +48,7 @@ class VideoFileProcessor:
         max_queue_size: int = 200,  # 最大队列大小
         video_player=None,
         logger: Optional[logging.Logger] = None,
+        on_video_start_callback: Optional[Callable] = None,
         on_video_end_callback: Optional[Callable] = None,
         on_batch_complete_callback: Optional[Callable] = None
     ):
@@ -59,6 +60,7 @@ class VideoFileProcessor:
         self.max_queue_size = max_queue_size
         self.video_player = video_player
         self.logger = logger or logging.getLogger(__name__)
+        self.on_video_start_callback = on_video_start_callback
         self.on_video_end_callback = on_video_end_callback
         self.on_batch_complete_callback = on_batch_complete_callback
         
@@ -88,23 +90,63 @@ class VideoFileProcessor:
     def _init_video_capture(self) -> bool:
         """初始化视频捕获"""
         try:
-            self.cap = cv2.VideoCapture(self.video_path)
+            # 检测是否为在线URL
+            is_online_url = self.video_path.startswith(('http://', 'https://'))
+            
+            if is_online_url:
+                self.logger.info(f"📹 检测到在线视频URL，使用FFMPEG后端: {self.video_path}")
+                # 对于在线URL，使用FFMPEG后端并设置相关参数
+                self.cap = cv2.VideoCapture(self.video_path, cv2.CAP_FFMPEG)
+                
+                # 设置网络相关参数
+                self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # 减少缓冲区大小
+                
+                # 配置FFMPEG选项以更好地处理在线流
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+            else:
+                self.logger.info(f"📹 检测到本地视频文件: {self.video_path}")
+                self.cap = cv2.VideoCapture(self.video_path)
+            
             if not self.cap.isOpened():
                 self.logger.error(f"❌ 无法打开视频文件: {self.video_path}")
-                return False
+                
+                # 如果是在线URL且第一次尝试失败，尝试不同的后端
+                if is_online_url:
+                    self.logger.info("🔄 尝试使用默认后端重新打开在线视频...")
+                    self.cap = cv2.VideoCapture(self.video_path)
+                    if not self.cap.isOpened():
+                        self.logger.error(f"❌ 使用默认后端仍无法打开视频: {self.video_path}")
+                        return False
+                else:
+                    return False
             
             # 获取视频信息
             self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
             self.fps = self.cap.get(cv2.CAP_PROP_FPS)
-            self.duration = self.total_frames / self.fps if self.fps > 0 else 0
             
-            self.logger.info(f"📹 视频文件信息:")
+            # 对于在线视频，总帧数可能无法获取或不准确
+            if is_online_url and (self.total_frames <= 0 or self.total_frames == 2147483647):
+                self.logger.info("📹 在线视频无法获取准确的总帧数，将采用流式处理")
+                self.total_frames = 0  # 设置为0表示未知
+                self.duration = 0
+            else:
+                self.duration = self.total_frames / self.fps if self.fps > 0 else 0
+            
+            # 如果无法获取帧率，使用默认值
+            if self.fps <= 0:
+                self.fps = 25.0  # 默认25fps
+                self.logger.warning(f"⚠️ 无法获取视频帧率，使用默认值: {self.fps} FPS")
+            
+            self.logger.info(f"📹 视频{'URL' if is_online_url else '文件'}信息:")
             self.logger.info(f"   路径: {self.video_path}")
-            self.logger.info(f"   总帧数: {self.total_frames}")
+            self.logger.info(f"   总帧数: {'未知 (在线视频)' if self.total_frames == 0 else self.total_frames}")
             self.logger.info(f"   帧率: {self.fps:.2f} FPS")
-            self.logger.info(f"   时长: {self.duration:.2f} 秒")
+            self.logger.info(f"   时长: {'未知 (在线视频)' if self.duration == 0 else f'{self.duration:.2f} 秒'}")
             self.logger.info(f"   批处理大小: {self.batch_size} 帧/批")
-            self.logger.info(f"   预计批次数: {(self.total_frames + self.batch_size - 1) // self.batch_size}")
+            if self.total_frames > 0:
+                self.logger.info(f"   预计批次数: {(self.total_frames + self.batch_size - 1) // self.batch_size}")
+            else:
+                self.logger.info(f"   预计批次数: 未知 (在线视频)")
             
             return True
             
@@ -142,6 +184,13 @@ class VideoFileProcessor:
         
         self.read_thread.start()
         self.process_thread.start()
+        
+        # 调用视频开始回调
+        if self.on_video_start_callback:
+            try:
+                self.on_video_start_callback()
+            except Exception as e:
+                self.logger.error(f"❌ 视频开始回调执行失败: {e}")
     
     def stop(self):
         """停止视频处理"""
@@ -184,7 +233,13 @@ class VideoFileProcessor:
                 ret, frame = self.cap.read()
                 
                 if not ret:
-                    self.logger.info(f"🏁 视频读取完毕: {self.total_read_frames}/{self.total_frames}")
+                    # 检测是否为在线URL
+                    is_online_url = self.video_path.startswith(('http://', 'https://'))
+                    
+                    if is_online_url:
+                        self.logger.info(f"🏁 在线视频读取完毕: {self.total_read_frames} 帧")
+                    else:
+                        self.logger.info(f"🏁 视频文件读取完毕: {self.total_read_frames}/{self.total_frames}")
                     break
                 
                 # 获取内存缓冲区，增加重试机制

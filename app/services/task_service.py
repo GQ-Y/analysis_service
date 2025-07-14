@@ -807,7 +807,7 @@ class TaskService(BaseService):
                     raise ValueError("图片分析任务需要提供image_paths")
                 
                 # 创建图片处理器
-                from app.core.processor.image_processor import ImageProcessor
+                from app.core.zero_copy.image_processor import ImageProcessor
                 image_processor = ImageProcessor(
                     image_path=image_paths,
                     memory_pool=memory_pool,
@@ -873,7 +873,7 @@ class TaskService(BaseService):
                 if not video_path:
                     raise ValueError("视频分析任务需要提供video_path")
                 
-                from app.core.processor.video_file_processor import VideoFileProcessor
+                from app.core.zero_copy.video_file_processor import VideoFileProcessor
                 video_processor = VideoFileProcessor(
                     video_path=video_path,
                     memory_pool=memory_pool,
