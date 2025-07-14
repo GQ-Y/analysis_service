@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>分析任务管理系统</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- Axios -->
+    <script src="https://cdn.jsdelivr.net/npm/axios@1.3.4/dist/axios.min.js"></script>
+    
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        
+        .navbar-brand {
+            font-weight: bold;
+        }
+        
+        .card {
+            border: none;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        
+        .card-header {
+            background-color: #fff;
+            border-bottom: 1px solid #dee2e6;
+            font-weight: 600;
+        }
+        
+        .task-item {
+            transition: all 0.2s ease;
+            border-left: 4px solid transparent;
+        }
+        
+        .task-item:hover {
+            border-left-color: #0d6efd;
+            box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.1);
+        }
+        
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 0.25rem 0.5rem;
+        }
+        
+        .status-0 { background-color: #6c757d; }
+        .status-1 { background-color: #198754; }
+        .status-2 { background-color: #fd7e14; }
+        .status-3 { background-color: #dc3545; }
+        .status-4 { background-color: #0d6efd; }
+        
+        .btn-group-sm > .btn {
+            font-size: 0.75rem;
+        }
+        
+        .form-floating > label {
+            color: #6c757d;
+        }
+        
+        .task-list {
+            max-height: 70vh;
+            overflow-y: auto;
+        }
+        
+        .task-header {
+            border-bottom: 1px solid #f8f9fa;
+            padding-bottom: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .task-info {
+            font-size: 0.875rem;
+            color: #6c757d;
+        }
+        
+        .loading-spinner {
+            text-align: center;
+            padding: 3rem;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 4rem 2rem;
+            color: #6c757d;
+        }
+        
+        .refresh-btn {
+            position: absolute;
+            top: 0.75rem;
+            right: 1rem;
+        }
+        
+        .analysis-type-fields {
+            display: none;
+        }
+        
+        .analysis-type-fields.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary mb-4">
+        <div class="container">
+            <span class="navbar-brand">
+                <i class="bi bi-cpu me-2"></i>
+                分析任务管理系统
+            </span>
+            <span class="navbar-text">
+                智能视频分析平台
+            </span>
+        </div>
+    </nav>
+
+    <div class="container-fluid">
+        <div class="row g-4">
+            <!-- 创建任务面板 -->
+            <div class="col-lg-4">
+                <div class="card">
+                    <div class="card-header position-relative">
+                        <i class="bi bi-plus-circle me-2"></i>
+                        创建新任务
+                    </div>
+                    <div class="card-body">
+                        <!-- 消息提示区域 -->
+                        <div id="createMessage"></div>
+                        
+                        <form id="createTaskForm">
+                            <!-- 基本信息 -->
+                            <div class="mb-3">
+                                <div class="form-floating">
+                                    <input type="text" class="form-control" id="taskName" placeholder="任务名称" required>
+                                    <label for="taskName">任务名称 *</label>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <div class="form-floating">
+                                    <textarea class="form-control" id="taskDescription" placeholder="任务描述" style="height: 80px"></textarea>
+                                    <label for="taskDescription">任务描述</label>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <div class="form-floating">
+                                    <select class="form-select" id="analysisType" required>
+                                        <option value="">请选择分析类型</option>
+                                        <option value="1">图片分析</option>
+                                        <option value="2">视频分析</option>
+                                        <option value="3">视频流分析</option>
+                                    </select>
+                                    <label for="analysisType">分析类型 *</label>
+                                </div>
+                            </div>
+
+                            <div class="mb-3">
+                                <div class="form-floating">
+                                    <input type="text" class="form-control" id="modelCode" placeholder="模型代码" required value="yolos">
+                                    <label for="modelCode">模型代码 *</label>
+                                </div>
+                                <div class="form-text">例如: yolos, yolo11n, yolo11s</div>
+                            </div>
+
+                            <!-- 动态输入源配置 -->
+                            <div id="imagePathsGroup" class="analysis-type-fields mb-3">
+                                <div class="form-floating">
+                                    <textarea class="form-control" id="imagePaths" placeholder="图片路径" style="height: 100px"></textarea>
+                                    <label for="imagePaths">图片路径</label>
+                                </div>
+                                <div class="form-text">每行一个图片路径</div>
+                            </div>
+
+                            <div id="videoPathGroup" class="analysis-type-fields mb-3">
+                                <div class="form-floating">
+                                    <input type="text" class="form-control" id="videoPath" placeholder="视频路径或URL">
+                                    <label for="videoPath">视频路径/URL</label>
+                                </div>
+                                <div class="form-text">支持本地路径或在线URL</div>
+                            </div>
+
+                            <div id="streamUrlsGroup" class="analysis-type-fields mb-3">
+                                <div class="form-floating">
+                                    <textarea class="form-control" id="streamUrls" placeholder="视频流URL" style="height: 100px"></textarea>
+                                    <label for="streamUrls">视频流URL</label>
+                                </div>
+                                <div class="form-text">每行一个流URL</div>
+                            </div>
+
+                            <!-- 高级配置 -->
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-6">
+                                    <div class="form-floating">
+                                        <input type="number" class="form-control" id="confidenceThreshold" min="0" max="1" step="0.05" value="0.5">
+                                        <label for="confidenceThreshold">置信度阈值</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-floating">
+                                        <input type="number" class="form-control" id="iouThreshold" min="0" max="1" step="0.05" value="0.45">
+                                        <label for="iouThreshold">IOU阈值</label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-6">
+                                    <div class="form-floating">
+                                        <input type="number" class="form-control" id="analysisFps" min="1" max="60" value="10">
+                                        <label for="analysisFps">分析FPS</label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-floating">
+                                        <input type="number" class="form-control" id="callbackInterval" min="1" value="10">
+                                        <label for="callbackInterval">回调间隔(秒)</label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 选项 -->
+                            <div class="row g-3 mb-4">
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="saveResult" checked>
+                                        <label class="form-check-label" for="saveResult">
+                                            保存结果
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col-md-6">
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" id="saveImages">
+                                        <label class="form-check-label" for="saveImages">
+                                            保存图片
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary w-100">
+                                <i class="bi bi-play-circle me-2"></i>
+                                创建并启动任务
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 任务列表面板 -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header position-relative">
+                        <i class="bi bi-list-task me-2"></i>
+                        任务列表
+                        <button class="btn btn-sm btn-outline-primary refresh-btn" onclick="refreshTasks()">
+                            <i class="bi bi-arrow-clockwise me-1"></i>
+                            刷新
+                        </button>
+                    </div>
+                    <div class="card-body p-0">
+                        <!-- 消息提示区域 -->
+                        <div id="taskMessage" class="px-3 pt-3"></div>
+                        
+                        <!-- 任务列表 -->
+                        <div id="taskList" class="task-list">
+                            <div class="loading-spinner">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">加载中...</span>
+                                </div>
+                                <div class="mt-2 text-muted">正在加载任务列表...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // API配置
+        const API_BASE = 'http://127.0.0.1:8002/api/v1';
+        
+        // 任务状态映射
+        const STATUS_MAP = {
+            0: { name: '未启动', class: 'status-0' },
+            1: { name: '运行中', class: 'status-1' },
+            2: { name: '已停止', class: 'status-2' },
+            3: { name: '错误', class: 'status-3' },
+            4: { name: '已完成', class: 'status-4' }
+        };
+
+        // 分析类型映射
+        const ANALYSIS_TYPE_MAP = {
+            1: '图片分析',
+            2: '视频分析',
+            3: '视频流分析'
+        };
+
+        // 显示消息
+        function showMessage(elementId, message, type = 'info') {
+            const messageDiv = document.getElementById(elementId);
+            const alertClass = type === 'error' ? 'danger' : type;
+            messageDiv.innerHTML = `
+                <div class="alert alert-${alertClass} alert-dismissible fade show" role="alert">
+                    <i class="bi bi-${type === 'success' ? 'check-circle' : type === 'error' ? 'exclamation-triangle' : 'info-circle'} me-2"></i>
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+            
+            // 5秒后自动消失
+            setTimeout(() => {
+                const alert = messageDiv.querySelector('.alert');
+                if (alert) {
+                    const bsAlert = new bootstrap.Alert(alert);
+                    bsAlert.close();
+                }
+            }, 5000);
+        }
+
+        // 分析类型切换
+        document.getElementById('analysisType').addEventListener('change', function() {
+            const type = this.value;
+            
+            // 隐藏所有输入组
+            document.querySelectorAll('.analysis-type-fields').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // 显示对应的输入组
+            if (type === '1') {
+                document.getElementById('imagePathsGroup').classList.add('active');
+            } else if (type === '2') {
+                document.getElementById('videoPathGroup').classList.add('active');
+            } else if (type === '3') {
+                document.getElementById('streamUrlsGroup').classList.add('active');
+            }
+        });
+
+        // 创建任务
+        document.getElementById('createTaskForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            const originalText = submitBtn.innerHTML;
+            
+            try {
+                // 禁用提交按钮
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<i class="bi bi-hourglass-split me-2"></i>创建中...';
+                
+                const analysisType = parseInt(document.getElementById('analysisType').value);
+                const modelCode = document.getElementById('modelCode').value.trim();
+                
+                // 构建请求数据
+                const taskData = {
+                    name: document.getElementById('taskName').value.trim(),
+                    description: document.getElementById('taskDescription').value.trim(),
+                    analysis_type: analysisType,
+                    model_configs: [{
+                        model_code: modelCode,
+                        analysis_fps: parseFloat(document.getElementById('analysisFps').value),
+                        confidence_threshold: parseFloat(document.getElementById('confidenceThreshold').value),
+                        iou_threshold: parseFloat(document.getElementById('iouThreshold').value)
+                    }],
+                    save_result: document.getElementById('saveResult').checked,
+                    save_images: document.getElementById('saveImages').checked,
+                    callback_interval: parseInt(document.getElementById('callbackInterval').value),
+                    config: {
+                        enable_tracking: false,
+                        max_objects: 100
+                    }
+                };
+
+                // 根据分析类型添加对应的输入源
+                if (analysisType === 1) {
+                    const imagePaths = document.getElementById('imagePaths').value.trim();
+                    taskData.image_paths = imagePaths ? imagePaths.split('\n').filter(p => p.trim()) : [];
+                } else if (analysisType === 2) {
+                    const videoPath = document.getElementById('videoPath').value.trim();
+                    taskData.video_path = videoPath;
+                } else if (analysisType === 3) {
+                    const streamUrls = document.getElementById('streamUrls').value.trim();
+                    taskData.stream_urls = streamUrls ? streamUrls.split('\n').filter(u => u.trim()) : [];
+                }
+
+                showMessage('createMessage', '正在创建任务...', 'info');
+
+                // 发送创建请求
+                const response = await axios.post(`${API_BASE}/tasks/create`, taskData);
+                
+                if (response.data.success) {
+                    const taskId = response.data.data.id;
+                    showMessage('createMessage', `任务创建成功！任务ID: ${taskId}`, 'success');
+                    
+                    // 启动任务
+                    try {
+                        const startResponse = await axios.post(`${API_BASE}/tasks/${taskId}/start`);
+                        if (startResponse.data.success) {
+                            showMessage('createMessage', '任务启动成功！', 'success');
+                        } else {
+                            showMessage('createMessage', `任务创建成功但启动失败: ${startResponse.data.message}`, 'warning');
+                        }
+                    } catch (startError) {
+                        showMessage('createMessage', `任务创建成功但启动失败: ${startError.response?.data?.detail || startError.message}`, 'warning');
+                    }
+                    
+                    // 重置表单
+                    e.target.reset();
+                    document.getElementById('analysisType').dispatchEvent(new Event('change'));
+                    
+                    // 刷新任务列表
+                    refreshTasks();
+                } else {
+                    showMessage('createMessage', `创建失败: ${response.data.message}`, 'error');
+                }
+            } catch (error) {
+                showMessage('createMessage', `创建失败: ${error.response?.data?.detail || error.message}`, 'error');
+            } finally {
+                // 恢复提交按钮
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+            }
+        });
+
+        // 获取任务列表
+        async function refreshTasks() {
+            try {
+                const response = await axios.get(`${API_BASE}/tasks/list`);
+                
+                if (response.data.success) {
+                    const tasks = response.data.data.items || [];
+                    renderTaskList(tasks);
+                } else {
+                    showMessage('taskMessage', `获取任务列表失败: ${response.data.message}`, 'error');
+                }
+            } catch (error) {
+                showMessage('taskMessage', `获取任务列表失败: ${error.response?.data?.detail || error.message}`, 'error');
+            }
+        }
+
+        // 渲染任务列表
+        function renderTaskList(tasks) {
+            const taskListDiv = document.getElementById('taskList');
+            
+            if (tasks.length === 0) {
+                taskListDiv.innerHTML = `
+                    <div class="empty-state">
+                        <i class="bi bi-inbox display-1 text-muted"></i>
+                        <h5 class="mt-3 text-muted">暂无任务</h5>
+                        <p class="text-muted">创建您的第一个分析任务</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const tasksHtml = tasks.map(task => {
+                const status = STATUS_MAP[task.status] || { name: '未知', class: 'status-0' };
+                const analysisType = ANALYSIS_TYPE_MAP[task.analysis_type] || '未知';
+                
+                return `
+                    <div class="task-item p-3 m-3 bg-white rounded border">
+                        <div class="task-header d-flex justify-content-between align-items-center">
+                            <h6 class="mb-0 fw-bold">${task.name}</h6>
+                            <span class="badge status-badge ${status.class}">${status.name}</span>
+                        </div>
+                        <div class="task-info">
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4">
+                                    <small><i class="bi bi-tag me-1"></i>ID: ${task.id}</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <small><i class="bi bi-gear me-1"></i>类型: ${analysisType}</small>
+                                </div>
+                                <div class="col-md-4">
+                                    <small><i class="bi bi-cpu me-1"></i>模型: ${task.model_codes.join(', ')}</small>
+                                </div>
+                            </div>
+                            <div class="mb-2">
+                                <small><i class="bi bi-calendar me-1"></i>创建时间: ${new Date(task.created_at).toLocaleString()}</small>
+                            </div>
+                            ${task.description ? `
+                                <div class="mb-2">
+                                    <small><i class="bi bi-file-text me-1"></i>描述: ${task.description}</small>
+                                </div>
+                            ` : ''}
+                        </div>
+                        <div class="task-actions">
+                            <div class="btn-group btn-group-sm" role="group">
+                                ${task.status === 0 ? `
+                                    <button type="button" class="btn btn-success" onclick="startTask(${task.id})">
+                                        <i class="bi bi-play me-1"></i>启动
+                                    </button>
+                                ` : ''}
+                                ${task.status === 1 ? `
+                                    <button type="button" class="btn btn-warning" onclick="stopTask(${task.id})">
+                                        <i class="bi bi-pause me-1"></i>停止
+                                    </button>
+                                ` : ''}
+                                ${task.status === 2 || task.status === 3 ? `
+                                    <button type="button" class="btn btn-info" onclick="restartTask(${task.id})">
+                                        <i class="bi bi-arrow-clockwise me-1"></i>重启
+                                    </button>
+                                ` : ''}
+                                ${task.status !== 1 ? `
+                                    <button type="button" class="btn btn-danger" onclick="deleteTask(${task.id})">
+                                        <i class="bi bi-trash me-1"></i>删除
+                                    </button>
+                                ` : ''}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            taskListDiv.innerHTML = tasksHtml;
+        }
+
+        // 任务操作函数
+        async function performTaskAction(taskId, action, endpoint, successMessage) {
+            try {
+                const response = await axios.post(`${API_BASE}/tasks/${taskId}/${endpoint}`);
+                if (response.data.success) {
+                    showMessage('taskMessage', successMessage, 'success');
+                    refreshTasks();
+                } else {
+                    showMessage('taskMessage', `${action}失败: ${response.data.message}`, 'error');
+                }
+            } catch (error) {
+                showMessage('taskMessage', `${action}失败: ${error.response?.data?.detail || error.message}`, 'error');
+            }
+        }
+
+        // 启动任务
+        async function startTask(taskId) {
+            await performTaskAction(taskId, '启动', 'start', '任务启动成功');
+        }
+
+        // 停止任务
+        async function stopTask(taskId) {
+            await performTaskAction(taskId, '停止', 'stop', '任务停止成功');
+        }
+
+        // 重启任务
+        async function restartTask(taskId) {
+            await performTaskAction(taskId, '重启', 'restart', '任务重启成功');
+        }
+
+        // 删除任务
+        async function deleteTask(taskId) {
+            // 使用Bootstrap模态框确认
+            if (!confirm('确定要删除这个任务吗？此操作无法撤销。')) {
+                return;
+            }
+            
+            try {
+                const response = await axios.delete(`${API_BASE}/tasks/${taskId}`);
+                if (response.data.success) {
+                    showMessage('taskMessage', '任务删除成功', 'success');
+                    refreshTasks();
+                } else {
+                    showMessage('taskMessage', `删除失败: ${response.data.message}`, 'error');
+                }
+            } catch (error) {
+                showMessage('taskMessage', `删除失败: ${error.response?.data?.detail || error.message}`, 'error');
+            }
+        }
+
+        // 页面加载完成后初始化
+        document.addEventListener('DOMContentLoaded', function() {
+            // 初始化分析类型
+            document.getElementById('analysisType').dispatchEvent(new Event('change'));
+            
+            // 加载任务列表
+            refreshTasks();
+            
+            // 定时刷新任务列表
+            setInterval(refreshTasks, 10000); // 每10秒刷新一次
+        });
+    </script>
+</body>
+</html> 

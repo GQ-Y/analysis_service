@@ -127,7 +127,7 @@ class ImageAnalysisProcessor:
         # 关闭线程池
         if self.executor:
             self.logger.info("🔄 正在关闭分析线程池...")
-            self.executor.shutdown(wait=True, timeout=10.0)
+            self.executor.shutdown(wait=True)
             self.executor = None
         
         if self.thread:
@@ -557,7 +557,7 @@ class ImageAnalysisProcessor:
         # 关闭线程池
         if self.executor:
             self.logger.info("🔄 正在关闭分析线程池...")
-            self.executor.shutdown(wait=True, timeout=10.0)
+            self.executor.shutdown(wait=True)
             self.executor = None
         
         # 清理FPS控制器
