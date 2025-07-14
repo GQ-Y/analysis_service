@@ -22,6 +22,31 @@ from app.services.task_service import get_task_service
 
 router = APIRouter(prefix="/tasks", tags=["任务管理"])
 
+@router.get("/list", response_model=ResponseModel)
+async def list_tasks(
+    page: int = Query(1, ge=1, description="页码"),
+    page_size: int = Query(20, ge=1, le=100, description="每页大小"),
+    status: Optional[int] = Query(None, description="状态筛选：0-未启动，1-运行中，2-已停止，3-错误，4-已完成")
+):
+    """获取任务列表"""
+    try:
+        task_service = get_task_service()
+        result = await task_service.list_tasks(
+            page=page,
+            page_size=page_size,
+            status=status
+        )
+
+        return create_success_response(
+            data=result,
+            message="📝 获取任务列表成功"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")
+
+
+
+
 
 # 模型配置
 class ModelConfig(BaseModel):
@@ -234,8 +259,23 @@ class TaskInfo(BaseModel):
     progress: float
     created_at: str
     updated_at: str
-    model_count: int
-    stream_count: int
+    model_codes: List[str]
+    stream_urls: List[str]
+    video_path: Optional[str]
+    image_paths: List[str]
+    config: Dict[str, Any]
+    confidence_threshold: float
+    iou_threshold: float
+    save_result: bool
+    save_images: bool
+    callback_urls: Optional[List[str]]
+    callback_interval: Optional[int]
+    playback_duration: Optional[int]
+    roi_config: Optional[Dict[str, Any]]
+    target_classes: Optional[List[str]]
+    analysis_fps: Optional[Dict[str, float]]
+    model_confidence_config: Optional[Dict[str, float]]
+    model_iou_config: Optional[Dict[str, float]]
     result_count: int
 
 
@@ -394,26 +434,4 @@ async def restart_task(task_id: int):
         raise HTTPException(status_code=500, detail=f"重启任务失败: {str(e)}")
 
 
-# ==================== 辅助功能API ====================
 
-@router.get("/list", response_model=ResponseModel)
-async def list_tasks(
-    page: int = Query(1, ge=1, description="页码"),
-    page_size: int = Query(20, ge=1, le=100, description="每页大小"),
-    status: Optional[int] = Query(None, description="状态筛选：0-未启动，1-运行中，2-已停止，3-错误，4-已完成")
-):
-    """获取任务列表"""
-    try:
-        task_service = get_task_service()
-        result = await task_service.list_tasks(
-            page=page,
-            page_size=page_size,
-            status=status
-        )
-
-        return create_success_response(
-            data=result,
-            message="📝 获取任务列表成功"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取任务列表失败: {str(e)}")

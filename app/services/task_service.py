@@ -49,6 +49,21 @@ class TaskInfo:
     updated_at: str
     model_codes: List[str]
     stream_urls: List[str]
+    video_path: Optional[str]
+    image_paths: List[str]
+    config: Dict[str, Any]
+    confidence_threshold: float
+    iou_threshold: float
+    save_result: bool
+    save_images: bool
+    callback_urls: Optional[List[str]]
+    callback_interval: Optional[int]
+    playback_duration: Optional[int]
+    roi_config: Optional[Dict[str, Any]]
+    target_classes: Optional[List[str]]
+    analysis_fps: Optional[Dict[str, float]]
+    model_confidence_config: Optional[Dict[str, float]]
+    model_iou_config: Optional[Dict[str, float]]
     result_count: int
 
 
@@ -1055,6 +1070,21 @@ class TaskService(BaseService):
             updated_at=task_data["updated_at"].isoformat(),
             model_codes=task_data["model_codes"],
             stream_urls=task_data["stream_urls"],
+            video_path=task_data.get("video_path"),
+            image_paths=task_data.get("image_paths", []),
+            config=task_data.get("config", {}),
+            confidence_threshold=task_data.get("confidence_threshold", 0.0),
+            iou_threshold=task_data.get("iou_threshold", 0.0),
+            save_result=task_data.get("save_result", False),
+            save_images=task_data.get("save_images", False),
+            callback_urls=task_data.get("callback_urls"),
+            callback_interval=task_data.get("callback_interval"),
+            playback_duration=task_data.get("playback_duration"),
+            roi_config=task_data.get("roi_config"),
+            target_classes=task_data.get("target_classes"),
+            analysis_fps=task_data.get("analysis_fps"),
+            model_confidence_config=task_data.get("model_confidence_config"),
+            model_iou_config=task_data.get("model_iou_config"),
             result_count=len(task_data.get("results", []))
         )
 
