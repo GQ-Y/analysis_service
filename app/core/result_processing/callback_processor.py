@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import queue
 import time
 import threading
 from typing import Dict, Any, Optional, List
@@ -44,22 +45,24 @@ class CallbackProcessor(BaseResultProcessor):
         self.max_retries = max_retries
         self.timeout = timeout
         
-        # 批量回调缓存
+        # 批量回调缓存 (线程安全)
         self.callback_buffer = []
+        self.buffer_lock = threading.Lock()
         self.last_callback_time = 0
         
-        # 异步任务队列（后台处理）
-        self.pending_tasks = []
+        # 异步任务队列 (线程安全)
+        self.task_queue = queue.Queue()
         self.executor_thread = None
         self.running = True
         
-        # 统计信息
+        # 统计信息 (线程安全)
         self.stats = {
             "total_callbacks": 0,
             "successful_callbacks": 0,
             "failed_callbacks": 0,
             "retry_count": 0
         }
+        self.stats_lock = threading.Lock()
         
         # 启动后台任务处理线程
         self._start_background_executor()
@@ -72,21 +75,21 @@ class CallbackProcessor(BaseResultProcessor):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             
-            while self.running:
+            while self.running or not self.task_queue.empty():
                 try:
-                    if self.pending_tasks:
-                        # 处理待执行的任务
-                        tasks_to_run = self.pending_tasks.copy()
-                        self.pending_tasks.clear()
+                    # 阻塞等待任务，设置超时以检查 self.running 状态
+                    task_func, args = self.task_queue.get(timeout=1.0)
+                    
+                    try:
+                        loop.run_until_complete(task_func(*args))
+                    except Exception as e:
+                        self.logger.error(f"❌ 后台任务执行失败: {e}")
+                    finally:
+                        self.task_queue.task_done()
                         
-                        for task_func, args in tasks_to_run:
-                            try:
-                                loop.run_until_complete(task_func(*args))
-                            except Exception as e:
-                                self.logger.error(f"❌ 后台任务执行失败: {e}")
-                    
-                    time.sleep(0.1)  # 避免CPU占用过高
-                    
+                except queue.Empty:
+                    # 队列为空，继续循环以检查 self.running
+                    continue
                 except Exception as e:
                     self.logger.error(f"❌ 后台执行器异常: {e}")
                     time.sleep(1)
@@ -135,21 +138,22 @@ class CallbackProcessor(BaseResultProcessor):
             current_time = time.time()
             if self.callback_interval == 0:
                 # 实时回调 - 添加到后台任务队列
-                self.pending_tasks.append((self._send_callbacks, (callback_urls, callback_data)))
+                self.task_queue.put((self._send_callbacks, (callback_urls, callback_data)))
                 result["callbacks_sent"] = len(callback_urls)
                 result["success"] = True
             else:
                 # 批量回调
-                self.callback_buffer.append(callback_data)
-                
-                # 检查是否达到回调间隔
-                if current_time - self.last_callback_time >= self.callback_interval:
-                    self.pending_tasks.append((self._send_batch_callbacks, (callback_urls,)))
-                    result["callbacks_sent"] = len(callback_urls)
-                    result["success"] = True
-                else:
-                    result["success"] = True
-                    result["message"] = f"缓存回调数据，等待间隔时间({self.callback_interval}s)"
+                with self.buffer_lock:
+                    self.callback_buffer.append(callback_data)
+                    
+                    # 检查是否达到回调间隔
+                    if current_time - self.last_callback_time >= self.callback_interval:
+                        self.task_queue.put((self._send_batch_callbacks, (callback_urls,)))
+                        result["callbacks_sent"] = len(callback_urls)
+                        result["success"] = True
+                    else:
+                        result["success"] = True
+                        result["message"] = f"缓存回调数据，等待间隔时间({self.callback_interval}s)"
             
             self.logger.debug(f"📞 回调处理完成: 任务{task_config.get('task_id')}, "
                             f"帧{frame_buffer.frame_id}")
@@ -174,6 +178,8 @@ class CallbackProcessor(BaseResultProcessor):
     
     async def _send_callbacks(self, callback_urls: List[str], data: Dict[str, Any]):
         """发送实时回调"""
+        with self.stats_lock:
+            self.stats["total_callbacks"] += len(callback_urls)
         tasks = []
         for url in callback_urls:
             task = asyncio.create_task(self._send_single_callback(url, data))
@@ -183,28 +189,31 @@ class CallbackProcessor(BaseResultProcessor):
     
     async def _send_batch_callbacks(self, callback_urls: List[str]):
         """发送批量回调"""
-        if not self.callback_buffer:
-            return
-        
+        batch_data_list = []
+        with self.buffer_lock:
+            if not self.callback_buffer:
+                return
+            
+            batch_data_list = self.callback_buffer.copy()
+            self.callback_buffer.clear()
+            self.last_callback_time = time.time()
+
         batch_data = {
             "type": "batch_callback",
-            "data": self.callback_buffer.copy(),
-            "batch_size": len(self.callback_buffer),
-            "timestamp": time.time()
+            "data": batch_data_list,
+            "batch_size": len(batch_data_list),
+            "timestamp": self.last_callback_time
         }
-        
-        # 清空缓存
-        self.callback_buffer.clear()
-        self.last_callback_time = time.time()
         
         # 发送批量数据
         await self._send_callbacks(callback_urls, batch_data)
     
     async def _send_single_callback(self, url: str, data: Dict[str, Any]):
-        """发送单个回调"""
-        retries = 0
+        """发送单个回调，包含重试逻辑"""
         
-        while retries <= self.max_retries:
+
+        # 总尝试次数 = 1 次初始尝试 + max_retries 次重试
+        for attempt in range(self.max_retries + 1):
             try:
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
@@ -213,54 +222,67 @@ class CallbackProcessor(BaseResultProcessor):
                         timeout=aiohttp.ClientTimeout(total=self.timeout)
                     ) as response:
                         if response.status == 200:
-                            self.stats["successful_callbacks"] += 1
-                            self.logger.debug(f"✅ 回调成功: {url}")
-                            return
-                        else:
-                            self.logger.warning(f"⚠️ 回调响应异常: {url}, 状态码: {response.status}")
-                
+                            with self.stats_lock:
+                                self.stats["successful_callbacks"] += 1
+                            self.logger.debug(f"✅ 回调成功: {url}, 第 {attempt + 1} 次尝试")
+                            return  # 成功，立即退出
+
+                        self.logger.warning(
+                            f"⚠️ 回调响应异常: {url}, 状态码: {response.status}, "
+                            f"尝试 {attempt + 1}/{self.max_retries + 1}"
+                        )
+                        response.raise_for_status()
+
             except Exception as e:
-                retries += 1
-                self.stats["retry_count"] += 1
-                
-                if retries > self.max_retries:
-                    self.stats["failed_callbacks"] += 1
-                    self.logger.error(f"❌ 回调失败: {url}, 错误: {e}")
-                    break
+                self.logger.warning(
+                    f"❌ 回调请求失败: {url}, 错误: {e}, "
+                    f"尝试 {attempt + 1}/{self.max_retries + 1}"
+                )
+                # 如果不是最后一次尝试，则记录重试并等待
+                if attempt < self.max_retries:
+                    with self.stats_lock:
+                        self.stats["retry_count"] += 1
+                    await asyncio.sleep(1 * (attempt + 1))  # 递增延迟
                 else:
-                    self.logger.warning(f"⚠️ 回调重试 {retries}/{self.max_retries}: {url}")
-                    await asyncio.sleep(1 * retries)  # 递增延迟
-        
-        self.stats["total_callbacks"] += 1
+                    # 所有尝试均失败
+                    with self.stats_lock:
+                        self.stats["failed_callbacks"] += 1
+                    self.logger.error(f"❌ 回调彻底失败，已达最大尝试次数: {url}")
     
     def get_callback_stats(self) -> Dict[str, Any]:
         """获取回调统计信息"""
+        with self.stats_lock:
+            stats_copy = self.stats.copy()
+        
+        with self.buffer_lock:
+            buffer_size = len(self.callback_buffer)
+
+        success_rate = (stats_copy["successful_callbacks"] / max(1, stats_copy["total_callbacks"])) * 100
+
         return {
-            **self.stats,
+            **stats_copy,
             "callback_urls": self.callback_urls,
             "callback_interval": self.callback_interval,
-            "buffer_size": len(self.callback_buffer),
-            "pending_tasks": len(self.pending_tasks),
-            "success_rate": (self.stats["successful_callbacks"] / max(1, self.stats["total_callbacks"])) * 100
+            "buffer_size": buffer_size,
+            "pending_tasks": self.task_queue.qsize(),
+            "success_rate": success_rate
         }
     
     def cleanup(self):
         """清理资源"""
         self.running = False
         
-        # 等待后台线程结束
+        # 等待后台线程处理完队列中的所有任务
         if self.executor_thread and self.executor_thread.is_alive():
-            self.executor_thread.join(timeout=3.0)
+            self.executor_thread.join(timeout=5.0)
         
         # 清空缓存
-        self.callback_buffer.clear()
-        self.pending_tasks.clear()
+        with self.buffer_lock:
+            self.callback_buffer.clear()
         
         self.logger.info("🧹 回调处理器已清理")
     
     def __del__(self):
-        """析构函数"""
-        try:
-            self.cleanup()
-        except:
-            pass 
+        """析构函数 - 警告：不建议在此处进行复杂清理，请显式调用 cleanup()"""
+        # 避免在解释器关闭时出现不确定的行为
+        pass

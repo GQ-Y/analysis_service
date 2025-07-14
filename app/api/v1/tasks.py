@@ -15,7 +15,7 @@
 
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, Body, Depends
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, ConfigDict
 
 from app.models.response_model import ResponseModel, create_success_response, create_error_response
 from app.services.task_service import get_task_service
@@ -25,6 +25,7 @@ router = APIRouter(prefix="/tasks", tags=["任务管理"])
 
 # 模型配置
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
     """单个模型配置"""
     model_code: str = Field(..., description="模型代码", example="yolo11n")
     analysis_fps: Optional[float] = Field(None, description="该模型的分析帧率，None表示不限制", example=10.0)
@@ -32,6 +33,46 @@ class ModelConfig(BaseModel):
     iou_threshold: Optional[float] = Field(None, description="该模型的IOU阈值", example=0.45)
 
 class TaskCreateRequest(BaseModel):
+    model_config = ConfigDict(
+        protected_namespaces=(),
+        json_schema_extra={
+            "example": {
+                "name": "商场人流检测任务",
+                "description": "检测商场入口的人流情况，统计进出人数",
+                "analysis_type": 3,
+                "model_configs": [
+                    {
+                        "model_code": "yolo11n",
+                        "analysis_fps": 10.0,
+                        "confidence_threshold": 0.5,
+                        "iou_threshold": 0.45
+                    },
+                    {
+                        "model_code": "yolo11s",
+                        "analysis_fps": 5.0,
+                        "confidence_threshold": 0.6,
+                        "iou_threshold": 0.5
+                    }
+                ],
+                "stream_urls": ["rtsp://admin:password@192.168.1.100:554/stream1"],
+                "save_result": True,
+                "save_images": True,
+                "callback_urls": ["http://your-server.com/api/analysis/callback"],
+                "callback_interval": 10,
+                "roi_config": {
+                    "enabled": True,
+                    "regions": [
+                        {
+                            "name": "entrance",
+                            "points": [[100, 100], [500, 100], [500, 400], [100, 400]]
+                        }
+                    ]
+                },
+                "target_classes": ["person", "car", "bicycle"],
+                "config": {"enable_tracking": True, "max_objects": 100}
+            }
+        }
+    )
     """创建任务请求"""
     name: str = Field(..., description="任务名称", example="商场人流检测任务")
     description: Optional[str] = Field(None, description="任务描述", example="检测商场入口的人流情况，统计进出人数")
@@ -165,44 +206,7 @@ class TaskCreateRequest(BaseModel):
         
         return v
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "商场人流检测任务",
-                "description": "检测商场入口的人流情况，统计进出人数",
-                "analysis_type": 3,
-                "model_configs": [
-                    {
-                        "model_code": "yolo11n",
-                        "analysis_fps": 10.0,
-                        "confidence_threshold": 0.5,
-                        "iou_threshold": 0.45
-                    },
-                    {
-                        "model_code": "yolo11s",
-                        "analysis_fps": 5.0,
-                        "confidence_threshold": 0.6,
-                        "iou_threshold": 0.5
-                    }
-                ],
-                "stream_urls": ["rtsp://admin:password@192.168.1.100:554/stream1"],
-                "save_result": True,
-                "save_images": True,
-                "callback_urls": ["http://your-server.com/api/analysis/callback"],
-                "callback_interval": 10,
-                "roi_config": {
-                    "enabled": True,
-                    "regions": [
-                        {
-                            "name": "entrance",
-                            "points": [[100, 100], [500, 100], [500, 400], [100, 400]]
-                        }
-                    ]
-                },
-                "target_classes": ["person", "car", "bicycle"],
-                "config": {"enable_tracking": True, "max_objects": 100}
-            }
-        }
+    
 
 
 class TaskControlRequest(BaseModel):
@@ -220,6 +224,7 @@ class TaskListRequest(BaseModel):
 
 # 响应模型
 class TaskInfo(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
     """任务信息"""
     id: int
     name: str

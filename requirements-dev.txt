@@ -42,5 +42,5 @@ memory-profiler>=0.60.0
 line-profiler>=4.0.0
 
 # 调试工具
-pdb++>=0.10.0
+pdbpp>=0.10.0
 ipdb>=0.13.0
